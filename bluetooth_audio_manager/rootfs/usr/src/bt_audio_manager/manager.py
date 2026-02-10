@@ -140,9 +140,10 @@ class BluetoothAudioManager:
         # Get name for display
         name = await device.get_name()
 
-        # Register disconnect/connect handlers
+        # Register disconnect/connect/avrcp handlers
         device.on_disconnected(self._on_device_disconnected)
         device.on_connected(self._on_device_connected)
+        device.on_avrcp_event(self._on_avrcp_event)
         self.managed_devices[address] = device
 
         # Persist
@@ -161,11 +162,18 @@ class BluetoothAudioManager:
             await device.initialize()
             device.on_disconnected(self._on_device_disconnected)
             device.on_connected(self._on_device_connected)
+            device.on_avrcp_event(self._on_avrcp_event)
             self.managed_devices[address] = device
 
         await device.connect()
         self._broadcast_status(f"Waiting for services on {address}...")
         await device.wait_for_services(timeout=10)
+
+        # Try to subscribe to AVRCP media player signals
+        try:
+            await device.watch_media_player()
+        except Exception as e:
+            logger.debug("AVRCP watch failed for %s: %s", address, e)
 
         # Verify PulseAudio sink appeared
         if self.pulse:
@@ -289,4 +297,28 @@ class BluetoothAudioManager:
 
     def _on_device_connected(self, address: str) -> None:
         """Handle device connection event (D-Bus signal)."""
-        asyncio.ensure_future(self._broadcast_all())
+        asyncio.ensure_future(self._on_device_connected_async(address))
+
+    async def _on_device_connected_async(self, address: str) -> None:
+        """Async handler for device connection — broadcasts state and starts AVRCP."""
+        await self._broadcast_all()
+        # Try to subscribe to AVRCP after reconnection
+        device = self.managed_devices.get(address)
+        if device:
+            try:
+                await device.watch_media_player()
+            except Exception as e:
+                logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
+
+    def _on_avrcp_event(self, address: str, prop_name: str, value: object) -> None:
+        """Handle AVRCP MediaPlayer1 property change — push to SSE."""
+        # Convert value to JSON-safe representation
+        if isinstance(value, dict):
+            safe_val = {k: str(v) for k, v in value.items()}
+        else:
+            safe_val = str(value) if not isinstance(value, (str, int, float, bool)) else value
+        self.event_bus.emit("avrcp_event", {
+            "address": address,
+            "property": prop_name,
+            "value": safe_val,
+        })

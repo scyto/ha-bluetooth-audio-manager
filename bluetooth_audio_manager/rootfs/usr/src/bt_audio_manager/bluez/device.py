@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from typing import Callable
+from xml.etree import ElementTree as ET
 
 from dbus_next.aio import MessageBus
 from dbus_next.errors import DBusError
@@ -14,6 +15,8 @@ from .constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+MEDIA_PLAYER_INTERFACE = "org.bluez.MediaPlayer1"
 
 
 def address_to_path(address: str, adapter_path: str = "/org/bluez/hci0") -> str:
@@ -32,6 +35,8 @@ class BluezDevice:
         self._properties_iface = None
         self._disconnect_callbacks: list[Callable] = []
         self._connect_callbacks: list[Callable] = []
+        self._avrcp_callbacks: list[Callable] = []
+        self._player_path: str | None = None
         self._properties_changed_unsub = None
 
     async def initialize(self) -> None:
@@ -69,6 +74,82 @@ class BluezDevice:
     def on_connected(self, callback: Callable[[str], None]) -> None:
         """Register a callback for when this device connects."""
         self._connect_callbacks.append(callback)
+
+    def on_avrcp_event(self, callback: Callable[[str, str, object], None]) -> None:
+        """Register a callback for AVRCP MediaPlayer1 property changes.
+
+        Callback signature: callback(address, property_name, value)
+        """
+        self._avrcp_callbacks.append(callback)
+
+    async def watch_media_player(self) -> bool:
+        """Introspect for MediaPlayer1 child nodes and subscribe to signals.
+
+        Returns True if a media player was found and subscribed.
+        """
+        try:
+            # Introspect the device path to find player child nodes
+            introspection = await self._bus.introspect(BLUEZ_SERVICE, self._path)
+            xml_data = introspection.tostring()
+            root = ET.fromstring(xml_data)
+
+            player_nodes = [
+                n.get("name") for n in root.findall("node")
+                if n.get("name", "").startswith("player")
+            ]
+
+            if not player_nodes:
+                logger.debug("No AVRCP players found for %s", self._address)
+                return False
+
+            # Use the first player
+            player_name = player_nodes[0]
+            self._player_path = f"{self._path}/{player_name}"
+            logger.info(
+                "AVRCP player found for %s: %s", self._address, self._player_path
+            )
+
+            # Subscribe to PropertiesChanged on the player
+            player_introspection = await self._bus.introspect(
+                BLUEZ_SERVICE, self._player_path
+            )
+            player_proxy = self._bus.get_proxy_object(
+                BLUEZ_SERVICE, self._player_path, player_introspection
+            )
+            player_props = player_proxy.get_interface(PROPERTIES_INTERFACE)
+            player_props.on_properties_changed(self._on_media_player_changed)
+
+            # Read initial state
+            try:
+                all_props = await player_props.call_get_all(MEDIA_PLAYER_INTERFACE)
+                for prop_name, variant in all_props.items():
+                    val = variant.value
+                    logger.info("AVRCP %s initial: %s = %s", self._address, prop_name, val)
+                    for cb in self._avrcp_callbacks:
+                        cb(self._address, prop_name, val)
+            except DBusError as e:
+                logger.debug("Could not read initial AVRCP state: %s", e)
+
+            return True
+        except DBusError as e:
+            logger.debug("AVRCP introspect failed for %s: %s", self._address, e)
+            return False
+
+    def _on_media_player_changed(
+        self, interface_name: str, changed: dict, invalidated: list
+    ) -> None:
+        """Handle AVRCP MediaPlayer1 PropertiesChanged signals."""
+        if interface_name != MEDIA_PLAYER_INTERFACE:
+            return
+
+        for prop_name, variant in changed.items():
+            val = variant.value
+            # Flatten Track dict values from Variant
+            if prop_name == "Track" and isinstance(val, dict):
+                val = {k: (v.value if hasattr(v, "value") else v) for k, v in val.items()}
+            logger.info("AVRCP %s: %s = %s", self._address, prop_name, val)
+            for cb in self._avrcp_callbacks:
+                cb(self._address, prop_name, val)
 
     async def pair(self) -> None:
         """Initiate pairing with the device."""

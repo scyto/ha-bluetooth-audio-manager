@@ -229,6 +229,39 @@ async function forgetDevice(address) {
   }
 }
 
+// -- AVRCP event log --
+
+const MAX_AVRCP_ENTRIES = 50;
+
+function appendAvrcpEvent(data) {
+  const log = $("#avrcp-log");
+
+  // Remove placeholder if present
+  const placeholder = log.querySelector(".placeholder");
+  if (placeholder) placeholder.remove();
+
+  const time = new Date().toLocaleTimeString();
+  const valueStr = typeof data.value === "object"
+    ? JSON.stringify(data.value)
+    : String(data.value);
+
+  const entry = document.createElement("div");
+  entry.className = "avrcp-entry";
+  entry.innerHTML = `<span class="avrcp-time">${escapeHtml(time)}</span>`
+    + `<span class="avrcp-prop">${escapeHtml(data.property)}</span> = `
+    + `<span class="avrcp-value">${escapeHtml(valueStr)}</span>`;
+
+  log.appendChild(entry);
+
+  // Trim old entries
+  while (log.children.length > MAX_AVRCP_ENTRIES) {
+    log.removeChild(log.firstChild);
+  }
+
+  // Auto-scroll to bottom
+  log.scrollTop = log.scrollHeight;
+}
+
 // -- Server-Sent Events (real-time updates) --
 
 let eventSource = null;
@@ -257,6 +290,11 @@ function connectSSE() {
     } else {
       hideStatus();
     }
+  });
+
+  eventSource.addEventListener("avrcp_event", (e) => {
+    const data = JSON.parse(e.data);
+    appendAvrcpEvent(data);
   });
 
   eventSource.onerror = () => {
