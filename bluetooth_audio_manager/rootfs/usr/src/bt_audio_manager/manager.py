@@ -10,7 +10,7 @@ import logging
 import os
 
 from dbus_next.aio import MessageBus
-from dbus_next import BusType, MessageType
+from dbus_next import BusType, Message, MessageType
 from dbus_next.errors import DBusError
 
 from .audio.keepalive import KeepAliveService
@@ -55,16 +55,53 @@ class BluetoothAudioManager:
         self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         logger.info("Connected to system D-Bus")
 
-        # Debug: log ALL incoming D-Bus method calls so we can see if BlueZ
-        # sends anything when speaker buttons are pressed.
-        def _dbus_msg_sniffer(msg):
+        # Log incoming D-Bus method calls (debug) and capture transport
+        # volume changes (AVRCP Absolute Volume comes as PropertiesChanged
+        # on org.bluez.MediaTransport1, not as an MPRIS method call).
+        def _dbus_msg_handler(msg: Message) -> bool:
             if msg.message_type == MessageType.METHOD_CALL:
-                logger.info(
-                    "D-Bus INCOMING method_call: %s.%s path=%s sender=%s",
+                logger.debug(
+                    "D-Bus method_call: %s.%s path=%s sender=%s",
                     msg.interface, msg.member, msg.path, msg.sender,
                 )
-            return False  # don't consume — let normal dispatch handle it
-        self.bus.add_message_handler(_dbus_msg_sniffer)
+            elif (
+                msg.message_type == MessageType.SIGNAL
+                and msg.member == "PropertiesChanged"
+                and msg.path
+                and msg.path.startswith("/org/bluez/")
+                and msg.body
+            ):
+                # body = [interface_name, changed_props, invalidated]
+                iface_name = msg.body[0] if msg.body else None
+                changed = msg.body[1] if len(msg.body) > 1 else {}
+                if iface_name == "org.bluez.MediaTransport1" and "Volume" in changed:
+                    vol_raw = changed["Volume"].value  # 0-127 uint16
+                    vol_pct = round(vol_raw / 127 * 100)
+                    logger.info("AVRCP transport volume: %d%% (raw %d)", vol_pct, vol_raw)
+                    self.event_bus.emit("mpris_command", {
+                        "command": "Volume",
+                        "detail": f"{vol_pct}%",
+                    })
+            return False  # don't consume
+        self.bus.add_message_handler(_dbus_msg_handler)
+
+        # Subscribe to BlueZ PropertiesChanged signals for transport volume
+        await self.bus.call(
+            Message(
+                destination="org.freedesktop.DBus",
+                path="/org/freedesktop/DBus",
+                interface="org.freedesktop.DBus",
+                member="AddMatch",
+                signature="s",
+                body=[
+                    "type='signal',"
+                    "sender='org.bluez',"
+                    "interface='org.freedesktop.DBus.Properties',"
+                    "member='PropertiesChanged',"
+                    "arg0='org.bluez.MediaTransport1'"
+                ],
+            )
+        )
 
         # 2. Initialize BlueZ adapter
         self.adapter = BluezAdapter(self.bus)
