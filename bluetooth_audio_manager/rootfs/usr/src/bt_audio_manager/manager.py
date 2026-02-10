@@ -37,6 +37,7 @@ class BluetoothAudioManager:
 
     def __init__(self, config: AppConfig):
         self.config = config
+        self._adapter_path = config.adapter_path
         self.bus: MessageBus | None = None
         self.adapter: BluezAdapter | None = None
         self.agent: PairingAgent | None = None
@@ -135,8 +136,9 @@ class BluetoothAudioManager:
                 )
             )
 
-        # 2. Initialize BlueZ adapter
-        self.adapter = BluezAdapter(self.bus)
+        # 2. Initialize BlueZ adapter (using configured adapter path)
+        logger.info("Using Bluetooth adapter: %s", self._adapter_path)
+        self.adapter = BluezAdapter(self.bus, self._adapter_path)
         await self.adapter.initialize()
 
         # 3. Register pairing agent
@@ -144,7 +146,7 @@ class BluetoothAudioManager:
         await self.agent.register()
 
         # 3b. Register AVRCP media player (receives speaker button commands)
-        self.media_player = AVRCPMediaPlayer(self.bus, self._on_avrcp_command)
+        self.media_player = AVRCPMediaPlayer(self.bus, self._on_avrcp_command, self._adapter_path)
         try:
             await self.media_player.register()
         except Exception as e:
@@ -293,7 +295,7 @@ class BluetoothAudioManager:
         if device:
             return device
 
-        device = BluezDevice(self.bus, address)
+        device = BluezDevice(self.bus, address, self._adapter_path)
         await device.initialize()
         device.on_disconnected(self._on_device_disconnected)
         device.on_connected(self._on_device_connected)
@@ -447,7 +449,7 @@ class BluetoothAudioManager:
 
         # Remove from BlueZ
         from .bluez.device import address_to_path
-        device_path = address_to_path(address)
+        device_path = address_to_path(address, self._adapter_path)
         await self.adapter.remove_device(device_path)
 
         # Remove from persistent store
@@ -492,6 +494,21 @@ class BluetoothAudioManager:
         if not self.pulse:
             return []
         return await self.pulse.list_bt_sinks()
+
+    async def list_adapters(self) -> list[dict]:
+        """List all Bluetooth adapters on the system.
+
+        Each adapter dict includes a flag indicating whether it's the
+        one this add-on is configured to use, and whether it appears to
+        be running HA's BLE scanning (Discovering=true).
+        """
+        if not self.bus:
+            return []
+        adapters = await BluezAdapter.list_all(self.bus)
+        for a in adapters:
+            a["selected"] = a["path"] == self._adapter_path
+            a["ble_scanning"] = a["discovering"] and not a["selected"]
+        return adapters
 
     # -- Sink state polling --
 

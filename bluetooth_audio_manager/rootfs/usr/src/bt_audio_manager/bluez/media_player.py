@@ -188,9 +188,15 @@ class AVRCPMediaPlayer:
     then register it with BlueZ.
     """
 
-    def __init__(self, bus: MessageBus, command_callback: Callable[[str, str], None]):
+    def __init__(
+        self,
+        bus: MessageBus,
+        command_callback: Callable[[str, str], None],
+        adapter_path: str = DEFAULT_ADAPTER_PATH,
+    ):
         self._bus = bus
         self._player = MPRISPlayerInterface(command_callback)
+        self._adapter_path = adapter_path
         self._registered = False
 
     async def register(self) -> None:
@@ -219,17 +225,17 @@ class AVRCPMediaPlayer:
             "CanControl": Variant("b", True),
         }
 
-        introspection = await self._bus.introspect(BLUEZ_SERVICE, DEFAULT_ADAPTER_PATH)
+        introspection = await self._bus.introspect(BLUEZ_SERVICE, self._adapter_path)
         proxy = self._bus.get_proxy_object(
-            BLUEZ_SERVICE, DEFAULT_ADAPTER_PATH, introspection
+            BLUEZ_SERVICE, self._adapter_path, introspection
         )
         media = proxy.get_interface(MEDIA_INTERFACE)
 
         await media.call_register_player(PLAYER_PATH, properties)
         self._registered = True
         logger.info(
-            "AVRCP media player registered at %s on bus %s",
-            PLAYER_PATH, self._bus.unique_name,
+            "AVRCP media player registered at %s on adapter %s (bus %s)",
+            PLAYER_PATH, self._adapter_path, self._bus.unique_name,
         )
 
         # Verify the player object is exported locally (no D-Bus round-trip;
@@ -253,9 +259,9 @@ class AVRCPMediaPlayer:
         if not self._registered:
             return
         try:
-            introspection = await self._bus.introspect(BLUEZ_SERVICE, DEFAULT_ADAPTER_PATH)
+            introspection = await self._bus.introspect(BLUEZ_SERVICE, self._adapter_path)
             proxy = self._bus.get_proxy_object(
-                BLUEZ_SERVICE, DEFAULT_ADAPTER_PATH, introspection
+                BLUEZ_SERVICE, self._adapter_path, introspection
             )
             media = proxy.get_interface(MEDIA_INTERFACE)
             await media.call_unregister_player(PLAYER_PATH)

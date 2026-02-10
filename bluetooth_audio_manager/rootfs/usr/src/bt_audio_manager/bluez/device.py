@@ -11,6 +11,7 @@ from dbus_next.errors import DBusError
 
 from .constants import (
     BLUEZ_SERVICE,
+    DEFAULT_ADAPTER_PATH,
     DEVICE_INTERFACE,
     PROPERTIES_INTERFACE,
 )
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 MEDIA_PLAYER_INTERFACE = "org.bluez.MediaPlayer1"
 
 
-def address_to_path(address: str, adapter_path: str = "/org/bluez/hci0") -> str:
+def address_to_path(address: str, adapter_path: str = DEFAULT_ADAPTER_PATH) -> str:
     """Convert a MAC address to a BlueZ D-Bus object path."""
     return f"{adapter_path}/dev_{address.replace(':', '_')}"
 
@@ -28,7 +29,7 @@ def address_to_path(address: str, adapter_path: str = "/org/bluez/hci0") -> str:
 class BluezDevice:
     """Wraps org.bluez.Device1 for pairing, connecting, and monitoring a device."""
 
-    def __init__(self, bus: MessageBus, address: str, adapter_path: str = "/org/bluez/hci0"):
+    def __init__(self, bus: MessageBus, address: str, adapter_path: str = DEFAULT_ADAPTER_PATH):
         self._bus = bus
         self._address = address
         self._path = address_to_path(address, adapter_path)
