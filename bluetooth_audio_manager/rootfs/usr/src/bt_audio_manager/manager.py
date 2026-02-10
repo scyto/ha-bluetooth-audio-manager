@@ -97,9 +97,12 @@ class BluetoothAudioManager:
                         vol_raw = changed["Volume"].value  # 0-127 uint16
                         vol_pct = round(vol_raw / 127 * 100)
                         logger.info("AVRCP transport volume: %d%% (raw %d)", vol_pct, vol_raw)
-                        entry = {"command": "Volume", "detail": f"{vol_pct}%", "ts": time.time()}
-                        self.recent_mpris.append(entry)
-                        self.event_bus.emit("mpris_command", entry)
+                        # Extract device address from path like /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX/...
+                        parts = msg.path.split("/")
+                        addr = next((p[4:].replace("_", ":") for p in parts if p.startswith("dev_")), "")
+                        entry = {"address": addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
+                        self.recent_avrcp.append(entry)
+                        self.event_bus.emit("avrcp_event", entry)
                 else:
                     # Log ALL other BlueZ signals (InterfacesAdded, etc.)
                     logger.info(
@@ -621,10 +624,13 @@ class BluetoothAudioManager:
 
     def _on_pa_volume_change(self, sink_name: str, volume: int, mute: bool) -> None:
         """Handle PulseAudio Bluetooth sink volume change (AVRCP Absolute Volume)."""
-        detail = f"{volume}% (muted)" if mute else f"{volume}%"
-        entry = {"command": "Volume", "detail": detail, "ts": time.time()}
-        self.recent_mpris.append(entry)
-        self.event_bus.emit("mpris_command", entry)
+        # Extract address from sink name like bluez_sink.XX_XX_XX_XX_XX_XX.a2dp_sink
+        parts = sink_name.split(".")
+        addr = parts[1].replace("_", ":") if len(parts) >= 2 else ""
+        value = f"{volume}% (muted)" if mute else f"{volume}%"
+        entry = {"address": addr, "property": "Volume", "value": value, "ts": time.time()}
+        self.recent_avrcp.append(entry)
+        self.event_bus.emit("avrcp_event", entry)
 
     def _on_avrcp_command(self, command: str, detail: str) -> None:
         """Handle MPRIS command from speaker buttons (via registered MPRIS player)."""
