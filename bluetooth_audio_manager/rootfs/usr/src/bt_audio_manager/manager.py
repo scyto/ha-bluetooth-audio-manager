@@ -150,6 +150,7 @@ class BluetoothAudioManager:
         self.pulse = PulseAudioManager()
         try:
             await self.pulse.connect()
+            self.pulse.on_volume_change(self._on_pa_volume_change)
             await self.pulse.start_event_monitor()
         except Exception as e:
             logger.warning("PulseAudio connection failed (will retry): %s", e)
@@ -527,6 +528,13 @@ class BluetoothAudioManager:
                 logger.debug("Transport property check attempt %d failed: %s", attempt + 1, e)
 
         logger.info("No MediaTransport1 found for %s after 3 attempts", address)
+
+    def _on_pa_volume_change(self, sink_name: str, volume: int, mute: bool) -> None:
+        """Handle PulseAudio Bluetooth sink volume change (AVRCP Absolute Volume)."""
+        detail = f"{volume}% (muted)" if mute else f"{volume}%"
+        entry = {"command": "Volume", "detail": detail, "ts": time.time()}
+        self.recent_mpris.append(entry)
+        self.event_bus.emit("mpris_command", entry)
 
     def _on_avrcp_command(self, command: str, detail: str) -> None:
         """Handle MPRIS command from speaker buttons (via registered MPRIS player)."""

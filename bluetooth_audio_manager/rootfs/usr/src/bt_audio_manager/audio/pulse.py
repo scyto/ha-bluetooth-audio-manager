@@ -31,8 +31,9 @@ class PulseAudioManager:
 
     def __init__(self):
         self._pulse: PulseAsync | None = None
+        self._server: str | None = None  # resolved PA server address
         self._subscribe_task: asyncio.Task | None = None
-        self._subscribe_proc: asyncio.subprocess.Process | None = None
+        self._volume_callback = None
 
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
@@ -43,9 +44,10 @@ class PulseAudioManager:
         if os.environ.get("PULSE_SERVER"):
             self._pulse = PulseAsync("bt-audio-manager")
             await self._pulse.connect()
+            self._server = os.environ["PULSE_SERVER"]
             logger.info(
                 "Connected to PulseAudio via PULSE_SERVER=%s",
-                os.environ["PULSE_SERVER"],
+                self._server,
             )
             return
 
@@ -56,6 +58,7 @@ class PulseAudioManager:
                 os.environ["PULSE_SERVER"] = server
                 self._pulse = PulseAsync("bt-audio-manager")
                 await self._pulse.connect()
+                self._server = server
                 logger.info("Connected to PulseAudio via %s", server)
                 return
             except Exception:
@@ -79,24 +82,26 @@ class PulseAudioManager:
             self._pulse.close()
             self._pulse = None
 
-    async def start_event_monitor(self) -> None:
-        """Run ``pactl subscribe`` in the background and log sink events.
+    def on_volume_change(self, callback) -> None:
+        """Register a callback for Bluetooth sink volume changes.
 
-        This lets us detect if PulseAudio sees volume changes that don't
-        appear as BlueZ D-Bus signals (AVRCP volume diagnosis).
+        Callback signature: ``callback(sink_name: str, volume: int, mute: bool)``
+        """
+        self._volume_callback = callback
+
+    async def start_event_monitor(self) -> None:
+        """Subscribe to PulseAudio sink events via pulsectl_asyncio.
+
+        Uses a dedicated second PulseAsync connection (the primary one
+        can't be shared because ``subscribe_events`` blocks it).
+        Detects AVRCP Absolute Volume changes on Bluetooth sinks.
         """
         if self._subscribe_task and not self._subscribe_task.done():
             return
         self._subscribe_task = asyncio.create_task(self._event_monitor_loop())
 
     async def stop_event_monitor(self) -> None:
-        """Stop the background ``pactl subscribe`` process."""
-        if self._subscribe_proc:
-            try:
-                self._subscribe_proc.terminate()
-            except ProcessLookupError:
-                pass
-            self._subscribe_proc = None
+        """Cancel the PulseAudio event subscription task."""
         if self._subscribe_task and not self._subscribe_task.done():
             self._subscribe_task.cancel()
             try:
@@ -106,35 +111,32 @@ class PulseAudioManager:
             self._subscribe_task = None
 
     async def _event_monitor_loop(self) -> None:
-        """Read lines from ``pactl subscribe`` and log sink-related events."""
+        """Subscribe to sink events and log Bluetooth volume changes."""
         try:
-            self._subscribe_proc = await asyncio.create_subprocess_exec(
-                "pactl", "subscribe",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            logger.info("pactl subscribe started (PID %s)", self._subscribe_proc.pid)
-            while True:
-                line = await self._subscribe_proc.stdout.readline()
-                if not line:
-                    break
-                text = line.decode(errors="replace").strip()
-                # Log all sink events (volume changes, state changes)
-                if "sink" in text.lower():
-                    logger.info("PA event: %s", text)
-                else:
-                    logger.debug("PA event: %s", text)
+            # Second connection dedicated to event subscription
+            async with PulseAsync("bt-audio-events") as pulse_events:
+                logger.info("PA event subscription started (sink events)")
+                async for event in pulse_events.subscribe_events("sink", "server"):
+                    if event.t == "change" and self._pulse:
+                        try:
+                            sink = await self._pulse.sink_info(event.index)
+                            if "bluez" in sink.name.lower():
+                                vol = round(sink.volume.value_flat * 100)
+                                logger.info(
+                                    "PA sink volume change: %s vol=%d%% mute=%s state=%s",
+                                    sink.name, vol, sink.mute,
+                                    getattr(sink.state, "name", sink.state),
+                                )
+                                if self._volume_callback:
+                                    self._volume_callback(sink.name, vol, sink.mute)
+                        except Exception as e:
+                            logger.debug("PA event handler error: %s", e)
+                    elif event.t in ("new", "remove"):
+                        logger.info("PA sink %s: index=%d", event.t, event.index)
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.debug("pactl subscribe error: %s", e)
-        finally:
-            if self._subscribe_proc:
-                try:
-                    self._subscribe_proc.terminate()
-                except ProcessLookupError:
-                    pass
-                self._subscribe_proc = None
+            logger.warning("PA event subscription error: %s", e)
 
     async def _pactl_sample_specs(self) -> dict[str, dict]:
         """Parse sample specs from ``pactl list sinks``.
