@@ -14,7 +14,7 @@ from typing import Callable
 from dbus_next import Variant
 from dbus_next.aio import MessageBus
 from dbus_next.errors import DBusError
-from dbus_next.service import ServiceInterface, method, dbus_property, signal
+from dbus_next.service import PropertyAccess, ServiceInterface, method, dbus_property, signal
 
 from .constants import BLUEZ_SERVICE, DEFAULT_ADAPTER_PATH, MEDIA_INTERFACE, PLAYER_PATH
 
@@ -92,7 +92,7 @@ class MPRISPlayerInterface(ServiceInterface):
 
     # -- Required MPRIS properties --
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def PlaybackStatus(self) -> "s":
         return self._playback_status
 
@@ -120,7 +120,7 @@ class MPRISPlayerInterface(ServiceInterface):
     def Shuffle(self, val: "b"):
         pass
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Metadata(self) -> "a{sv}":
         return {
             "xesam:title": Variant("s", "Home Assistant Audio"),
@@ -140,39 +140,39 @@ class MPRISPlayerInterface(ServiceInterface):
             logger.info("AVRCP volume: %.0f%%", self._volume * 100)
             self._callback("Volume")
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Position(self) -> "x":
         return 0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def MinimumRate(self) -> "d":
         return 1.0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def MaximumRate(self) -> "d":
         return 1.0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanGoNext(self) -> "b":
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanGoPrevious(self) -> "b":
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanPlay(self) -> "b":
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanPause(self) -> "b":
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanSeek(self) -> "b":
         return False
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanControl(self) -> "b":
         return True
 
