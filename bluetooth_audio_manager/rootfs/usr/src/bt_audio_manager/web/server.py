@@ -37,7 +37,10 @@ class WebServer:
 
     async def _serve_index(self, request: web.Request) -> web.FileResponse:
         """Serve the main UI page."""
-        return web.FileResponse(STATIC_DIR / "index.html")
+        return web.FileResponse(
+            STATIC_DIR / "index.html",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     async def start(self) -> None:
         """Start the web server."""

@@ -7,10 +7,20 @@ When BlueZ connects an A2DP device, PulseAudio's module-bluez5-discover
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 
 from pulsectl_asyncio import PulseAsync
 
 logger = logging.getLogger(__name__)
+
+# Known PulseAudio server addresses in HAOS (tried in order)
+_FALLBACK_SERVERS = [
+    "unix:/run/pulse-socket",
+    "unix:/data/pulse-socket",
+    "tcp:172.30.32.1:4713",
+    "tcp:hassio_audio:4713",
+]
 
 
 class PulseAudioManager:
@@ -22,12 +32,40 @@ class PulseAudioManager:
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
 
-        The PULSE_SERVER environment variable is set automatically by the
-        HA Supervisor when audio: true is configured in config.yaml.
+        Tries PULSE_SERVER env var first, then known HAOS socket paths.
         """
-        self._pulse = PulseAsync("bt-audio-manager")
-        await self._pulse.connect()
-        logger.info("Connected to PulseAudio server")
+        # If PULSE_SERVER is set, try it directly
+        if os.environ.get("PULSE_SERVER"):
+            self._pulse = PulseAsync("bt-audio-manager")
+            await self._pulse.connect()
+            logger.info(
+                "Connected to PulseAudio via PULSE_SERVER=%s",
+                os.environ["PULSE_SERVER"],
+            )
+            return
+
+        # Try fallback addresses
+        logger.info("PULSE_SERVER not set, probing known HAOS audio paths...")
+        for server in _FALLBACK_SERVERS:
+            try:
+                os.environ["PULSE_SERVER"] = server
+                self._pulse = PulseAsync("bt-audio-manager")
+                await self._pulse.connect()
+                logger.info("Connected to PulseAudio via %s", server)
+                return
+            except Exception:
+                logger.debug("PulseAudio not available at %s", server)
+                if self._pulse:
+                    self._pulse.close()
+                    self._pulse = None
+
+        # None worked — clean up and raise
+        os.environ.pop("PULSE_SERVER", None)
+        raise ConnectionError(
+            "PulseAudio not reachable at any known address. "
+            "Check that 'audio: true' is set in config.yaml and "
+            "the HA audio service is running."
+        )
 
     async def disconnect(self) -> None:
         """Disconnect from PulseAudio."""
