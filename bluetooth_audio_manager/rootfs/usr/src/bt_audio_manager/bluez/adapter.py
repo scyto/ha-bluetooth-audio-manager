@@ -187,3 +187,41 @@ class BluezAdapter:
     @property
     def adapter_path(self) -> str:
         return self._adapter_path
+
+    @staticmethod
+    async def list_all(bus: MessageBus) -> list[dict]:
+        """Enumerate all Bluetooth adapters on the system.
+
+        Returns a list of dicts with adapter info including path, address,
+        name, powered state, and whether discovery is active (indicating
+        HA BLE scanning).
+        """
+        introspection = await bus.introspect(BLUEZ_SERVICE, "/")
+        proxy = bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
+        obj_manager = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+        objects = await obj_manager.call_get_managed_objects()
+
+        adapters = []
+        for path, interfaces in objects.items():
+            if ADAPTER_INTERFACE not in interfaces:
+                continue
+            props = interfaces[ADAPTER_INTERFACE]
+
+            def _val(key, _props=props):
+                v = _props.get(key)
+                if v is None:
+                    return None
+                return v.value if hasattr(v, "value") else v
+
+            adapters.append({
+                "path": path,
+                "name": path.rsplit("/", 1)[-1],  # e.g. "hci0"
+                "address": _val("Address") or "unknown",
+                "alias": _val("Alias") or "",
+                "powered": bool(_val("Powered")),
+                "discovering": bool(_val("Discovering")),
+            })
+
+        # Sort by path so hci0 comes first
+        adapters.sort(key=lambda a: a["path"])
+        return adapters

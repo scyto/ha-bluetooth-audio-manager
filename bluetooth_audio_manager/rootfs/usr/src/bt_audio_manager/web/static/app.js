@@ -369,6 +369,55 @@ function startPolling() {
   pollTimer = setInterval(pollState, 3000);
 }
 
+// -- Adapter rendering --
+
+function renderAdapters(adapters) {
+  const list = $("#adapters-list");
+
+  if (!adapters || adapters.length === 0) {
+    list.innerHTML =
+      '<p class="placeholder">No Bluetooth adapters found.</p>';
+    return;
+  }
+
+  list.innerHTML = adapters
+    .map((a) => {
+      const selectedBadge = a.selected
+        ? '<span class="device-status status-connected">Selected</span>'
+        : "";
+      const bleBadge = a.ble_scanning
+        ? '<span class="device-status status-paired">HA BLE Scanning</span>'
+        : "";
+      const poweredLabel = a.powered ? "Powered" : "Off";
+      const poweredClass = a.powered ? "status-connected" : "status-discovered";
+
+      return `
+        <div class="sink-card">
+          <div>
+            <div class="sink-name">${escapeHtml(a.name)}</div>
+            <div class="sink-description">${escapeHtml(a.address)}</div>
+            <div class="sink-details">${escapeHtml(a.alias || "")}</div>
+          </div>
+          <div>
+            <span class="device-status ${poweredClass}">${poweredLabel}</span>
+            ${selectedBadge}
+            ${bleBadge}
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+async function loadAdapters() {
+  try {
+    const data = await apiGet("/api/adapters");
+    renderAdapters(data.adapters);
+  } catch (e) {
+    console.warn("Failed to load adapters:", e.message);
+  }
+}
+
 // -- Init --
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -378,10 +427,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // Poll for state updates every 3 seconds
   startPolling();
 
-  // Show version in footer
+  // Load adapter info (once at startup)
+  loadAdapters();
+
+  // Show version and adapter in footer
   apiGet("/api/info")
     .then((data) => {
-      $("#version-label").textContent = `v${data.version}`;
+      $("#version-label").textContent = `v${data.version} (${data.adapter})`;
     })
     .catch(() => {});
 });

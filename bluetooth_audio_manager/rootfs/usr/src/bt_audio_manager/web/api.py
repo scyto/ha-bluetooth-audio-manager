@@ -69,11 +69,24 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
 
     @routes.get("/api/info")
     async def info(request: web.Request) -> web.Response:
-        """Return add-on version info for the UI."""
+        """Return add-on version and adapter info for the UI."""
         import os
+        adapter_name = manager._adapter_path.rsplit("/", 1)[-1]
         return web.json_response({
             "version": os.environ.get("BUILD_VERSION", "dev"),
+            "adapter": adapter_name,
+            "adapter_path": manager._adapter_path,
         })
+
+    @routes.get("/api/adapters")
+    async def list_adapters(request: web.Request) -> web.Response:
+        """List all Bluetooth adapters on the system."""
+        try:
+            adapters = await manager.list_adapters()
+            return web.json_response({"adapters": adapters})
+        except Exception as e:
+            logger.error("Failed to list adapters: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
 
     @routes.get("/api/devices")
     async def list_devices(request: web.Request) -> web.Response:

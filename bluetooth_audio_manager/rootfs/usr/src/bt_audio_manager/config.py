@@ -25,6 +25,21 @@ class AppConfig:
     keep_alive_enabled: bool = False
     keep_alive_method: str = "infrasound"
     scan_duration_seconds: int = 15
+    bt_adapter: str = "auto"
+
+    @property
+    def adapter_path(self) -> str:
+        """Resolve the bt_adapter setting to a BlueZ D-Bus adapter path.
+
+        "auto" → "/org/bluez/hci0" (default first adapter).
+        "hci1" → "/org/bluez/hci1", etc.
+        """
+        if self.bt_adapter == "auto":
+            return "/org/bluez/hci0"
+        name = self.bt_adapter
+        if name.startswith("/org/bluez/"):
+            return name
+        return f"/org/bluez/{name}"
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -44,6 +59,7 @@ class AppConfig:
                 keep_alive_enabled=data.get("keep_alive_enabled", False),
                 keep_alive_method=data.get("keep_alive_method", "infrasound"),
                 scan_duration_seconds=data.get("scan_duration_seconds", 15),
+                bt_adapter=data.get("bt_adapter", "auto"),
             )
         except (json.JSONDecodeError, KeyError) as e:
             logger.error("Failed to parse options: %s, using defaults", e)
