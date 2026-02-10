@@ -16,6 +16,14 @@ RUN mkdir -p /data
 
 COPY rootfs /
 
+# Fix permissions — COPY from macOS/git can strip execute bits, and
+# overlapping directory metadata can affect the base image's /init
+RUN chmod +x /init \
+    && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/run \
+    && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/finish \
+    && chmod +x /etc/cont-init.d/01-verify-dbus.sh \
+    && chmod +x /etc/cont-init.d/02-init-storage.sh
+
 ENV PYTHONPATH="/usr/src"
 
 ARG BUILD_ARCH
