@@ -57,16 +57,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
+      - name: Extract version from config.yaml
         id: version
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-            echo "is_release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=dev" >> "$GITHUB_OUTPUT"
-            echo "is_release=false" >> "$GITHUB_OUTPUT"
-          fi
+          # HA Supervisor pulls {image}:{version} — the tag MUST match
+          # the version field in config.yaml
+          VERSION=$(grep '^version:' bluetooth_audio_manager/config.yaml | sed 's/version: *"\?\([^"]*\)"\?/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
