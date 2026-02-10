@@ -61,9 +61,8 @@ class BluetoothAudioManager:
         self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         logger.info("Connected to system D-Bus")
 
-        # Log incoming D-Bus method calls (debug) and capture transport
-        # volume changes (AVRCP Absolute Volume comes as PropertiesChanged
-        # on org.bluez.MediaTransport1, not as an MPRIS method call).
+        # Capture all D-Bus activity from BlueZ so we can diagnose
+        # which signals/methods arrive for button presses, volume, etc.
         def _dbus_msg_handler(msg: Message) -> bool:
             if msg.message_type == MessageType.METHOD_CALL:
                 logger.debug(
@@ -72,44 +71,51 @@ class BluetoothAudioManager:
                 )
             elif (
                 msg.message_type == MessageType.SIGNAL
-                and msg.member == "PropertiesChanged"
                 and msg.path
                 and msg.path.startswith("/org/bluez/")
-                and msg.body
             ):
-                # body = [interface_name, changed_props, invalidated]
-                iface_name = msg.body[0] if msg.body else None
-                changed = msg.body[1] if len(msg.body) > 1 else {}
-                if iface_name == "org.bluez.MediaTransport1" and "Volume" in changed:
-                    vol_raw = changed["Volume"].value  # 0-127 uint16
-                    vol_pct = round(vol_raw / 127 * 100)
-                    logger.info("AVRCP transport volume: %d%% (raw %d)", vol_pct, vol_raw)
-                    entry = {"command": "Volume", "detail": f"{vol_pct}%", "ts": time.time()}
-                    self.recent_mpris.append(entry)
-                    self.event_bus.emit("mpris_command", entry)
-                elif iface_name == "org.bluez.MediaTransport1":
-                    # Log any other transport property changes for debugging
-                    logger.debug("MediaTransport1 changed: %s", list(changed.keys()))
+                if msg.member == "PropertiesChanged" and msg.body:
+                    # body = [interface_name, changed_props, invalidated]
+                    iface_name = msg.body[0] if msg.body else None
+                    changed = msg.body[1] if len(msg.body) > 1 else {}
+                    prop_names = list(changed.keys()) if isinstance(changed, dict) else []
+
+                    # Log ALL BlueZ property changes at INFO for diagnosis
+                    logger.info(
+                        "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
+                        iface_name, prop_names, msg.path,
+                    )
+
+                    if iface_name == "org.bluez.MediaTransport1" and "Volume" in changed:
+                        vol_raw = changed["Volume"].value  # 0-127 uint16
+                        vol_pct = round(vol_raw / 127 * 100)
+                        logger.info("AVRCP transport volume: %d%% (raw %d)", vol_pct, vol_raw)
+                        entry = {"command": "Volume", "detail": f"{vol_pct}%", "ts": time.time()}
+                        self.recent_mpris.append(entry)
+                        self.event_bus.emit("mpris_command", entry)
+                else:
+                    # Log ALL other BlueZ signals (InterfacesAdded, etc.)
+                    logger.info(
+                        "BlueZ signal: %s.%s path=%s",
+                        msg.interface, msg.member, msg.path,
+                    )
             return False  # don't consume
         self.bus.add_message_handler(_dbus_msg_handler)
 
-        # Subscribe to BlueZ PropertiesChanged signals for transport volume
-        await self.bus.call(
-            Message(
-                destination="org.freedesktop.DBus",
-                path="/org/freedesktop/DBus",
-                interface="org.freedesktop.DBus",
-                member="AddMatch",
-                signature="s",
-                body=[
-                    "type='signal',"
-                    "sender='org.bluez',"
-                    "interface='org.freedesktop.DBus.Properties',"
-                    "member='PropertiesChanged',"
-                    "arg0='org.bluez.MediaTransport1'"
-                ],
+        # Subscribe to ALL BlueZ signals (broad match for diagnosis)
+        for match_rule in [
+            "type='signal',sender='org.bluez'",
+        ]:
+            await self.bus.call(
+                Message(
+                    destination="org.freedesktop.DBus",
+                    path="/org/freedesktop/DBus",
+                    interface="org.freedesktop.DBus",
+                    member="AddMatch",
+                    signature="s",
+                    body=[match_rule],
+                )
             )
-        )
 
         # 2. Initialize BlueZ adapter
         self.adapter = BluezAdapter(self.bus)
