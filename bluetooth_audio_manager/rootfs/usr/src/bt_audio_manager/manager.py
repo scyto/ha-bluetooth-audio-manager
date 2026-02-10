@@ -49,7 +49,10 @@ class BluetoothAudioManager:
         self._web_server = None
         self.event_bus = EventBus()
         self._sink_poll_task: asyncio.Task | None = None
+        self._volume_poll_task: asyncio.Task | None = None
         self._last_sink_snapshot: str = ""
+        self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
+        self._last_polled_volume: dict[str, int] = {}    # addr → raw 0-127
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
         # Ring buffers so SSE clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
@@ -100,6 +103,7 @@ class BluetoothAudioManager:
                         # Extract device address from path like /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX/...
                         parts = msg.path.split("/")
                         addr = next((p[4:].replace("_", ":") for p in parts if p.startswith("dev_")), "")
+                        self._last_signaled_volume[addr] = vol_raw
                         entry = {"address": addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
                         self.recent_avrcp.append(entry)
                         self.event_bus.emit("avrcp_event", entry)
@@ -207,6 +211,9 @@ class BluetoothAudioManager:
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
 
+        # 11. Start diagnostic volume poller (detects BlueZ AVRCP volume signal loss)
+        self._volume_poll_task = asyncio.create_task(self._volume_poll_loop())
+
         logger.info("Bluetooth Audio Manager started successfully")
 
     async def shutdown(self) -> None:
@@ -218,6 +225,14 @@ class BluetoothAudioManager:
             self._sink_poll_task.cancel()
             try:
                 await self._sink_poll_task
+            except asyncio.CancelledError:
+                pass
+
+        # Stop volume diagnostic polling
+        if self._volume_poll_task and not self._volume_poll_task.done():
+            self._volume_poll_task.cancel()
+            try:
+                await self._volume_poll_task
             except asyncio.CancelledError:
                 pass
 
@@ -463,6 +478,81 @@ class BluetoothAudioManager:
                 return
             except Exception as e:
                 logger.debug("Sink poll error: %s", e)
+
+    VOLUME_POLL_INTERVAL = 5  # seconds between MediaTransport1 volume polls
+
+    async def _volume_poll_loop(self) -> None:
+        """Diagnostic: periodically read MediaTransport1 Volume via GetManagedObjects.
+
+        Compares polled value with last PropertiesChanged signal to detect
+        whether BlueZ has the volume but isn't signaling changes.
+        """
+        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+
+        while True:
+            try:
+                await asyncio.sleep(self.VOLUME_POLL_INTERVAL)
+                if not self.bus or not self.managed_devices:
+                    continue
+
+                intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+                proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+                obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+                objects = await obj_mgr.call_get_managed_objects()
+
+                # Check each managed device for a MediaTransport1
+                for addr in list(self.managed_devices):
+                    dev_fragment = addr.replace(":", "_").upper()
+                    found_transport = False
+
+                    for path, ifaces in objects.items():
+                        if dev_fragment not in path:
+                            continue
+                        if "org.bluez.MediaTransport1" not in ifaces:
+                            continue
+                        found_transport = True
+                        tp = ifaces["org.bluez.MediaTransport1"]
+                        if "Volume" not in tp:
+                            logger.debug("DIAG: MediaTransport1 for %s has no Volume property", addr)
+                            break
+
+                        vol_raw = tp["Volume"].value if hasattr(tp["Volume"], "value") else tp["Volume"]
+                        vol_pct = round(vol_raw / 127 * 100)
+                        prev_polled = self._last_polled_volume.get(addr)
+                        last_sig = self._last_signaled_volume.get(addr)
+
+                        if prev_polled is not None and vol_raw != prev_polled:
+                            # Volume changed since last poll
+                            if last_sig is None or last_sig != vol_raw:
+                                logger.info(
+                                    "DIAG: Volume changed to %d%% (raw %d) for %s via poll "
+                                    "— no PropertiesChanged signal received (last signal raw=%s)",
+                                    vol_pct, vol_raw, addr, last_sig,
+                                )
+                                # Emit as AVRCP event so UI shows it
+                                entry = {"address": addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
+                                self.recent_avrcp.append(entry)
+                                self.event_bus.emit("avrcp_event", entry)
+                            else:
+                                logger.debug(
+                                    "DIAG: Volume poll %d%% for %s matches signal", vol_pct, addr,
+                                )
+                        elif prev_polled is not None:
+                            logger.debug(
+                                "DIAG: Volume poll unchanged %d%% for %s (signal raw=%s)",
+                                vol_pct, addr, last_sig,
+                            )
+
+                        self._last_polled_volume[addr] = vol_raw
+                        break
+
+                    if not found_transport:
+                        logger.debug("DIAG: No MediaTransport1 for %s", addr)
+
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.debug("DIAG: Volume poll error: %s", e)
 
     # -- SSE broadcast helpers --
 
