@@ -101,11 +101,19 @@ class PulseAudioManager:
                     raw_rate = getattr(sample_spec, "rate", None)
                     raw_ch = getattr(sample_spec, "channels", None)
                     raw_fmt = getattr(sample_spec, "format", None)
-                    sample_rate = int(raw_rate) if raw_rate is not None else None
-                    channels = int(raw_ch) if raw_ch is not None else None
+                    # Validate ctypes values — during sink setup the struct
+                    # may contain garbage from uninitialized memory.
+                    if raw_rate is not None:
+                        r = int(raw_rate)
+                        if 8000 <= r <= 192000:
+                            sample_rate = r
+                    if raw_ch is not None:
+                        c = int(raw_ch)
+                        if 1 <= c <= 8:
+                            channels = c
                     if raw_fmt is not None:
-                        fmt_int = int(raw_fmt)
-                        format_name = _PA_FORMATS.get(fmt_int, str(fmt_int))
+                        f = int(raw_fmt)
+                        format_name = _PA_FORMATS.get(f)
 
                 bt_sinks.append(
                     {
