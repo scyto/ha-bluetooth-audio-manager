@@ -247,6 +247,16 @@ class BluezDevice:
         await self._device_iface.call_connect_profile(uuid)
         logger.info("ConnectProfile %s on %s succeeded", uuid, self._address)
 
+    async def disconnect_profile(self, uuid: str) -> None:
+        """Disconnect a specific Bluetooth profile by UUID.
+
+        Tears down a single profile (e.g. A2DP) without dropping the
+        entire device connection.
+        """
+        logger.info("DisconnectProfile %s on %s...", uuid, self._address)
+        await self._device_iface.call_disconnect_profile(uuid)
+        logger.info("DisconnectProfile %s on %s succeeded", uuid, self._address)
+
     async def get_uuids(self) -> list[str]:
         """Get the list of service UUIDs advertised by the device."""
         try:

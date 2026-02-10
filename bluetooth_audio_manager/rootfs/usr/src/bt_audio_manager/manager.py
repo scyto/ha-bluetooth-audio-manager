@@ -624,62 +624,36 @@ class BluetoothAudioManager:
                 logger.debug("DIAG: Volume poll error: %s", e)
 
     async def _renegotiate_a2dp(self, address: str) -> None:
-        """Force A2DP re-negotiation by disconnecting and letting the
-        speaker auto-reconnect, then adding A2DP via ConnectProfile.
+        """Force A2DP re-negotiation to restore AVRCP Absolute Volume.
 
-        Dual-mode speakers auto-reconnect via BLE after disconnect.
-        Calling ConnectProfile(A2DP_SINK) during that window gets
-        br-connection-canceled.  Instead we wait for the speaker to
-        settle on a stable connection (even if BLE-only), then layer
-        A2DP on top with ConnectProfile.
+        Lightweight approach: cycle just the A2DP profile via
+        DisconnectProfile + ConnectProfile.  This tears down the stale
+        transport and re-establishes it with fresh AVRCP negotiation,
+        without dropping the whole device connection.
 
-        Guards with _connecting + _suppress_reconnect to prevent
-        _on_device_connected_async and the reconnect service from racing.
+        Guards with _connecting to prevent _on_device_connected_async
+        from racing with _ensure_a2dp_transport.
         """
         from .bluez.constants import A2DP_SINK_UUID
 
         device = self.managed_devices.get(address)
         if not device:
             return
-        self._broadcast_status(f"Fixing volume control for {address} — reconnecting audio...")
+        self._broadcast_status(f"Fixing volume control for {address}...")
         self._connecting.add(address)
-        self._suppress_reconnect.add(address)
         try:
-            logger.info("AVRCP renegotiation: disconnecting %s...", address)
-            await device.disconnect()
+            # Tear down just the A2DP profile (drops stale transport)
+            logger.info("AVRCP renegotiation: disconnecting A2DP profile for %s...", address)
+            try:
+                await device.disconnect_profile(A2DP_SINK_UUID)
+            except Exception as e:
+                logger.info("DisconnectProfile A2DP for %s: %s (continuing)", address, e)
 
-            # Wait for device to auto-reconnect and stabilize.
-            # Dual-mode speakers often LE-bounce (connect → disconnect →
-            # reconnect) before settling.  We need a stable connection
-            # for ≥3s before proceeding.
-            logger.info("AVRCP renegotiation: waiting for %s to reconnect...", address)
-            self._broadcast_status(f"Waiting for {address} to reconnect...")
-            stable_since: float | None = None
-            connected = False
-            for _ in range(60):  # up to 30 seconds
-                await asyncio.sleep(0.5)
-                try:
-                    is_conn = await device.is_connected()
-                except Exception:
-                    is_conn = False
+            await asyncio.sleep(2)
 
-                if is_conn:
-                    if stable_since is None:
-                        stable_since = time.time()
-                    elif time.time() - stable_since > 3:
-                        connected = True
-                        break
-                else:
-                    stable_since = None  # reset on disconnect
-
-            if not connected:
-                logger.warning("AVRCP renegotiation: %s did not reconnect within 30s", address)
-                self._broadcast_status(f"Device {address} did not reconnect — try manual reconnect")
-                await asyncio.sleep(3)
-                return
-
-            logger.info("AVRCP renegotiation: %s reconnected, adding A2DP profile...", address)
-            self._broadcast_status(f"Re-establishing audio profile for {address}...")
+            # Re-establish A2DP — forces fresh AVRCP negotiation
+            logger.info("AVRCP renegotiation: reconnecting A2DP profile for %s...", address)
+            self._broadcast_status(f"Re-establishing audio for {address}...")
             await device.connect_profile(A2DP_SINK_UUID)
 
             # Give BlueZ time to set up transport + AVRCP
@@ -699,7 +673,6 @@ class BluetoothAudioManager:
             await asyncio.sleep(3)
         finally:
             self._connecting.discard(address)
-            self._suppress_reconnect.discard(address)
             self.event_bus.emit("status", {"message": ""})
             await self._broadcast_all()
 
