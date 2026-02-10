@@ -22,6 +22,7 @@ _BLUEZ_ERROR_MAP = {
     "Not Ready": "Bluetooth adapter is not ready. Try again in a moment.",
     "Connection refused": "Device refused the connection. Is it in pairing mode?",
     "br-connection-canceled": "Connection was canceled (device may have been busy).",
+    "br-connection-busy": "A connection attempt is already in progress. Please wait.",
     "le-connection-abort-by-local": "Connection aborted locally.",
     "Software caused connection abort": "Connection dropped unexpectedly. Try again.",
     "Host is down": "Device is not reachable. Make sure it is powered on and nearby.",

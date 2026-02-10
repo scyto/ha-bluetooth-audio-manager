@@ -53,6 +53,9 @@ class BluetoothAudioManager:
         self._last_sink_snapshot: str = ""
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_polled_volume: dict[str, int] = {}    # addr → raw 0-127
+        self._device_connect_time: dict[str, float] = {}  # addr → time.time()
+        self._volume_renegotiated: set[str] = set()  # addrs where renegotiation was attempted
+        self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
         # Ring buffers so SSE clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
@@ -321,52 +324,75 @@ class BluetoothAudioManager:
 
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
+        # If another connection attempt is already in progress, wait for it
+        if address in self._connecting:
+            logger.info("Connection already in progress for %s, waiting...", address)
+            self._broadcast_status(f"Waiting for connection to {address}...")
+            for _ in range(60):
+                await asyncio.sleep(0.5)
+                if address not in self._connecting:
+                    break
+            device = self.managed_devices.get(address)
+            if device and await device.is_connected():
+                if self.pulse:
+                    sink = await self.pulse.get_sink_for_address(address)
+                    if sink:
+                        await self._broadcast_all()
+                        return True
+            await self._broadcast_all()
+            return False
+
         # Cancel any pending auto-reconnect to avoid racing
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
         # Clear any disconnect suppression (user wants to connect now)
         self._suppress_reconnect.discard(address)
         self._broadcast_status(f"Connecting to {address}...")
-        device = await self._get_or_create_device(address)
 
-        # Skip redundant BlueZ connect if already connected, but still
-        # wait for services and A2DP sink (e.g. after pairing auto-connect)
-        already_connected = False
+        self._connecting.add(address)
         try:
-            already_connected = await device.is_connected()
-        except Exception:
-            pass
+            device = await self._get_or_create_device(address)
 
-        if already_connected:
-            logger.info("Device %s already connected, waiting for services/sink", address)
-        else:
-            await device.connect()
+            # Skip redundant BlueZ connect if already connected, but still
+            # wait for services and A2DP sink (e.g. after pairing auto-connect)
+            already_connected = False
+            try:
+                already_connected = await device.is_connected()
+            except Exception:
+                pass
 
-        self._broadcast_status(f"Waiting for services on {address}...")
-        await device.wait_for_services(timeout=10)
+            if already_connected:
+                logger.info("Device %s already connected, waiting for services/sink", address)
+            else:
+                await device.connect()
 
-        # Try to subscribe to AVRCP media player signals
-        try:
-            await device.watch_media_player()
-        except Exception as e:
-            logger.debug("AVRCP watch failed for %s: %s", address, e)
+            self._broadcast_status(f"Waiting for services on {address}...")
+            await device.wait_for_services(timeout=10)
 
-        # Verify PulseAudio sink appeared
-        if self.pulse:
-            self._broadcast_status(f"Waiting for A2DP sink for {address}...")
-            sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
-            if sink_name:
-                if self.keepalive:
-                    self.keepalive.set_target_sink(sink_name)
+            # Try to subscribe to AVRCP media player signals
+            try:
+                await device.watch_media_player()
+            except Exception as e:
+                logger.debug("AVRCP watch failed for %s: %s", address, e)
+
+            # Verify PulseAudio sink appeared
+            if self.pulse:
+                self._broadcast_status(f"Waiting for A2DP sink for {address}...")
+                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
+                if sink_name:
+                    if self.keepalive:
+                        self.keepalive.set_target_sink(sink_name)
+                    await self._broadcast_all()
+                    return True
+                logger.warning("A2DP sink for %s did not appear in PulseAudio", address)
                 await self._broadcast_all()
-                return True
-            logger.warning("A2DP sink for %s did not appear in PulseAudio", address)
-            await self._broadcast_all()
-            return False
+                return False
 
-        # PulseAudio not available — connection may still work at BlueZ level
-        await self._broadcast_all()
-        return await device.is_connected()
+            # PulseAudio not available — connection may still work at BlueZ level
+            await self._broadcast_all()
+            return await device.is_connected()
+        finally:
+            self._connecting.discard(address)
 
     async def disconnect_device(self, address: str) -> None:
         """Disconnect a device without removing it from the store."""
@@ -544,6 +570,35 @@ class BluetoothAudioManager:
                             )
 
                         self._last_polled_volume[addr] = vol_raw
+
+                        # -- AVRCP volume renegotiation checks --
+                        if addr not in self._volume_renegotiated:
+                            needs_renegotiation = False
+                            connect_time = self._device_connect_time.get(addr)
+
+                            # Check A: transport missing Endpoint (stale/degraded)
+                            if "Endpoint" not in tp:
+                                logger.info(
+                                    "DIAG: Transport for %s has no Endpoint — stale transport, "
+                                    "triggering AVRCP renegotiation", addr,
+                                )
+                                needs_renegotiation = True
+
+                            # Check B: no Volume signal within 15s of connection
+                            elif (connect_time
+                                  and time.time() - connect_time > 15
+                                  and addr not in self._last_signaled_volume):
+                                logger.info(
+                                    "DIAG: No AVRCP volume signal for %s after %.0fs "
+                                    "— triggering renegotiation",
+                                    addr, time.time() - connect_time,
+                                )
+                                needs_renegotiation = True
+
+                            if needs_renegotiation:
+                                self._volume_renegotiated.add(addr)
+                                asyncio.ensure_future(self._renegotiate_a2dp(addr))
+
                         break
 
                     if not found_transport:
@@ -553,6 +608,31 @@ class BluetoothAudioManager:
                 return
             except Exception as e:
                 logger.debug("DIAG: Volume poll error: %s", e)
+
+    async def _renegotiate_a2dp(self, address: str) -> None:
+        """Force A2DP disconnect/reconnect to re-negotiate AVRCP Absolute Volume.
+
+        Called when the volume poll loop detects that AVRCP volume signals
+        aren't arriving (stale transport or missing initial notification).
+        Only attempted once per connection to avoid loops.
+        """
+        self._broadcast_status(f"Re-establishing audio link for {address}...")
+        device = self.managed_devices.get(address)
+        if not device:
+            return
+        try:
+            logger.info("AVRCP renegotiation: disconnecting %s...", address)
+            await device.disconnect()
+            await asyncio.sleep(2)
+            logger.info("AVRCP renegotiation: reconnecting %s...", address)
+            await device.connect()
+            await device.wait_for_services(timeout=10)
+            await self._ensure_a2dp_transport(address)
+        except Exception as e:
+            logger.warning("AVRCP renegotiation failed for %s: %s", address, e)
+        finally:
+            self.event_bus.emit("status", {"message": ""})
+            await self._broadcast_all()
 
     # -- SSE broadcast helpers --
 
@@ -584,6 +664,12 @@ class BluetoothAudioManager:
 
     def _on_device_disconnected(self, address: str) -> None:
         """Handle device disconnection event."""
+        # Clean up volume tracking state
+        self._device_connect_time.pop(address, None)
+        self._last_polled_volume.pop(address, None)
+        self._last_signaled_volume.pop(address, None)
+        self._volume_renegotiated.discard(address)
+
         if address in self._suppress_reconnect:
             # User-initiated disconnect — don't auto-reconnect
             self._suppress_reconnect.discard(address)
@@ -594,6 +680,11 @@ class BluetoothAudioManager:
 
     def _on_device_connected(self, address: str) -> None:
         """Handle device connection event (D-Bus signal)."""
+        # Track connection time for AVRCP volume renegotiation checks
+        self._device_connect_time[address] = time.time()
+        self._volume_renegotiated.discard(address)
+        self._last_signaled_volume.pop(address, None)
+        self._last_polled_volume.pop(address, None)
         asyncio.ensure_future(self._on_device_connected_async(address))
 
     async def _on_device_connected_async(self, address: str) -> None:
@@ -606,6 +697,11 @@ class BluetoothAudioManager:
                 await device.watch_media_player()
             except Exception as e:
                 logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
+
+        # Skip A2DP transport setup if a manual connect is already handling it
+        if address in self._connecting:
+            logger.debug("Skipping auto A2DP setup for %s (manual connect in progress)", address)
+            return
 
         # Check/activate A2DP transport (may need ConnectProfile)
         await self._ensure_a2dp_transport(address)
