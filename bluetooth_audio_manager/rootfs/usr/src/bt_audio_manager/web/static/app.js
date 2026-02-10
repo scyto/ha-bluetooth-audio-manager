@@ -138,7 +138,7 @@ function renderDevices(devices) {
           <div class="device-info">
             <span class="device-name">${escapeHtml(d.name)}</span>
             <span class="device-status ${statusClass}">${statusText}${connDetail}</span>
-            <div class="device-address">${escapeHtml(d.address)}${rssiDisplay}</div>
+            <div class="device-address">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
             ${profiles ? `<div class="device-profiles">${escapeHtml(profiles)}</div>` : ""}
           </div>
           <div class="device-actions">${actions}</div>

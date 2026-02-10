@@ -154,9 +154,13 @@ class BluezAdapter:
                     has_transport = True
                     break
 
+            # Extract adapter name from path: /org/bluez/hci0/dev_XX → hci0
+            adapter_name = path.split("/")[3] if len(path.split("/")) > 3 else "unknown"
+
             devices.append(
                 {
                     "path": path,
+                    "adapter": adapter_name,
                     "address": address_variant.value if address_variant else "unknown",
                     "name": name_variant.value if name_variant else "Unknown Device",
                     "paired": paired_variant.value if paired_variant else False,
@@ -177,6 +181,38 @@ class BluezAdapter:
             logger.info("Removed device %s", device_path)
         except DBusError as e:
             logger.warning("Failed to remove device %s: %s", device_path, e)
+
+    @staticmethod
+    async def remove_device_any_adapter(bus: MessageBus, address: str) -> bool:
+        """Find and remove a device from whichever adapter owns it.
+
+        Searches all adapters via ObjectManager for a device with the given
+        MAC address and calls RemoveDevice on the owning adapter.
+        Returns True if the device was found and removed.
+        """
+        dev_suffix = f"/dev_{address.replace(':', '_')}"
+        introspection = await bus.introspect(BLUEZ_SERVICE, "/")
+        proxy = bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
+        obj_manager = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+        objects = await obj_manager.call_get_managed_objects()
+
+        for path in objects:
+            if not path.endswith(dev_suffix):
+                continue
+            # Found the device — extract adapter path (e.g. /org/bluez/hci0)
+            adapter_path = path[: path.rfind("/")]
+            try:
+                intr = await bus.introspect(BLUEZ_SERVICE, adapter_path)
+                adapter_proxy = bus.get_proxy_object(BLUEZ_SERVICE, adapter_path, intr)
+                adapter_iface = adapter_proxy.get_interface(ADAPTER_INTERFACE)
+                await adapter_iface.call_remove_device(path)
+                logger.info("Removed device %s from adapter %s", path, adapter_path)
+                return True
+            except DBusError as e:
+                logger.warning("Failed to remove %s from %s: %s", path, adapter_path, e)
+                return False
+        logger.warning("Device %s not found on any adapter", address)
+        return False
 
     async def discover_for_duration(self, seconds: int) -> list[dict]:
         """Run discovery for a fixed duration and return found audio devices."""

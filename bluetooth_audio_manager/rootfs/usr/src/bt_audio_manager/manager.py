@@ -447,10 +447,9 @@ class BluetoothAudioManager:
                 pass
             device.cleanup()
 
-        # Remove from BlueZ
-        from .bluez.device import address_to_path
-        device_path = address_to_path(address, self._adapter_path)
-        await self.adapter.remove_device(device_path)
+        # Remove from BlueZ (search all adapters — device may be on a
+        # different adapter than the one this add-on is configured to use)
+        await BluezAdapter.remove_device_any_adapter(self.bus, address)
 
         # Remove from persistent store
         await self.store.remove_device(address)
@@ -484,6 +483,7 @@ class BluetoothAudioManager:
                         "uuids": [],
                         "bearers": [],
                         "has_transport": False,
+                        "adapter": "",
                     }
                 )
 
