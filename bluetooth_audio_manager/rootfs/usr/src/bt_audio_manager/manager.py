@@ -594,13 +594,30 @@ class BluetoothAudioManager:
         logger.info("No A2DP transport for %s, trying ConnectProfile(A2DP_SINK)...", address)
         try:
             await device.connect_profile(A2DP_SINK_UUID)
+            await asyncio.sleep(3)
+            if await self._log_transport_properties(address):
+                return True
         except Exception as e:
             logger.warning("ConnectProfile(A2DP) failed for %s: %s", address, e)
-            return False
 
-        # Wait briefly then re-check for transport
-        await asyncio.sleep(3)
-        return await self._log_transport_properties(address)
+        # ConnectProfile failed or didn't produce a transport — the device
+        # is likely stuck in BLE-only mode (no BR/EDR bearer).  A full
+        # disconnect + reconnect cycle resets the radio link and lets BlueZ
+        # establish both bearers properly.
+        logger.info(
+            "A2DP still missing for %s, trying full disconnect/reconnect cycle...",
+            address,
+        )
+        try:
+            await device.disconnect()
+            await asyncio.sleep(2)
+            await device.connect()
+            await device.wait_for_services(timeout=10)
+            await asyncio.sleep(3)
+            return await self._log_transport_properties(address)
+        except Exception as e:
+            logger.warning("Disconnect/reconnect cycle failed for %s: %s", address, e)
+            return False
 
     def _on_pa_volume_change(self, sink_name: str, volume: int, mute: bool) -> None:
         """Handle PulseAudio Bluetooth sink volume change (AVRCP Absolute Volume)."""
