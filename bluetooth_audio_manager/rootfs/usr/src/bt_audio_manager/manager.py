@@ -634,11 +634,13 @@ class BluetoothAudioManager:
     async def _renegotiate_a2dp(self, address: str) -> None:
         """Force full AVRCP re-negotiation to restore Absolute Volume.
 
-        A profile-only cycle (DisconnectProfile + ConnectProfile) re-creates
-        the transport but doesn't fully re-negotiate AVRCP Absolute Volume
-        in the speaker→host direction.  A full device disconnect forces
-        BlueZ to tear down the entire AVRCP stack, then ConnectProfile
-        with A2DP_SINK re-establishes everything via BREDR from scratch.
+        Temporarily untrusts the device so BlueZ won't auto-accept a BLE
+        reconnection during the disconnect gap (dual-mode speakers like
+        Bose reconnect via LE before we can issue ConnectProfile for BREDR).
+
+        If ConnectProfile lands on LE anyway (no transport), escalates
+        through retry ConnectProfile → full disconnect/reconnect, mirroring
+        the fallback logic in _ensure_a2dp_transport.
 
         Guards with _connecting + _suppress_reconnect to prevent
         _on_device_connected_async and the reconnect service from racing.
@@ -652,6 +654,15 @@ class BluetoothAudioManager:
         self._connecting.add(address)
         self._suppress_reconnect.add(address)
         try:
+            # Temporarily untrust so BlueZ won't auto-accept BLE reconnection
+            # during the disconnect gap (dual-mode speakers reconnect via LE
+            # before we can issue ConnectProfile for BREDR)
+            logger.info("AVRCP renegotiation: untrusting %s to prevent BLE auto-reconnect", address)
+            try:
+                await device.set_trusted(False)
+            except Exception as e:
+                logger.debug("Failed to untrust %s: %s", address, e)
+
             # Full device disconnect — tears down AVRCP + A2DP completely
             logger.info("AVRCP renegotiation: full disconnect %s...", address)
             await device.disconnect()
@@ -662,12 +673,53 @@ class BluetoothAudioManager:
             self._broadcast_status(f"Re-establishing audio for {address}...")
             await device.connect_profile(A2DP_SINK_UUID)
 
+            # Restore trust immediately so normal operation continues
+            try:
+                await device.set_trusted(True)
+            except Exception as e:
+                logger.debug("Failed to re-trust %s: %s", address, e)
+
             # Give BlueZ time to set up transport + AVRCP
             await asyncio.sleep(3)
 
             has_transport = await self._log_transport_properties(address)
+
+            # If no transport, ConnectProfile may have landed on LE —
+            # try switching to A2DP (mirrors _ensure_a2dp_transport logic)
             if not has_transport:
-                logger.warning("AVRCP renegotiation: no transport appeared for %s", address)
+                logger.info(
+                    "AVRCP renegotiation: no transport after ConnectProfile for %s, "
+                    "trying to switch from LE to A2DP...", address,
+                )
+                self._broadcast_status(f"Switching {address} to audio profile...")
+
+                # Retry ConnectProfile (may activate A2DP on top of LE connection)
+                try:
+                    await device.connect_profile(A2DP_SINK_UUID)
+                    await asyncio.sleep(3)
+                    has_transport = await self._log_transport_properties(address)
+                except Exception as e:
+                    logger.debug("Retry ConnectProfile failed for %s: %s", address, e)
+
+            if not has_transport:
+                # Last resort: full disconnect/reconnect cycle to reset bearers
+                logger.info(
+                    "AVRCP renegotiation: A2DP still missing for %s, "
+                    "trying full disconnect/reconnect cycle...", address,
+                )
+                self._broadcast_status(f"Full reconnect for {address}...")
+                try:
+                    await device.disconnect()
+                    await asyncio.sleep(2)
+                    await device.connect()
+                    await device.wait_for_services(timeout=10)
+                    await asyncio.sleep(3)
+                    has_transport = await self._log_transport_properties(address)
+                except Exception as e:
+                    logger.warning("Full reconnect cycle failed for %s: %s", address, e)
+
+            if not has_transport:
+                logger.warning("AVRCP renegotiation: no transport after all attempts for %s", address)
                 self._broadcast_status(f"Volume fix incomplete for {address} — try manual reconnect")
                 await asyncio.sleep(3)
                 return
@@ -701,6 +753,11 @@ class BluetoothAudioManager:
             self._broadcast_status(f"Volume fix failed for {address} — try manual reconnect")
             await asyncio.sleep(3)
         finally:
+            # Always restore trust (safety net in case of early exception)
+            try:
+                await device.set_trusted(True)
+            except Exception:
+                pass
             self._connecting.discard(address)
             self._suppress_reconnect.discard(address)
             self.event_bus.emit("status", {"message": ""})
