@@ -80,11 +80,18 @@ class BluetoothAudioManager:
                     changed = msg.body[1] if len(msg.body) > 1 else {}
                     prop_names = list(changed.keys()) if isinstance(changed, dict) else []
 
-                    # Log ALL BlueZ property changes at INFO for diagnosis
-                    logger.info(
-                        "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
-                        iface_name, prop_names, msg.path,
-                    )
+                    # Suppress noisy RSSI / ManufacturerData spam to DEBUG
+                    _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower"}
+                    if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
+                        logger.debug(
+                            "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
+                            iface_name, prop_names, msg.path,
+                        )
+                    else:
+                        logger.info(
+                            "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
+                            iface_name, prop_names, msg.path,
+                        )
 
                     if iface_name == "org.bluez.MediaTransport1" and "Volume" in changed:
                         vol_raw = changed["Volume"].value  # 0-127 uint16
@@ -143,6 +150,7 @@ class BluetoothAudioManager:
         self.pulse = PulseAudioManager()
         try:
             await self.pulse.connect()
+            await self.pulse.start_event_monitor()
         except Exception as e:
             logger.warning("PulseAudio connection failed (will retry): %s", e)
             self.pulse = None
@@ -478,6 +486,47 @@ class BluetoothAudioManager:
                 await device.watch_media_player()
             except Exception as e:
                 logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
+
+        # Log MediaTransport1 properties for volume diagnosis
+        await self._log_transport_properties(address)
+
+    async def _log_transport_properties(self, address: str) -> None:
+        """Enumerate BlueZ objects to find and log MediaTransport1 for a device.
+
+        Waits briefly for the transport to appear (BlueZ may still be
+        setting it up when the Connected signal fires).
+        """
+        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+
+        dev_fragment = address.replace(":", "_").upper()
+        for attempt in range(3):
+            if attempt > 0:
+                await asyncio.sleep(2)
+            try:
+                intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+                proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+                obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+                objects = await obj_mgr.call_get_managed_objects()
+
+                for path, ifaces in objects.items():
+                    if dev_fragment not in path:
+                        continue
+                    if "org.bluez.MediaTransport1" not in ifaces:
+                        continue
+                    tp = ifaces["org.bluez.MediaTransport1"]
+                    props = {}
+                    for key, variant in tp.items():
+                        props[key] = variant.value if hasattr(variant, "value") else str(variant)
+                    vol_supported = "Volume" in tp
+                    logger.info(
+                        "MediaTransport1 for %s: path=%s volume_supported=%s props=%s",
+                        address, path, vol_supported, props,
+                    )
+                    return  # found it
+            except Exception as e:
+                logger.debug("Transport property check attempt %d failed: %s", attempt + 1, e)
+
+        logger.info("No MediaTransport1 found for %s after 3 attempts", address)
 
     def _on_avrcp_command(self, command: str, detail: str) -> None:
         """Handle MPRIS command from speaker buttons (via registered MPRIS player)."""

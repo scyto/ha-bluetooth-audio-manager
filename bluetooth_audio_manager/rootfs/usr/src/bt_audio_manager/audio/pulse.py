@@ -31,6 +31,8 @@ class PulseAudioManager:
 
     def __init__(self):
         self._pulse: PulseAsync | None = None
+        self._subscribe_task: asyncio.Task | None = None
+        self._subscribe_proc: asyncio.subprocess.Process | None = None
 
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
@@ -72,9 +74,67 @@ class PulseAudioManager:
 
     async def disconnect(self) -> None:
         """Disconnect from PulseAudio."""
+        await self.stop_event_monitor()
         if self._pulse:
             self._pulse.close()
             self._pulse = None
+
+    async def start_event_monitor(self) -> None:
+        """Run ``pactl subscribe`` in the background and log sink events.
+
+        This lets us detect if PulseAudio sees volume changes that don't
+        appear as BlueZ D-Bus signals (AVRCP volume diagnosis).
+        """
+        if self._subscribe_task and not self._subscribe_task.done():
+            return
+        self._subscribe_task = asyncio.create_task(self._event_monitor_loop())
+
+    async def stop_event_monitor(self) -> None:
+        """Stop the background ``pactl subscribe`` process."""
+        if self._subscribe_proc:
+            try:
+                self._subscribe_proc.terminate()
+            except ProcessLookupError:
+                pass
+            self._subscribe_proc = None
+        if self._subscribe_task and not self._subscribe_task.done():
+            self._subscribe_task.cancel()
+            try:
+                await self._subscribe_task
+            except asyncio.CancelledError:
+                pass
+            self._subscribe_task = None
+
+    async def _event_monitor_loop(self) -> None:
+        """Read lines from ``pactl subscribe`` and log sink-related events."""
+        try:
+            self._subscribe_proc = await asyncio.create_subprocess_exec(
+                "pactl", "subscribe",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            logger.info("pactl subscribe started (PID %s)", self._subscribe_proc.pid)
+            while True:
+                line = await self._subscribe_proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode(errors="replace").strip()
+                # Log all sink events (volume changes, state changes)
+                if "sink" in text.lower():
+                    logger.info("PA event: %s", text)
+                else:
+                    logger.debug("PA event: %s", text)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug("pactl subscribe error: %s", e)
+        finally:
+            if self._subscribe_proc:
+                try:
+                    self._subscribe_proc.terminate()
+                except ProcessLookupError:
+                    pass
+                self._subscribe_proc = None
 
     async def _pactl_sample_specs(self) -> dict[str, dict]:
         """Parse sample specs from ``pactl list sinks``.

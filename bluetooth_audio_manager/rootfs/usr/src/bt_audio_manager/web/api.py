@@ -227,6 +227,7 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
 
             bluez_players = []
             device_details = []
+            transport_details = []
             for path, ifaces in objects.items():
                 if "org.bluez.MediaPlayer1" in ifaces:
                     props = ifaces["org.bluez.MediaPlayer1"]
@@ -248,8 +249,22 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
                         "has_media_control": "org.bluez.MediaControl1" in ifaces,
                         "has_media_transport": "org.bluez.MediaTransport1" in ifaces,
                     })
+                if "org.bluez.MediaTransport1" in ifaces:
+                    tp = ifaces["org.bluez.MediaTransport1"]
+                    # Extract all transport properties for diagnosis
+                    tp_info = {"path": path}
+                    for key in ("Device", "UUID", "Codec", "State", "Volume"):
+                        v = tp.get(key)
+                        if v is not None:
+                            tp_info[key.lower()] = (
+                                v.value if hasattr(v, "value") else str(v)
+                            )
+                    tp_info["volume_supported"] = "Volume" in tp
+                    tp_info["all_properties"] = sorted(tp.keys())
+                    transport_details.append(tp_info)
             results["bluez_media_players"] = bluez_players
             results["bluez_devices"] = device_details
+            results["bluez_transports"] = transport_details
         except Exception as e:
             results["bluez_objects_error"] = str(e)
 
