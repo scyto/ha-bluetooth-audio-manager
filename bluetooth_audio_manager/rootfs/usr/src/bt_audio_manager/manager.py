@@ -415,12 +415,11 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
 
-    def _on_avrcp_command(self, command: str) -> None:
-        """Handle AVRCP command from speaker buttons (via registered MPRIS player)."""
-        self.event_bus.emit("avrcp_event", {
-            "address": "local",
-            "property": "Command",
-            "value": command,
+    def _on_avrcp_command(self, command: str, detail: str) -> None:
+        """Handle MPRIS command from speaker buttons (via registered MPRIS player)."""
+        self.event_bus.emit("mpris_command", {
+            "command": command,
+            "detail": detail,
         })
 
     def _on_avrcp_event(self, address: str, prop_name: str, value: object) -> None:

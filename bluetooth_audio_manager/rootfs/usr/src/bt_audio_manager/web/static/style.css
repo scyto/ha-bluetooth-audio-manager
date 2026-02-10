@@ -248,7 +248,7 @@ section h2 {
   font-size: 0.875rem;
 }
 
-.avrcp-log {
+.event-log {
   max-height: 300px;
   overflow-y: auto;
   padding: 8px 12px;
@@ -260,26 +260,35 @@ section h2 {
   line-height: 1.8;
 }
 
-.avrcp-entry {
+.log-entry {
   padding: 2px 0;
   border-bottom: 1px solid var(--border);
 }
 
-.avrcp-entry:last-child {
+.log-entry:last-child {
   border-bottom: none;
 }
 
-.avrcp-time {
+.log-time {
   color: var(--text-secondary);
   margin-right: 8px;
 }
 
-.avrcp-prop {
+.log-command {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.log-detail {
+  color: var(--text-secondary);
+}
+
+.log-prop {
   color: var(--primary);
   font-weight: 500;
 }
 
-.avrcp-value {
+.log-value {
   color: var(--success);
 }
 

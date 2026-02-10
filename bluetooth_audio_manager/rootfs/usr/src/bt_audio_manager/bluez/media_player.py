@@ -28,7 +28,7 @@ class MPRISPlayerInterface(ServiceInterface):
     commands from a connected Bluetooth speaker/headset.
     """
 
-    def __init__(self, command_callback: Callable[[str], None]):
+    def __init__(self, command_callback: Callable[[str, str], None]):
         super().__init__("org.mpris.MediaPlayer2.Player")
         self._callback = command_callback
         self._playback_status = "Stopped"
@@ -38,49 +38,49 @@ class MPRISPlayerInterface(ServiceInterface):
 
     @method()
     def Play(self) -> None:
-        logger.info("AVRCP command: Play")
+        logger.info("MPRIS command: Play")
         self._playback_status = "Playing"
         self.emit_properties_changed({"PlaybackStatus": self._playback_status})
-        self._callback("Play")
+        self._callback("Play", "")
 
     @method()
     def Pause(self) -> None:
-        logger.info("AVRCP command: Pause")
+        logger.info("MPRIS command: Pause")
         self._playback_status = "Paused"
         self.emit_properties_changed({"PlaybackStatus": self._playback_status})
-        self._callback("Pause")
+        self._callback("Pause", "")
 
     @method()
     def PlayPause(self) -> None:
-        logger.info("AVRCP command: PlayPause")
         if self._playback_status == "Playing":
             self._playback_status = "Paused"
         else:
             self._playback_status = "Playing"
+        logger.info("MPRIS command: PlayPause -> %s", self._playback_status)
         self.emit_properties_changed({"PlaybackStatus": self._playback_status})
-        self._callback("PlayPause")
+        self._callback("PlayPause", self._playback_status)
 
     @method()
     def Stop(self) -> None:
-        logger.info("AVRCP command: Stop")
+        logger.info("MPRIS command: Stop")
         self._playback_status = "Stopped"
         self.emit_properties_changed({"PlaybackStatus": self._playback_status})
-        self._callback("Stop")
+        self._callback("Stop", "")
 
     @method()
     def Next(self) -> None:
-        logger.info("AVRCP command: Next")
-        self._callback("Next")
+        logger.info("MPRIS command: Next")
+        self._callback("Next", "")
 
     @method()
     def Previous(self) -> None:
-        logger.info("AVRCP command: Previous")
-        self._callback("Previous")
+        logger.info("MPRIS command: Previous")
+        self._callback("Previous", "")
 
     @method()
     def Seek(self, offset: "x") -> None:
-        logger.debug("AVRCP command: Seek offset=%d", offset)
-        self._callback("Seek")
+        logger.info("MPRIS command: Seek offset=%d", offset)
+        self._callback("Seek", f"offset={offset}")
 
     @method()
     def SetPosition(self, track_id: "o", position: "x") -> None:
@@ -137,8 +137,8 @@ class MPRISPlayerInterface(ServiceInterface):
         old = self._volume
         self._volume = max(0.0, min(1.0, val))
         if abs(old - self._volume) > 0.01:
-            logger.info("AVRCP volume: %.0f%%", self._volume * 100)
-            self._callback("Volume")
+            logger.info("MPRIS command: Volume %.0f%%", self._volume * 100)
+            self._callback("Volume", f"{self._volume * 100:.0f}%")
 
     @dbus_property(access=PropertyAccess.READ)
     def Position(self) -> "x":
@@ -188,7 +188,7 @@ class AVRCPMediaPlayer:
     then register it with BlueZ.
     """
 
-    def __init__(self, bus: MessageBus, command_callback: Callable[[str], None]):
+    def __init__(self, bus: MessageBus, command_callback: Callable[[str, str], None]):
         self._bus = bus
         self._player = MPRISPlayerInterface(command_callback)
         self._registered = False

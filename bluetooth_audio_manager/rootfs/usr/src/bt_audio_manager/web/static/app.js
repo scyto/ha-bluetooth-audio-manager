@@ -232,37 +232,56 @@ async function forgetDevice(address) {
   }
 }
 
-// -- AVRCP event log --
+// -- Event log helpers --
 
-const MAX_AVRCP_ENTRIES = 50;
+const MAX_LOG_ENTRIES = 50;
 
-function appendAvrcpEvent(data) {
-  const log = $("#avrcp-log");
+function appendLogEntry(logSelector, cssClass, html) {
+  const log = $(logSelector);
 
   // Remove placeholder if present
   const placeholder = log.querySelector(".placeholder");
   if (placeholder) placeholder.remove();
 
-  const time = new Date().toLocaleTimeString();
-  const valueStr = typeof data.value === "object"
-    ? JSON.stringify(data.value)
-    : String(data.value);
-
   const entry = document.createElement("div");
-  entry.className = "avrcp-entry";
-  entry.innerHTML = `<span class="avrcp-time">${escapeHtml(time)}</span>`
-    + `<span class="avrcp-prop">${escapeHtml(data.property)}</span> = `
-    + `<span class="avrcp-value">${escapeHtml(valueStr)}</span>`;
+  entry.className = cssClass;
+  entry.innerHTML = html;
 
   log.appendChild(entry);
 
   // Trim old entries
-  while (log.children.length > MAX_AVRCP_ENTRIES) {
+  while (log.children.length > MAX_LOG_ENTRIES) {
     log.removeChild(log.firstChild);
   }
 
   // Auto-scroll to bottom
   log.scrollTop = log.scrollHeight;
+}
+
+function appendMprisCommand(data) {
+  const time = new Date().toLocaleTimeString();
+  appendLogEntry(
+    "#mpris-log",
+    "log-entry",
+    `<span class="log-time">${escapeHtml(time)}</span>`
+    + `<span class="log-command">${escapeHtml(data.command)}</span>`
+    + (data.detail ? ` <span class="log-detail">${escapeHtml(data.detail)}</span>` : ""),
+  );
+}
+
+function appendAvrcpEvent(data) {
+  const time = new Date().toLocaleTimeString();
+  const valueStr = typeof data.value === "object"
+    ? JSON.stringify(data.value)
+    : String(data.value);
+
+  appendLogEntry(
+    "#avrcp-log",
+    "log-entry",
+    `<span class="log-time">${escapeHtml(time)}</span>`
+    + `<span class="log-prop">${escapeHtml(data.property)}</span> = `
+    + `<span class="log-value">${escapeHtml(valueStr)}</span>`,
+  );
 }
 
 // -- Server-Sent Events (real-time updates) --
@@ -293,6 +312,11 @@ function connectSSE() {
     } else {
       hideStatus();
     }
+  });
+
+  eventSource.addEventListener("mpris_command", (e) => {
+    const data = JSON.parse(e.data);
+    appendMprisCommand(data);
   });
 
   eventSource.addEventListener("avrcp_event", (e) => {
