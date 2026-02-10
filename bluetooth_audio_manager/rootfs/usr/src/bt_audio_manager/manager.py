@@ -873,17 +873,9 @@ class BluetoothAudioManager:
                     if await self.pulse.activate_bt_card_profile(address):
                         sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
 
-            # Re-register MPRIS player to force BlueZ to re-negotiate
-            # AVRCP capabilities (including volume change notifications)
-            # with the speaker on the fresh AVRCP session.
-            if self.media_player:
-                try:
-                    logger.info("Re-registering MPRIS player to refresh AVRCP capabilities...")
-                    await self.media_player.unregister()
-                    await asyncio.sleep(1)
-                    await self.media_player.register()
-                except Exception as e:
-                    logger.warning("MPRIS player re-registration failed: %s", e)
+            # Verify MediaControl1 player link — confirms BlueZ wired our
+            # MPRIS player into the fresh AVRCP session during ConnectProfile.
+            await self._log_media_control_player(address)
 
             if sink_name:
                 logger.info("AVRCP renegotiation succeeded for %s — sink %s", address, sink_name)
@@ -1024,6 +1016,36 @@ class BluetoothAudioManager:
 
         logger.info("No MediaTransport1 found for %s after 3 attempts", address)
         return False
+
+    async def _log_media_control_player(self, address: str) -> None:
+        """Log whether BlueZ linked our MPRIS player to the device's AVRCP session."""
+        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+
+        dev_fragment = address.replace(":", "_").upper()
+        try:
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+            obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+            objects = await obj_mgr.call_get_managed_objects()
+
+            for path, ifaces in objects.items():
+                if dev_fragment not in path:
+                    continue
+                if "org.bluez.MediaControl1" not in ifaces:
+                    continue
+                mc = ifaces["org.bluez.MediaControl1"]
+                connected = mc.get("Connected")
+                player = mc.get("Player")
+                connected_val = connected.value if hasattr(connected, "value") else connected
+                player_val = player.value if hasattr(player, "value") else player
+                logger.info(
+                    "MediaControl1 for %s: Connected=%s Player=%s",
+                    address, connected_val, player_val,
+                )
+                return
+            logger.info("No MediaControl1 found for %s", address)
+        except Exception as e:
+            logger.debug("MediaControl1 check failed for %s: %s", address, e)
 
     async def _ensure_a2dp_transport(self, address: str) -> bool:
         """Check for A2DP transport and try ConnectProfile if missing.
