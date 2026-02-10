@@ -1,0 +1,39 @@
+"""Server-Sent Events (SSE) event bus for real-time UI updates."""
+
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class EventBus:
+    """Simple pub/sub using asyncio.Queue per connected SSE client."""
+
+    def __init__(self):
+        self._clients: set[asyncio.Queue] = set()
+
+    def subscribe(self) -> asyncio.Queue:
+        """Add a new SSE client. Returns a queue to read events from."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=64)
+        self._clients.add(q)
+        logger.debug("SSE client connected (%d total)", len(self._clients))
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        """Remove an SSE client."""
+        self._clients.discard(q)
+        logger.debug("SSE client disconnected (%d remaining)", len(self._clients))
+
+    def emit(self, event: str, data: dict) -> None:
+        """Push an event to all connected clients."""
+        if not self._clients:
+            return
+        for q in self._clients:
+            try:
+                q.put_nowait({"event": event, "data": data})
+            except asyncio.QueueFull:
+                logger.debug("Dropping SSE event for slow client")
+
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)

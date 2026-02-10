@@ -20,6 +20,7 @@ from .bluez.device import BluezDevice
 from .config import AppConfig
 from .persistence.store import PersistenceStore
 from .reconnect import ReconnectService
+from .web.events import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class BluetoothAudioManager:
         self.keepalive: KeepAliveService | None = None
         self.managed_devices: dict[str, BluezDevice] = {}
         self._web_server = None
+        self.event_bus = EventBus()
 
     async def start(self) -> None:
         """Full startup sequence."""
@@ -117,10 +119,15 @@ class BluetoothAudioManager:
     async def scan_devices(self, duration: int | None = None) -> list[dict]:
         """Run a time-limited discovery scan for A2DP audio devices."""
         duration = duration or self.config.scan_duration_seconds
-        return await self.adapter.discover_for_duration(duration)
+        self._broadcast_status(f"Scanning for Bluetooth audio devices ({duration}s)...")
+        devices = await self.adapter.discover_for_duration(duration)
+        self.event_bus.emit("status", {"message": ""})
+        await self._broadcast_devices()
+        return devices
 
     async def pair_device(self, address: str) -> dict:
         """Pair, trust, and persist a Bluetooth audio device."""
+        self._broadcast_status(f"Pairing with {address}...")
         device = BluezDevice(self.bus, address)
         await device.initialize()
 
@@ -133,43 +140,53 @@ class BluetoothAudioManager:
         # Get name for display
         name = await device.get_name()
 
-        # Register disconnect handler
+        # Register disconnect/connect handlers
         device.on_disconnected(self._on_device_disconnected)
+        device.on_connected(self._on_device_connected)
         self.managed_devices[address] = device
 
         # Persist
         await self.store.add_device(address, name)
 
         logger.info("Device %s (%s) paired and stored", address, name)
+        await self._broadcast_devices()
         return {"address": address, "name": name, "connected": False}
 
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
+        self._broadcast_status(f"Connecting to {address}...")
         device = self.managed_devices.get(address)
         if not device:
             device = BluezDevice(self.bus, address)
             await device.initialize()
             device.on_disconnected(self._on_device_disconnected)
+            device.on_connected(self._on_device_connected)
             self.managed_devices[address] = device
 
         await device.connect()
+        self._broadcast_status(f"Waiting for services on {address}...")
         await device.wait_for_services(timeout=10)
 
         # Verify PulseAudio sink appeared
         if self.pulse:
+            self._broadcast_status(f"Waiting for A2DP sink for {address}...")
             sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
             if sink_name:
                 if self.keepalive:
                     self.keepalive.set_target_sink(sink_name)
+                await self._broadcast_all()
                 return True
             logger.warning("A2DP sink for %s did not appear in PulseAudio", address)
+            await self._broadcast_all()
             return False
 
         # PulseAudio not available — connection may still work at BlueZ level
+        await self._broadcast_all()
         return await device.is_connected()
 
     async def disconnect_device(self, address: str) -> None:
         """Disconnect a device without removing it from the store."""
+        self._broadcast_status(f"Disconnecting {address}...")
         # Cancel any pending reconnection
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
@@ -177,6 +194,7 @@ class BluetoothAudioManager:
         device = self.managed_devices.get(address)
         if device:
             await device.disconnect()
+        await self._broadcast_all()
 
     async def forget_device(self, address: str) -> None:
         """Unpair, remove from BlueZ, and delete from persistent store."""
@@ -200,6 +218,7 @@ class BluetoothAudioManager:
         # Remove from persistent store
         await self.store.remove_device(address)
         logger.info("Device %s forgotten", address)
+        await self._broadcast_all()
 
     async def get_all_devices(self) -> list[dict]:
         """Get combined list of discovered and paired devices."""
@@ -235,7 +254,39 @@ class BluetoothAudioManager:
             return []
         return await self.pulse.list_bt_sinks()
 
+    # -- SSE broadcast helpers --
+
+    async def _broadcast_devices(self) -> None:
+        """Push full device list to all SSE clients."""
+        try:
+            devices = await self.get_all_devices()
+            self.event_bus.emit("devices_changed", {"devices": devices})
+        except Exception as e:
+            logger.debug("Broadcast devices failed: %s", e)
+
+    async def _broadcast_sinks(self) -> None:
+        """Push full sink list to all SSE clients."""
+        try:
+            sinks = await self.get_audio_sinks()
+            self.event_bus.emit("sinks_changed", {"sinks": sinks})
+        except Exception as e:
+            logger.debug("Broadcast sinks failed: %s", e)
+
+    async def _broadcast_all(self) -> None:
+        """Push both device and sink state to SSE clients."""
+        await self._broadcast_devices()
+        await self._broadcast_sinks()
+
+    def _broadcast_status(self, message: str) -> None:
+        """Push a status message to SSE clients."""
+        self.event_bus.emit("status", {"message": message})
+
     def _on_device_disconnected(self, address: str) -> None:
         """Handle device disconnection event."""
         if self.reconnect_service:
             self.reconnect_service.handle_disconnect(address)
+        asyncio.ensure_future(self._broadcast_all())
+
+    def _on_device_connected(self, address: str) -> None:
+        """Handle device connection event (D-Bus signal)."""
+        asyncio.ensure_future(self._broadcast_all())

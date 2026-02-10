@@ -31,6 +31,7 @@ class BluezDevice:
         self._device_iface = None
         self._properties_iface = None
         self._disconnect_callbacks: list[Callable] = []
+        self._connect_callbacks: list[Callable] = []
         self._properties_changed_unsub = None
 
     async def initialize(self) -> None:
@@ -58,10 +59,16 @@ class BluezDevice:
                     cb(self._address)
             else:
                 logger.info("Device %s connected", self._address)
+                for cb in self._connect_callbacks:
+                    cb(self._address)
 
     def on_disconnected(self, callback: Callable[[str], None]) -> None:
         """Register a callback for when this device disconnects."""
         self._disconnect_callbacks.append(callback)
+
+    def on_connected(self, callback: Callable[[str], None]) -> None:
+        """Register a callback for when this device connects."""
+        self._connect_callbacks.append(callback)
 
     async def pair(self) -> None:
         """Initiate pairing with the device."""

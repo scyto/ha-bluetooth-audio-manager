@@ -96,6 +96,10 @@ class ReconnectService:
                 "Reconnect to %s: attempt %d in %.1fs",
                 address, attempt + 1, total_wait,
             )
+            self._manager._broadcast_status(
+                f"Reconnecting to {address} in {int(total_wait)}s "
+                f"(attempt {attempt + 1})..."
+            )
             await asyncio.sleep(total_wait)
 
             if not self._running:
@@ -107,12 +111,18 @@ class ReconnectService:
                     logger.info(
                         "Reconnected to %s after %d attempt(s)", address, attempt + 1
                     )
+                    self._manager._broadcast_status(
+                        f"Reconnected to {address}"
+                    )
                     self._tasks.pop(address, None)
                     return
             except (DBusError, asyncio.TimeoutError, OSError) as e:
                 logger.warning(
                     "Reconnect attempt %d for %s failed: %s",
                     attempt + 1, address, e,
+                )
+                self._manager._broadcast_status(
+                    f"Reconnect attempt {attempt + 1} for {address} failed"
                 )
 
             attempt += 1

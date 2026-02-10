@@ -1,5 +1,7 @@
 """REST API endpoints for the Bluetooth Audio Manager."""
 
+import asyncio
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -9,6 +11,14 @@ if TYPE_CHECKING:
     from ..manager import BluetoothAudioManager
 
 logger = logging.getLogger(__name__)
+
+
+async def _send_sse(
+    response: web.StreamResponse, event: str, data: dict
+) -> None:
+    """Write a single SSE frame to the stream."""
+    payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    await response.write(payload.encode())
 
 
 def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
@@ -115,5 +125,37 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
         except Exception as e:
             logger.error("Failed to list audio sinks: %s", e)
             return web.json_response({"error": str(e)}, status=500)
+
+    @routes.get("/api/events")
+    async def sse_events(request: web.Request) -> web.StreamResponse:
+        """Server-Sent Events stream for real-time UI updates."""
+        response = web.StreamResponse(
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            }
+        )
+        await response.prepare(request)
+
+        bus = manager.event_bus
+        queue = bus.subscribe()
+        try:
+            # Send initial state so UI renders immediately
+            devices = await manager.get_all_devices()
+            sinks = await manager.get_audio_sinks()
+            await _send_sse(response, "devices_changed", {"devices": devices})
+            await _send_sse(response, "sinks_changed", {"sinks": sinks})
+
+            # Stream events as they occur
+            while True:
+                msg = await queue.get()
+                await _send_sse(response, msg["event"], msg["data"])
+        except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+            pass
+        finally:
+            bus.unsubscribe(queue)
+        return response
 
     return routes

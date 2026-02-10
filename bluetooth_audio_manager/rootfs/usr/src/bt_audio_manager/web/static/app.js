@@ -178,12 +178,8 @@ async function refreshDevices() {
 async function scanDevices() {
   try {
     setButtonsEnabled(false);
-    showStatus("Scanning for Bluetooth audio devices...");
-    const result = await apiPost("/api/scan");
-    renderDevices(result.devices);
-    // Also refresh sinks
-    const sinkResult = await apiGet("/api/audio/sinks");
-    renderSinks(sinkResult.sinks);
+    // SSE will push status + results as they arrive
+    await apiPost("/api/scan");
   } catch (e) {
     showError(`Scan failed: ${e.message}`);
   } finally {
@@ -194,9 +190,8 @@ async function scanDevices() {
 
 async function pairDevice(address) {
   try {
-    showStatus(`Pairing with ${address}...`);
     await apiPost("/api/pair", { address });
-    await refreshDevices();
+    // SSE pushes updated device list
   } catch (e) {
     showError(`Pairing failed: ${e.message}`);
     hideStatus();
@@ -205,9 +200,8 @@ async function pairDevice(address) {
 
 async function connectDevice(address) {
   try {
-    showStatus(`Connecting to ${address}...`);
     await apiPost("/api/connect", { address });
-    await refreshDevices();
+    // SSE pushes status progress + updated state
   } catch (e) {
     showError(`Connection failed: ${e.message}`);
     hideStatus();
@@ -216,9 +210,8 @@ async function connectDevice(address) {
 
 async function disconnectDevice(address) {
   try {
-    showStatus(`Disconnecting ${address}...`);
     await apiPost("/api/disconnect", { address });
-    await refreshDevices();
+    // SSE pushes updated state
   } catch (e) {
     showError(`Disconnect failed: ${e.message}`);
     hideStatus();
@@ -228,13 +221,47 @@ async function disconnectDevice(address) {
 async function forgetDevice(address) {
   if (!confirm(`Forget device ${address}? This will unpair it.`)) return;
   try {
-    showStatus(`Removing ${address}...`);
     await apiPost("/api/forget", { address });
-    await refreshDevices();
+    // SSE pushes updated state
   } catch (e) {
     showError(`Forget failed: ${e.message}`);
     hideStatus();
   }
+}
+
+// -- Server-Sent Events (real-time updates) --
+
+let eventSource = null;
+
+function connectSSE() {
+  if (eventSource) {
+    eventSource.close();
+  }
+
+  eventSource = new EventSource(`${API_BASE}/api/events`);
+
+  eventSource.addEventListener("devices_changed", (e) => {
+    const data = JSON.parse(e.data);
+    renderDevices(data.devices);
+  });
+
+  eventSource.addEventListener("sinks_changed", (e) => {
+    const data = JSON.parse(e.data);
+    renderSinks(data.sinks);
+  });
+
+  eventSource.addEventListener("status", (e) => {
+    const data = JSON.parse(e.data);
+    if (data.message) {
+      showStatus(data.message);
+    } else {
+      hideStatus();
+    }
+  });
+
+  eventSource.onerror = () => {
+    // EventSource auto-reconnects after a few seconds
+  };
 }
 
 // -- Init --
@@ -243,6 +270,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-scan").addEventListener("click", scanDevices);
   $("#btn-refresh").addEventListener("click", refreshDevices);
 
-  // Initial load
-  refreshDevices();
+  // SSE provides initial state + real-time updates
+  connectSSE();
 });
