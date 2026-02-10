@@ -3,6 +3,7 @@ FROM ${BUILD_FROM}
 
 RUN apk add --no-cache \
     bluez \
+    bluez-btmon \
     bluez-libs \
     dbus-libs \
     pulseaudio-utils \
