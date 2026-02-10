@@ -15,8 +15,8 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /usr/lib/** ix,
   /run/{s6,s6-rc*,service}/** rwix,
   /run/** rwk,
-  /package/** ix,
-  /command/** ix,
+  /package/** rix,
+  /command/** rix,
   /etc/s6-overlay/** rix,
   /etc/cont-init.d/** rwix,
 
