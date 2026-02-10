@@ -198,9 +198,9 @@ class BluetoothAudioManager:
                         sink_name = await self.pulse.get_sink_for_address(addr)
                         if not sink_name:
                             # PA may have lost track during add-on restart —
-                            # reload module-bluez5-discover to re-enumerate
-                            logger.info("No PA sink for %s at startup, reloading bluez5-discover...", addr)
-                            if await self.pulse.reload_bluez_discover():
+                            # activate the card profile to create the sink
+                            logger.info("No PA sink for %s at startup, activating card profile...", addr)
+                            if await self.pulse.activate_bt_card_profile(addr):
                                 sink_name = await self.pulse.wait_for_bt_sink(addr, timeout=10)
                         if sink_name:
                             logger.info("PA sink for %s: %s", addr, sink_name)
@@ -683,10 +683,10 @@ class BluetoothAudioManager:
                 sink_name = await self.pulse.wait_for_bt_sink(address, timeout=10)
 
                 if not sink_name:
-                    # PA missed the transport — reload module-bluez5-discover
-                    logger.info("PA sink not found, reloading module-bluez5-discover...")
-                    self._broadcast_status(f"Reloading audio discovery for {address}...")
-                    if await self.pulse.reload_bluez_discover():
+                    # PA missed the transport — activate per-device card profile
+                    logger.info("PA sink not found, activating card profile for %s...", address)
+                    self._broadcast_status(f"Activating audio profile for {address}...")
+                    if await self.pulse.activate_bt_card_profile(address):
                         sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
 
             if sink_name:

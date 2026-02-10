@@ -254,68 +254,59 @@ class PulseAudioManager:
         await self._pulse.sink_default_set(sink_name)
         logger.info("Default audio output set to %s", sink_name)
 
-    async def reload_bluez_discover(self) -> bool:
-        """Unload and reload PulseAudio's module-bluez5-discover.
+    async def activate_bt_card_profile(self, address: str) -> bool:
+        """Activate the A2DP sink profile on a specific Bluetooth PA card.
 
-        Forces PA to re-enumerate all BlueZ transports and create sinks
-        for any it missed (e.g. transports that existed before the module
-        started or were recreated without a proper InterfacesAdded signal).
+        Uses ``pactl set-card-profile`` to tell PulseAudio to create a sink
+        for a specific device.  Per-device safe — does not affect other
+        Bluetooth audio connections.
 
-        Returns True if the reload succeeded.
+        Returns True if the profile was activated successfully.
         """
+        card_name = "bluez_card." + address.replace(":", "_")
         try:
-            # Find the module index for module-bluez5-discover
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "list", "modules", "short",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
-            if proc.returncode != 0:
-                logger.warning("pactl list modules failed (rc=%d)", proc.returncode)
-                return False
-
-            module_ids = []
-            for line in stdout.decode(errors="replace").splitlines():
-                parts = line.split("\t")
-                if len(parts) >= 2 and "module-bluez5-discover" in parts[1]:
-                    module_ids.append(parts[0])
-
-            if not module_ids:
-                logger.warning("module-bluez5-discover not found in PulseAudio")
-                return False
-
-            # Unload existing module(s)
-            for mid in module_ids:
-                logger.info("Unloading PA module-bluez5-discover (id=%s)", mid)
+            # Try setting a2dp profile directly.
+            # PA uses "a2dp-sink", PipeWire may use "a2dp_sink".
+            for profile in ("a2dp-sink", "a2dp_sink"):
                 proc = await asyncio.create_subprocess_exec(
-                    "pactl", "unload-module", mid,
+                    "pactl", "set-card-profile", card_name, profile,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                await proc.communicate()
+                _, stderr = await proc.communicate()
+                if proc.returncode == 0:
+                    logger.info("PA card profile set: %s -> %s", card_name, profile)
+                    return True
+                logger.debug(
+                    "set-card-profile %s %s failed: %s",
+                    card_name, profile, stderr.decode(errors="replace").strip(),
+                )
 
-            await asyncio.sleep(1)
-
-            # Reload the module
-            logger.info("Loading PA module-bluez5-discover")
+            # Profile might already be set — cycle off → a2dp to force recreation
+            logger.info("Cycling PA card profile for %s (off -> a2dp)...", card_name)
             proc = await asyncio.create_subprocess_exec(
-                "pactl", "load-module", "module-bluez5-discover",
+                "pactl", "set-card-profile", card_name, "off",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                logger.warning(
-                    "pactl load-module failed (rc=%d): %s",
-                    proc.returncode, stderr.decode(errors="replace"),
-                )
-                return False
+            await proc.communicate()
+            await asyncio.sleep(1)
 
-            logger.info("PA module-bluez5-discover reloaded successfully")
-            return True
+            for profile in ("a2dp-sink", "a2dp_sink"):
+                proc = await asyncio.create_subprocess_exec(
+                    "pactl", "set-card-profile", card_name, profile,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+                if proc.returncode == 0:
+                    logger.info("PA card profile cycled: %s -> %s", card_name, profile)
+                    return True
+
+            logger.warning("PA card %s not found or profile activation failed", card_name)
+            return False
         except (FileNotFoundError, OSError) as exc:
-            logger.warning("pactl not available for module reload: %s", exc)
+            logger.warning("pactl not available: %s", exc)
             return False
 
     async def get_sink_for_address(self, address: str) -> str | None:
