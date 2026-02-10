@@ -294,6 +294,9 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
         bus = manager.event_bus
         queue = bus.subscribe()
         try:
+            # Tell EventSource to reconnect after 3 seconds if disconnected
+            await response.write(b"retry: 3000\n\n")
+
             # Send initial state so UI renders immediately
             devices = await manager.get_all_devices()
             sinks = await manager.get_audio_sinks()
@@ -319,8 +322,10 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
                 except asyncio.TimeoutError:
                     # SSE comment keeps proxy alive and flushes buffers
                     await response.write(b": heartbeat\n\n")
-        except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
-            pass
+        except (ConnectionResetError, ConnectionError, asyncio.CancelledError) as e:
+            logger.info("SSE stream closed: %s", type(e).__name__)
+        except Exception as e:
+            logger.warning("SSE stream unexpected error: %s: %s", type(e).__name__, e)
         finally:
             bus.unsubscribe(queue)
             logger.info("SSE client disconnected")

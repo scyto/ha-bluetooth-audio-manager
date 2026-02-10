@@ -365,7 +365,13 @@ function connectSSE() {
 
   eventSource.onerror = (e) => {
     console.warn("[SSE] Error/disconnected, readyState:", eventSource.readyState);
-    // EventSource auto-reconnects after a few seconds
+    // readyState 2 = CLOSED — EventSource won't auto-reconnect.
+    // HA ingress proxy can kill the SSE stream when other requests complete.
+    // Manually reconnect after a short delay.
+    if (eventSource.readyState === EventSource.CLOSED) {
+      console.log("[SSE] Connection permanently closed, reconnecting in 3s...");
+      setTimeout(connectSSE, 3000);
+    }
   };
 }
 
