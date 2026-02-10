@@ -1,0 +1,2 @@
+# ha-bluetooth-audio-manager
+Home Assistant add-on for managing Bluetooth audio device connections (A2DP) with persistent pairing, auto-reconnect, and AppArmor security.
