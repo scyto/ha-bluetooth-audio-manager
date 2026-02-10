@@ -193,6 +193,14 @@ class BluetoothAudioManager:
                         await device.watch_media_player()
                     except Exception as e:
                         logger.debug("AVRCP on existing connection %s: %s", addr, e)
+                    # Device stayed connected while add-on restarted: refresh
+                    # AVRCP control profiles so remote buttons re-bind to this
+                    # process's newly registered MPRIS player.
+                    if self.media_player:
+                        try:
+                            await self._refresh_avrcp_session(addr)
+                        except Exception as e:
+                            logger.debug("AVRCP refresh on existing connection %s: %s", addr, e)
                     # Check/activate A2DP transport
                     await self._ensure_a2dp_transport(addr)
                     # Check for existing PA sink
@@ -1016,6 +1024,47 @@ class BluetoothAudioManager:
 
         logger.info("No MediaTransport1 found for %s after 3 attempts", address)
         return False
+
+    async def _refresh_avrcp_session(self, address: str) -> None:
+        """Cycle AVRCP profiles to rebind the control channel to this process.
+
+        After an add-on restart the old D-Bus unique name is gone, but the
+        AVRCP session still references it.  Disconnecting and reconnecting
+        the AVRCP profiles forces BlueZ to re-discover our newly registered
+        MPRIS player without tearing down the A2DP audio stream.
+        """
+        from .bluez.constants import AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID
+
+        device = self.managed_devices.get(address)
+        if not device:
+            return
+
+        logger.info("AVRCP refresh: cycling AVRCP profiles for %s...", address)
+
+        # Disconnect AVRCP profiles (may not all be active)
+        for uuid in (AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID):
+            try:
+                await device.disconnect_profile(uuid)
+            except Exception:
+                pass
+        await asyncio.sleep(1)
+
+        # Reconnect AVRCP profiles
+        for uuid in (AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID):
+            try:
+                await device.connect_profile(uuid)
+            except Exception:
+                pass
+        await asyncio.sleep(2)
+
+        # Re-subscribe to the new AVRCP player node
+        device.reset_avrcp_watch()
+        try:
+            await device.watch_media_player()
+        except Exception as e:
+            logger.debug("AVRCP watch after refresh for %s: %s", address, e)
+
+        await self._log_media_control_player(address)
 
     async def _log_media_control_player(self, address: str) -> None:
         """Log whether BlueZ linked our MPRIS player to the device's AVRCP session."""

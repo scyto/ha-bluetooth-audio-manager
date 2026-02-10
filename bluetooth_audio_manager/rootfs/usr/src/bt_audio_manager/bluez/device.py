@@ -67,6 +67,11 @@ class BluezDevice:
         self._avrcp_last_search = 0.0
         logger.debug("Device %s cleaned up", self._address)
 
+    def reset_avrcp_watch(self) -> None:
+        """Clear AVRCP subscription state so watch_media_player() will re-search."""
+        self._player_path = None
+        self._avrcp_last_search = 0.0
+
     def _on_properties_changed(
         self, interface_name: str, changed: dict, invalidated: list
     ) -> None:
