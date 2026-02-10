@@ -190,7 +190,7 @@ class BluetoothAudioManager:
         return devices
 
     async def pair_device(self, address: str) -> dict:
-        """Pair, trust, and persist a Bluetooth audio device."""
+        """Pair, trust, persist, and connect a Bluetooth audio device."""
         self._broadcast_status(f"Pairing with {address}...")
         device = await self._get_or_create_device(address)
 
@@ -207,9 +207,11 @@ class BluetoothAudioManager:
         await self.store.add_device(address, name)
 
         logger.info("Device %s (%s) paired and stored", address, name)
-        self.event_bus.emit("status", {"message": ""})
         await self._broadcast_all()
-        return {"address": address, "name": name, "connected": False}
+
+        # Follow through with full connect + A2DP sink wait
+        connected = await self.connect_device(address)
+        return {"address": address, "name": name, "connected": connected}
 
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
@@ -221,16 +223,19 @@ class BluetoothAudioManager:
         self._broadcast_status(f"Connecting to {address}...")
         device = await self._get_or_create_device(address)
 
-        # Skip redundant connection if already connected
+        # Skip redundant BlueZ connect if already connected, but still
+        # wait for services and A2DP sink (e.g. after pairing auto-connect)
+        already_connected = False
         try:
-            if await device.is_connected():
-                logger.info("Device %s already connected, skipping connect", address)
-                await self._broadcast_all()
-                return True
+            already_connected = await device.is_connected()
         except Exception:
             pass
 
-        await device.connect()
+        if already_connected:
+            logger.info("Device %s already connected, waiting for services/sink", address)
+        else:
+            await device.connect()
+
         self._broadcast_status(f"Waiting for services on {address}...")
         await device.wait_for_services(timeout=10)
 
