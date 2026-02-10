@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Callable
 from xml.etree import ElementTree as ET
 
@@ -38,6 +39,8 @@ class BluezDevice:
         self._avrcp_callbacks: list[Callable] = []
         self._player_path: str | None = None
         self._properties_changed_unsub = None
+        self._avrcp_last_search: float = 0.0  # monotonic timestamp of last failed search
+        self._avrcp_cooldown: float = 60.0  # seconds to wait before searching again
 
     async def initialize(self) -> None:
         """Connect to the device's D-Bus interfaces and start monitoring."""
@@ -60,6 +63,7 @@ class BluezDevice:
         self._connect_callbacks.clear()
         self._avrcp_callbacks.clear()
         self._player_path = None
+        self._avrcp_last_search = 0.0
         logger.debug("Device %s cleaned up", self._address)
 
     def _on_properties_changed(
@@ -107,6 +111,15 @@ class BluezDevice:
             logger.debug("AVRCP already watching %s", self._player_path)
             return True
 
+        # Cooldown: skip if we searched recently and found nothing
+        elapsed = time.monotonic() - self._avrcp_last_search
+        if self._avrcp_last_search > 0 and elapsed < self._avrcp_cooldown:
+            logger.debug(
+                "AVRCP search for %s on cooldown (%.0fs remaining)",
+                self._address, self._avrcp_cooldown - elapsed,
+            )
+            return False
+
         for attempt in range(retries):
             try:
                 introspection = await self._bus.introspect(BLUEZ_SERVICE, self._path)
@@ -127,6 +140,7 @@ class BluezDevice:
                         await asyncio.sleep(delay)
                         continue
                     logger.info("No AVRCP player found for %s after %d attempts", self._address, retries)
+                    self._avrcp_last_search = time.monotonic()
                     return False
 
                 # Use the first player
@@ -167,7 +181,9 @@ class BluezDevice:
                     await asyncio.sleep(delay)
                 else:
                     logger.info("AVRCP introspect failed for %s after %d attempts: %s", self._address, retries, e)
+                    self._avrcp_last_search = time.monotonic()
                     return False
+        self._avrcp_last_search = time.monotonic()
         return False
 
     def _on_media_player_changed(

@@ -18,6 +18,7 @@ from .audio.pulse import PulseAudioManager
 from .bluez.adapter import BluezAdapter
 from .bluez.agent import PairingAgent
 from .bluez.device import BluezDevice
+from .bluez.media_player import AVRCPMediaPlayer
 from .config import AppConfig
 from .persistence.store import PersistenceStore
 from .reconnect import ReconnectService
@@ -40,6 +41,7 @@ class BluetoothAudioManager:
         self.store: PersistenceStore | None = None
         self.reconnect_service: ReconnectService | None = None
         self.keepalive: KeepAliveService | None = None
+        self.media_player: AVRCPMediaPlayer | None = None
         self.managed_devices: dict[str, BluezDevice] = {}
         self._web_server = None
         self.event_bus = EventBus()
@@ -60,6 +62,14 @@ class BluetoothAudioManager:
         # 3. Register pairing agent
         self.agent = PairingAgent(self.bus)
         await self.agent.register()
+
+        # 3b. Register AVRCP media player (receives speaker button commands)
+        self.media_player = AVRCPMediaPlayer(self.bus, self._on_avrcp_command)
+        try:
+            await self.media_player.register()
+        except Exception as e:
+            logger.warning("AVRCP media player registration failed: %s", e)
+            self.media_player = None
 
         # 4. Load persistent device store
         self.store = PersistenceStore()
@@ -103,7 +113,7 @@ class BluetoothAudioManager:
             self.keepalive = KeepAliveService(method=self.config.keep_alive_method)
             await self.keepalive.start()
 
-        # 9. Start periodic sink state polling
+        # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
 
         logger.info("Bluetooth Audio Manager started successfully")
@@ -127,6 +137,10 @@ class BluetoothAudioManager:
         # Stop reconnection service
         if self.reconnect_service:
             await self.reconnect_service.stop()
+
+        # Unregister AVRCP media player
+        if self.media_player:
+            await self.media_player.unregister()
 
         # Unregister pairing agent
         if self.agent:
@@ -206,6 +220,15 @@ class BluetoothAudioManager:
         self._suppress_reconnect.discard(address)
         self._broadcast_status(f"Connecting to {address}...")
         device = await self._get_or_create_device(address)
+
+        # Skip redundant connection if already connected
+        try:
+            if await device.is_connected():
+                logger.info("Device %s already connected, skipping connect", address)
+                await self._broadcast_all()
+                return True
+        except Exception:
+            pass
 
         await device.connect()
         self._broadcast_status(f"Waiting for services on {address}...")
@@ -386,6 +409,14 @@ class BluetoothAudioManager:
                 await device.watch_media_player()
             except Exception as e:
                 logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
+
+    def _on_avrcp_command(self, command: str) -> None:
+        """Handle AVRCP command from speaker buttons (via registered MPRIS player)."""
+        self.event_bus.emit("avrcp_event", {
+            "address": "local",
+            "property": "Command",
+            "value": command,
+        })
 
     def _on_avrcp_event(self, address: str, prop_name: str, value: object) -> None:
         """Handle AVRCP MediaPlayer1 property change — push to SSE."""
