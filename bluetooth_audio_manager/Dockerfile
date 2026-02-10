@@ -2,6 +2,7 @@ ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 FROM ${BUILD_FROM}
 
 RUN apk add --no-cache \
+    bluez \
     bluez-libs \
     dbus-libs \
     pulseaudio-utils \
@@ -22,7 +23,8 @@ RUN chmod +x /init \
     && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/finish \
     && chmod +x /etc/cont-init.d/01-verify-dbus.sh \
-    && chmod +x /etc/cont-init.d/02-init-storage.sh
+    && chmod +x /etc/cont-init.d/02-init-storage.sh \
+    && chmod +x /etc/cont-init.d/03-btmon-capture.sh
 
 ENV PYTHONPATH="/usr/src"
 
