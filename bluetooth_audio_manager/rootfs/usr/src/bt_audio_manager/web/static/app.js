@@ -201,45 +201,58 @@ async function refreshDevices() {
 async function scanDevices() {
   try {
     setButtonsEnabled(false);
-    // SSE delivers status messages and results from server
+    showStatus("Scanning for Bluetooth audio devices...");
     await apiPost("/api/scan");
   } catch (e) {
     showError(`Scan failed: ${e.message}`);
   } finally {
+    hideStatus();
     setButtonsEnabled(true);
   }
 }
 
 async function pairDevice(address) {
   try {
+    showStatus(`Pairing with ${address}...`);
     await apiPost("/api/pair", { address });
   } catch (e) {
     showError(`Pairing failed: ${e.message}`);
+  } finally {
+    hideStatus();
   }
 }
 
 async function connectDevice(address) {
   try {
+    showStatus(`Connecting to ${address}...`);
     await apiPost("/api/connect", { address });
   } catch (e) {
     showError(`Connection failed: ${e.message}`);
+  } finally {
+    hideStatus();
   }
 }
 
 async function disconnectDevice(address) {
   try {
+    showStatus(`Disconnecting ${address}...`);
     await apiPost("/api/disconnect", { address });
   } catch (e) {
     showError(`Disconnect failed: ${e.message}`);
+  } finally {
+    hideStatus();
   }
 }
 
 async function forgetDevice(address) {
   if (!confirm(`Forget device ${address}? This will unpair it.`)) return;
   try {
+    showStatus(`Forgetting ${address}...`);
     await apiPost("/api/forget", { address });
   } catch (e) {
     showError(`Forget failed: ${e.message}`);
+  } finally {
+    hideStatus();
   }
 }
 
