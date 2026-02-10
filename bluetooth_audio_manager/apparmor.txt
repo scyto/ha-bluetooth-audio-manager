@@ -23,11 +23,12 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   # D-Bus socket (required for BlueZ communication)
   /run/dbus/system_bus_socket rw,
 
-  # PulseAudio socket (mapped by audio: true)
+  # PulseAudio (HAOS mounts socket at /run/audio/ when audio: true)
+  /run/audio/ r,
+  /run/audio/** rw,
   /run/pulse/** rw,
+  /etc/pulse/** r,
   /tmp/pulse-*/** rw,
-
-  # PulseAudio client config (needed for pulsectl connection)
   /root/.config/pulse/ rw,
   /root/.config/pulse/** rw,
 

@@ -8,18 +8,16 @@ When BlueZ connects an A2DP device, PulseAudio's module-bluez5-discover
 import asyncio
 import logging
 import os
-from pathlib import Path
 
 from pulsectl_asyncio import PulseAsync
 
 logger = logging.getLogger(__name__)
 
-# Known PulseAudio server addresses in HAOS (tried in order)
+# Known PulseAudio server addresses in HAOS (tried in order).
+# The Supervisor mounts the audio socket at /run/audio/ when audio: true.
 _FALLBACK_SERVERS = [
-    "unix:/run/pulse-socket",
-    "unix:/data/pulse-socket",
-    "tcp:172.30.32.1:4713",
-    "tcp:hassio_audio:4713",
+    "unix:/run/audio/pulse.sock",
+    "unix:/run/audio/native",
 ]
 
 
