@@ -383,7 +383,7 @@ function renderAdapters(adapters) {
   list.innerHTML = adapters
     .map((a) => {
       const selectedBadge = a.selected
-        ? '<span class="device-status status-connected">Selected</span>'
+        ? '<span class="device-status status-connected">In Use</span>'
         : "";
       const bleBadge = a.ble_scanning
         ? '<span class="device-status status-paired">HA BLE Scanning</span>'
@@ -391,22 +391,47 @@ function renderAdapters(adapters) {
       const poweredLabel = a.powered ? "Powered" : "Off";
       const poweredClass = a.powered ? "status-connected" : "status-discovered";
 
+      // Show model name if available, otherwise just the hci name
+      const displayName = a.hw_model
+        ? `${escapeHtml(a.name)} — ${escapeHtml(a.hw_model)}`
+        : escapeHtml(a.name);
+
+      // Select button for non-selected, powered adapters
+      const selectBtn = !a.selected && a.powered
+        ? `<button class="btn btn-small btn-primary" onclick="selectAdapter('${a.name}')">Select</button>`
+        : "";
+
       return `
         <div class="sink-card">
           <div>
-            <div class="sink-name">${escapeHtml(a.name)}</div>
+            <div class="sink-name">${displayName}</div>
             <div class="sink-description">${escapeHtml(a.address)}</div>
-            <div class="sink-details">${escapeHtml(a.alias || "")}</div>
           </div>
           <div>
             <span class="device-status ${poweredClass}">${poweredLabel}</span>
             ${selectedBadge}
             ${bleBadge}
+            ${selectBtn}
           </div>
         </div>
       `;
     })
     .join("");
+}
+
+async function selectAdapter(adapterName) {
+  if (!confirm(`Switch to adapter ${adapterName}? The add-on will restart.`)) return;
+  try {
+    showStatus(`Switching to adapter ${adapterName}...`);
+    const result = await apiPost("/api/set-adapter", { adapter: adapterName });
+    if (result.restart_required) {
+      showStatus("Restarting add-on with new adapter...");
+      await apiPost("/api/restart");
+    }
+  } catch (e) {
+    showError(`Adapter switch failed: ${e.message}`);
+    hideStatus();
+  }
 }
 
 async function loadAdapters() {

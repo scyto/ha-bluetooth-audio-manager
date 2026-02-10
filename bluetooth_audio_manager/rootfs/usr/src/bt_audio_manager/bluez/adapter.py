@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 
 from dbus_next import Variant
 from dbus_next.aio import MessageBus
@@ -189,12 +190,41 @@ class BluezAdapter:
         return self._adapter_path
 
     @staticmethod
+    def _read_sysfs_hw_info(hci_name: str) -> str | None:
+        """Read hardware manufacturer + product from sysfs for a BT adapter.
+
+        Walks up from /sys/class/bluetooth/hciX/device to find the USB
+        (or platform) device's manufacturer and product files.
+        Returns e.g. "cyber-blue(HK)Ltd CSR8510 A10" or None.
+        """
+        base = f"/sys/class/bluetooth/{hci_name}"
+        if not os.path.exists(base):
+            return None
+        try:
+            device_path = os.path.realpath(os.path.join(base, "device"))
+            # Walk up directories to find manufacturer/product files
+            # (USB devices have them one level up from the BT device)
+            for path in [device_path, os.path.dirname(device_path)]:
+                mfr_file = os.path.join(path, "manufacturer")
+                prod_file = os.path.join(path, "product")
+                if os.path.isfile(mfr_file) and os.path.isfile(prod_file):
+                    mfr = open(mfr_file).read().strip()
+                    prod = open(prod_file).read().strip()
+                    return f"{mfr} {prod}"
+                # Some devices only have product
+                if os.path.isfile(prod_file):
+                    return open(prod_file).read().strip()
+        except OSError:
+            pass
+        return None
+
+    @staticmethod
     async def list_all(bus: MessageBus) -> list[dict]:
         """Enumerate all Bluetooth adapters on the system.
 
         Returns a list of dicts with adapter info including path, address,
-        name, powered state, and whether discovery is active (indicating
-        HA BLE scanning).
+        name, powered state, hardware model, and whether discovery is
+        active (indicating HA BLE scanning).
         """
         introspection = await bus.introspect(BLUEZ_SERVICE, "/")
         proxy = bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
@@ -213,11 +243,23 @@ class BluezAdapter:
                     return None
                 return v.value if hasattr(v, "value") else v
 
+            hci_name = path.rsplit("/", 1)[-1]  # e.g. "hci0"
+
+            # Try to get hardware model from sysfs (USB manufacturer + product)
+            hw_model = BluezAdapter._read_sysfs_hw_info(hci_name)
+
+            # Fall back to BlueZ Modalias property (e.g. "usb:v0A12p0001d0678")
+            modalias = _val("Modalias") or ""
+            if not hw_model and modalias:
+                hw_model = modalias
+
             adapters.append({
                 "path": path,
-                "name": path.rsplit("/", 1)[-1],  # e.g. "hci0"
+                "name": hci_name,
                 "address": _val("Address") or "unknown",
                 "alias": _val("Alias") or "",
+                "hw_model": hw_model or "",
+                "modalias": modalias,
                 "powered": bool(_val("Powered")),
                 "discovering": bool(_val("Discovering")),
             })

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -86,6 +87,97 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             return web.json_response({"adapters": adapters})
         except Exception as e:
             logger.error("Failed to list adapters: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    @routes.post("/api/set-adapter")
+    async def set_adapter(request: web.Request) -> web.Response:
+        """Set the Bluetooth adapter for this add-on via the HA Supervisor API.
+
+        Accepts {"adapter": "hci1"} and updates the add-on options.
+        Requires a restart to take effect.
+        """
+        import aiohttp
+        try:
+            body = await request.json()
+            adapter_name = body.get("adapter")
+            if not adapter_name:
+                return web.json_response(
+                    {"error": "adapter is required"}, status=400
+                )
+
+            supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
+            if not supervisor_token:
+                return web.json_response(
+                    {"error": "Supervisor API not available (not running in HAOS?)"}, status=500
+                )
+
+            # Read current options from Supervisor
+            async with aiohttp.ClientSession() as session:
+                headers = {"Authorization": f"Bearer {supervisor_token}"}
+
+                # Get current options
+                async with session.get(
+                    "http://supervisor/addons/self/options",
+                    headers=headers,
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        return web.json_response(
+                            {"error": f"Failed to read current options: {text}"}, status=500
+                        )
+                    result = await resp.json()
+                    current_options = result.get("data", {}).get("options", {})
+
+                # Update bt_adapter
+                current_options["bt_adapter"] = adapter_name
+
+                # Write back via Supervisor
+                async with session.post(
+                    "http://supervisor/addons/self/options",
+                    headers=headers,
+                    json={"options": current_options},
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        return web.json_response(
+                            {"error": f"Failed to save options: {text}"}, status=500
+                        )
+
+            logger.info("Adapter selection changed to %s (restart required)", adapter_name)
+            return web.json_response({
+                "adapter": adapter_name,
+                "restart_required": True,
+            })
+        except Exception as e:
+            logger.error("Failed to set adapter: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    @routes.post("/api/restart")
+    async def restart_addon(request: web.Request) -> web.Response:
+        """Restart this add-on via the HA Supervisor API."""
+        import aiohttp
+        try:
+            supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
+            if not supervisor_token:
+                return web.json_response(
+                    {"error": "Supervisor API not available"}, status=500
+                )
+
+            async with aiohttp.ClientSession() as session:
+                headers = {"Authorization": f"Bearer {supervisor_token}"}
+                async with session.post(
+                    "http://supervisor/addons/self/restart",
+                    headers=headers,
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        return web.json_response(
+                            {"error": f"Restart failed: {text}"}, status=500
+                        )
+
+            return web.json_response({"restarting": True})
+        except Exception as e:
+            logger.error("Failed to restart add-on: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
     @routes.get("/api/devices")
