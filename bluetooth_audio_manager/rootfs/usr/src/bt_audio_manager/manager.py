@@ -164,11 +164,28 @@ class BluetoothAudioManager:
             try:
                 device = await self._get_or_create_device(addr)
                 if await device.is_connected():
-                    logger.info("Device %s already connected, registering handlers", addr)
+                    logger.info("Device %s already connected, initializing fully", addr)
+                    # Wait for services (should already be resolved)
+                    try:
+                        await device.wait_for_services(timeout=5)
+                    except Exception as e:
+                        logger.debug("wait_for_services for %s: %s", addr, e)
+                    # Try AVRCP media player subscription
                     try:
                         await device.watch_media_player()
                     except Exception as e:
                         logger.debug("AVRCP on existing connection %s: %s", addr, e)
+                    # Log transport properties (Volume diagnosis)
+                    await self._log_transport_properties(addr)
+                    # Check for existing PA sink
+                    if self.pulse:
+                        sink_name = await self.pulse.get_sink_for_address(addr)
+                        if sink_name:
+                            logger.info("PA sink already exists for %s: %s", addr, sink_name)
+                            if self.keepalive:
+                                self.keepalive.set_target_sink(sink_name)
+                        else:
+                            logger.warning("No PA sink found for already-connected device %s", addr)
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
 
@@ -420,12 +437,21 @@ class BluetoothAudioManager:
         Detects idle→running transitions (playback started/stopped) that
         don't trigger D-Bus signals.
         """
+        prev_sink_count = -1  # force first log
         while True:
             try:
                 await asyncio.sleep(self.SINK_POLL_INTERVAL)
                 if not self.pulse:
                     continue
                 sinks = await self.pulse.list_bt_sinks()
+                # Log sink count transitions
+                if len(sinks) != prev_sink_count:
+                    names = [s["name"] for s in sinks] if sinks else []
+                    logger.info(
+                        "BT sinks: %d (was %d) %s",
+                        len(sinks), max(prev_sink_count, 0), names,
+                    )
+                    prev_sink_count = len(sinks)
                 snapshot = json.dumps(sinks, sort_keys=True)
                 if snapshot != self._last_sink_snapshot:
                     self._last_sink_snapshot = snapshot

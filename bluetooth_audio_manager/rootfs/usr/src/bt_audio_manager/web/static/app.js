@@ -317,14 +317,22 @@ function connectSSE() {
     eventSource.close();
   }
 
-  eventSource = new EventSource(`${API_BASE}/api/events`);
+  const sseUrl = `${API_BASE}/api/events`;
+  console.log("[SSE] Connecting to", sseUrl);
+  eventSource = new EventSource(sseUrl);
+
+  eventSource.onopen = () => {
+    console.log("[SSE] Connection opened");
+  };
 
   eventSource.addEventListener("devices_changed", (e) => {
+    console.log("[SSE] devices_changed received");
     const data = JSON.parse(e.data);
     renderDevices(data.devices);
   });
 
   eventSource.addEventListener("sinks_changed", (e) => {
+    console.log("[SSE] sinks_changed received");
     const data = JSON.parse(e.data);
     renderSinks(data.sinks);
   });
@@ -332,6 +340,7 @@ function connectSSE() {
   eventSource.addEventListener("status", (e) => {
     const data = JSON.parse(e.data);
     if (data.message) {
+      console.log("[SSE] status:", data.message);
       showStatus(data.message);
     } else {
       hideStatus();
@@ -339,16 +348,19 @@ function connectSSE() {
   });
 
   eventSource.addEventListener("mpris_command", (e) => {
+    console.log("[SSE] mpris_command received");
     const data = JSON.parse(e.data);
     appendMprisCommand(data);
   });
 
   eventSource.addEventListener("avrcp_event", (e) => {
+    console.log("[SSE] avrcp_event received");
     const data = JSON.parse(e.data);
     appendAvrcpEvent(data);
   });
 
-  eventSource.onerror = () => {
+  eventSource.onerror = (e) => {
+    console.warn("[SSE] Error/disconnected, readyState:", eventSource.readyState);
     // EventSource auto-reconnects after a few seconds
   };
 }

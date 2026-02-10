@@ -273,6 +273,7 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
     @routes.get("/api/events")
     async def sse_events(request: web.Request) -> web.StreamResponse:
         """Server-Sent Events stream for real-time UI updates."""
+        logger.info("SSE client connected from %s", request.remote)
         response = web.StreamResponse(
             headers={
                 "Content-Type": "text/event-stream",
@@ -299,14 +300,22 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             for entry in manager.recent_avrcp:
                 await _send_sse(response, "avrcp_event", entry)
 
-            # Stream events as they occur
+            logger.info("SSE initial state sent, streaming events...")
+
+            # Stream events as they occur, with periodic heartbeat
+            # to keep HA ingress proxy connection alive
             while True:
-                msg = await queue.get()
-                await _send_sse(response, msg["event"], msg["data"])
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=30)
+                    await _send_sse(response, msg["event"], msg["data"])
+                except asyncio.TimeoutError:
+                    # SSE comment keeps proxy alive and flushes buffers
+                    await response.write(b": heartbeat\n\n")
         except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
             pass
         finally:
             bus.unsubscribe(queue)
+            logger.info("SSE client disconnected")
         return response
 
     return routes

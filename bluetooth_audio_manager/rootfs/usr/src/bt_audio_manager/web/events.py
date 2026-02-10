@@ -16,13 +16,13 @@ class EventBus:
         """Add a new SSE client. Returns a queue to read events from."""
         q: asyncio.Queue = asyncio.Queue(maxsize=64)
         self._clients.add(q)
-        logger.debug("SSE client connected (%d total)", len(self._clients))
+        logger.info("SSE client subscribed (%d total)", len(self._clients))
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         """Remove an SSE client."""
         self._clients.discard(q)
-        logger.debug("SSE client disconnected (%d remaining)", len(self._clients))
+        logger.info("SSE client unsubscribed (%d remaining)", len(self._clients))
 
     def emit(self, event: str, data: dict) -> None:
         """Push an event to all connected clients."""
