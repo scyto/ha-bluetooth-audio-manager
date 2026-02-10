@@ -54,7 +54,8 @@ class BluetoothAudioManager:
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_polled_volume: dict[str, int] = {}    # addr → raw 0-127
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
-        self._volume_renegotiated: set[str] = set()  # addrs where renegotiation was attempted
+        self._renegotiation_count: dict[str, int] = {}  # addr → number of attempts
+        self.MAX_RENEGOTIATION_ATTEMPTS = 1  # stop after this many tries per session
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
         # Ring buffers so SSE clients get recent events on reconnect
@@ -177,7 +178,7 @@ class BluetoothAudioManager:
                     logger.info("Device %s already connected, initializing fully", addr)
                     # Track connect time so AVRCP renegotiation checks work
                     self._device_connect_time[addr] = time.time()
-                    self._volume_renegotiated.discard(addr)
+                    self._renegotiation_count.pop(addr, None)
                     self._last_signaled_volume.pop(addr, None)
                     self._last_polled_volume.pop(addr, None)
                     # Wait for services (should already be resolved)
@@ -330,7 +331,7 @@ class BluetoothAudioManager:
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
         # Allow fresh renegotiation attempt on user-initiated connect
-        self._volume_renegotiated.discard(address)
+        self._renegotiation_count.pop(address, None)
         # If another connection attempt is already in progress, wait for it
         if address in self._connecting:
             logger.info("Connection already in progress for %s, waiting...", address)
@@ -579,7 +580,8 @@ class BluetoothAudioManager:
                         self._last_polled_volume[addr] = vol_raw
 
                         # -- AVRCP volume renegotiation checks --
-                        if addr not in self._volume_renegotiated:
+                        attempts = self._renegotiation_count.get(addr, 0)
+                        if attempts < self.MAX_RENEGOTIATION_ATTEMPTS:
                             needs_renegotiation = False
                             connect_time = self._device_connect_time.get(addr)
 
@@ -587,7 +589,8 @@ class BluetoothAudioManager:
                             if "Endpoint" not in tp:
                                 logger.info(
                                     "DIAG: Transport for %s has no Endpoint — stale transport, "
-                                    "triggering AVRCP renegotiation", addr,
+                                    "triggering AVRCP renegotiation (attempt %d)",
+                                    addr, attempts + 1,
                                 )
                                 needs_renegotiation = True
 
@@ -597,13 +600,13 @@ class BluetoothAudioManager:
                                   and addr not in self._last_signaled_volume):
                                 logger.info(
                                     "DIAG: No AVRCP volume signal for %s after %.0fs "
-                                    "— triggering renegotiation",
-                                    addr, time.time() - connect_time,
+                                    "— triggering renegotiation (attempt %d)",
+                                    addr, time.time() - connect_time, attempts + 1,
                                 )
                                 needs_renegotiation = True
 
                             if needs_renegotiation:
-                                self._volume_renegotiated.add(addr)
+                                self._renegotiation_count[addr] = attempts + 1
                                 asyncio.ensure_future(self._renegotiate_a2dp(addr))
 
                         break
@@ -617,16 +620,17 @@ class BluetoothAudioManager:
                 logger.debug("DIAG: Volume poll error: %s", e)
 
     async def _renegotiate_a2dp(self, address: str) -> None:
-        """Force A2DP disconnect/reconnect to re-negotiate AVRCP Absolute Volume.
+        """Force A2DP disconnect + ConnectProfile to re-negotiate AVRCP.
 
-        Called when the volume poll loop detects that AVRCP volume signals
-        aren't arriving (stale transport or missing initial notification).
-        Only attempted once per connection to avoid loops.
+        Uses ConnectProfile(A2DP_SINK) instead of generic Connect() to
+        force a BREDR connection.  Generic Connect() often picks BLE on
+        dual-mode devices, which doesn't set up A2DP/AVRCP properly.
 
-        Uses _connecting + _suppress_reconnect guards to prevent
-        _on_device_connected_async and the reconnect service from
-        racing with us.
+        Guards with _connecting + _suppress_reconnect to prevent
+        _on_device_connected_async and the reconnect service from racing.
         """
+        from .bluez.constants import A2DP_SINK_UUID
+
         device = self.managed_devices.get(address)
         if not device:
             return
@@ -636,15 +640,27 @@ class BluetoothAudioManager:
         try:
             logger.info("AVRCP renegotiation: disconnecting %s...", address)
             await device.disconnect()
-            await asyncio.sleep(2)
-            logger.info("AVRCP renegotiation: reconnecting %s...", address)
-            await device.connect()
-            await device.wait_for_services(timeout=10)
-            await self._ensure_a2dp_transport(address)
-            self._broadcast_status(f"Volume control restored for {address}")
+            # Wait for full disconnect (BREDR + LE bearers to drop)
+            await asyncio.sleep(3)
+
+            logger.info("AVRCP renegotiation: ConnectProfile(A2DP_SINK) for %s...", address)
+            await device.connect_profile(A2DP_SINK_UUID)
+
+            # Give BlueZ time to set up transport + AVRCP
+            await asyncio.sleep(5)
+
+            has_transport = await self._log_transport_properties(address)
+            if has_transport:
+                self._broadcast_status(f"Volume control restored for {address}")
+                logger.info("AVRCP renegotiation succeeded for %s", address)
+            else:
+                logger.warning("AVRCP renegotiation: no transport appeared for %s", address)
+                self._broadcast_status(f"Volume fix incomplete for {address} — try manual reconnect")
             await asyncio.sleep(3)
         except Exception as e:
             logger.warning("AVRCP renegotiation failed for %s: %s", address, e)
+            self._broadcast_status(f"Volume fix failed for {address} — try manual reconnect")
+            await asyncio.sleep(3)
         finally:
             self._connecting.discard(address)
             self._suppress_reconnect.discard(address)
