@@ -1,0 +1,63 @@
+#include <tunables/global>
+
+profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Capabilities (minimum for Bluetooth adapter control)
+  capability net_admin,
+  capability net_raw,
+
+  # S6-overlay and shell
+  /init ix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/lib/** ix,
+  /run/{s6,s6-rc*,service}/** ix,
+  /package/** ix,
+  /command/** ix,
+  /etc/s6-overlay/** r,
+  /etc/cont-init.d/** ix,
+
+  # D-Bus socket (required for BlueZ communication)
+  /run/dbus/system_bus_socket rw,
+
+  # PulseAudio socket (mapped by audio: true)
+  /run/pulse/** rw,
+  /tmp/pulse-*/** rw,
+
+  # Persistent data storage
+  /data/** rw,
+  /data/ r,
+
+  # Temporary files
+  /tmp/** rw,
+
+  # Python runtime
+  /usr/lib/python3*/** r,
+  /usr/bin/python3* ix,
+
+  # System libraries
+  /usr/lib/libpulse* r,
+  /usr/lib/libbluetooth* r,
+  /usr/lib/libdbus* r,
+  /lib/** r,
+
+  # Read-only system info
+  /proc/*/status r,
+  /sys/class/bluetooth/** r,
+  /sys/devices/**/bluetooth/** r,
+
+  # Network (ingress web UI, PulseAudio, D-Bus)
+  network inet stream,
+  network inet dgram,
+  network unix stream,
+  network unix dgram,
+  network bluetooth,
+
+  # CRITICAL: block raw HCI device access
+  # All Bluetooth operations MUST go through BlueZ D-Bus to avoid
+  # interfering with HA's passive BLE scanning and other integrations.
+  deny /dev/hci* rw,
+  deny /sys/kernel/** rw,
+  deny /proc/sys/** w,
+}

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bluetooth Audio Manager</title>
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Bluetooth Audio Manager</h1>
+      <p class="subtitle">Manage Bluetooth audio device connections</p>
+    </header>
+
+    <section class="actions">
+      <button id="btn-scan" class="btn btn-primary">
+        <span class="icon">&#x1F50D;</span> Scan for Devices
+      </button>
+      <button id="btn-refresh" class="btn btn-secondary">
+        <span class="icon">&#x21BB;</span> Refresh
+      </button>
+    </section>
+
+    <div id="scan-status" class="status-bar hidden">
+      <span class="spinner"></span>
+      <span id="scan-status-text">Scanning...</span>
+    </div>
+
+    <section id="devices-section">
+      <h2>Devices</h2>
+      <div id="devices-list" class="devices-list">
+        <p class="placeholder">Click "Scan for Devices" to discover nearby Bluetooth audio devices, or "Refresh" to see paired devices.</p>
+      </div>
+    </section>
+
+    <section id="sinks-section">
+      <h2>Audio Sinks</h2>
+      <div id="sinks-list" class="sinks-list">
+        <p class="placeholder">No Bluetooth audio sinks available.</p>
+      </div>
+    </section>
+  </div>
+
+  <script src="static/app.js"></script>
+</body>
+</html>

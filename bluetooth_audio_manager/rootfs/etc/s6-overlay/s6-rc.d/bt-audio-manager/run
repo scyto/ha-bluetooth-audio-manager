@@ -1,0 +1,9 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Start the Bluetooth Audio Manager service
+# ==============================================================================
+
+bashio::log.info "Starting Bluetooth Audio Manager..."
+
+exec python3 -m bt_audio_manager
