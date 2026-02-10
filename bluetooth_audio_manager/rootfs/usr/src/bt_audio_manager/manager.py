@@ -501,14 +501,131 @@ class BluetoothAudioManager:
         Each adapter dict includes a flag indicating whether it's the
         one this add-on is configured to use, and whether it appears to
         be running HA's BLE scanning (Discovering=true).
+
+        Enriches adapter entries with USB device names from the HA
+        Supervisor hardware API when sysfs info isn't available (common
+        inside Docker containers).
         """
         if not self.bus:
             return []
         adapters = await BluezAdapter.list_all(self.bus)
+
+        # Enrich with USB device names from Supervisor if sysfs failed
+        needs_enrichment = any(
+            not a["hw_model"] or a["hw_model"] == a["modalias"]
+            for a in adapters
+        )
+        if needs_enrichment:
+            usb_names = await self._get_supervisor_usb_names()
+            if usb_names:
+                for a in adapters:
+                    if a["hw_model"] and a["hw_model"] != a["modalias"]:
+                        continue  # already has a good name from sysfs
+                    # Try direct match by hci name (from sysfs path in Supervisor data)
+                    hci_key = f"hci:{a['name']}"
+                    if hci_key in usb_names:
+                        a["hw_model"] = usb_names[hci_key]
+                        continue
+                    # Try match by Modalias → USB vendor:product
+                    usb_id = self._modalias_to_usb_id(a["modalias"])
+                    if usb_id and usb_id in usb_names:
+                        a["hw_model"] = usb_names[usb_id]
+
         for a in adapters:
             a["selected"] = a["path"] == self._adapter_path
             a["ble_scanning"] = a["discovering"] and not a["selected"]
         return adapters
+
+    @staticmethod
+    async def _get_supervisor_usb_names() -> dict[str, str]:
+        """Query the HA Supervisor hardware API for USB device names.
+
+        Returns two mappings:
+        - USB id (vendor:product, lowercase) → device description
+        - hci adapter name → device description (when sysfs path reveals it)
+        Combined into a single dict keyed by both.
+        """
+        import aiohttp
+        token = os.environ.get("SUPERVISOR_TOKEN")
+        if not token:
+            return {}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "http://supervisor/hardware/info",
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as resp:
+                    if resp.status != 200:
+                        return {}
+                    result = await resp.json()
+
+            devices = result.get("data", {}).get("devices", [])
+            names: dict[str, str] = {}
+
+            for dev in devices:
+                attrs = dev.get("attributes", {})
+                subsystem = dev.get("subsystem", "")
+                sysfs = dev.get("sysfs", dev.get("by_id", ""))
+                dev_name = dev.get("name", "")
+
+                # Build a human-readable name from available attributes
+                name = (
+                    attrs.get("ID_MODEL_FROM_DATABASE")
+                    or attrs.get("ID_MODEL")
+                    or ""
+                )
+                vendor = (
+                    attrs.get("ID_VENDOR_FROM_DATABASE")
+                    or attrs.get("ID_VENDOR")
+                    or ""
+                )
+                full_name = f"{vendor} {name}".strip() if vendor and name else (name or vendor or dev_name)
+
+                if not full_name:
+                    continue
+
+                # Key by USB vendor:product if available
+                vid = attrs.get("ID_VENDOR_ID", "")
+                pid = attrs.get("ID_MODEL_ID", "")
+                if vid and pid:
+                    usb_id = f"{vid.lower()}:{pid.lower()}"
+                    names[usb_id] = full_name
+
+                # Key by hci name if the sysfs path reveals the BT adapter
+                # e.g. sysfs path containing /bluetooth/hci0
+                if "bluetooth" in sysfs.lower() or subsystem == "bluetooth":
+                    import re
+                    m = re.search(r"(hci\d+)", sysfs)
+                    if m:
+                        names[f"hci:{m.group(1)}"] = full_name
+
+            logger.info("Supervisor HW names: %s", names)
+            # Also log raw device list for debugging (first time only)
+            if not names:
+                for dev in devices[:20]:
+                    logger.info("Supervisor HW device: subsystem=%s name=%s sysfs=%s attrs=%s",
+                                dev.get("subsystem"), dev.get("name"),
+                                dev.get("sysfs", dev.get("by_id", "")),
+                                {k: v for k, v in dev.get("attributes", {}).items()
+                                 if any(kw in k.upper() for kw in ("VENDOR", "MODEL", "PRODUCT", "ID_"))})
+            return names
+        except Exception as e:
+            logger.debug("Failed to query Supervisor hardware API: %s", e)
+            return {}
+
+    @staticmethod
+    def _modalias_to_usb_id(modalias: str) -> str | None:
+        """Convert a USB modalias to a vendor:product ID string.
+
+        'usb:v1234p5678d0001' → '1234:5678'
+        """
+        import re
+        if not modalias or not modalias.startswith("usb:"):
+            return None
+        m = re.match(r"usb:v([0-9A-Fa-f]{4})p([0-9A-Fa-f]{4})", modalias)
+        if not m:
+            return None
+        return f"{m.group(1).lower()}:{m.group(2).lower()}"
 
     # -- Sink state polling --
 
