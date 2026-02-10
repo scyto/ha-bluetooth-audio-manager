@@ -163,6 +163,79 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             logger.error("Failed to list audio sinks: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
+    @routes.get("/api/diagnostics/mpris")
+    async def diagnostics_mpris(request: web.Request) -> web.Response:
+        """Diagnostic endpoint for MPRIS/AVRCP troubleshooting."""
+        from ..bluez.constants import (
+            BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, PLAYER_PATH,
+        )
+        results = {}
+        bus = manager.bus
+
+        # 1. Check registration state
+        results["player_registered"] = (
+            manager.media_player is not None
+            and manager.media_player._registered
+        )
+
+        if not bus:
+            results["error"] = "D-Bus not connected"
+            return web.json_response(results)
+
+        results["bus_name"] = bus.unique_name
+        results["player_path"] = PLAYER_PATH
+
+        # 2. Self-introspect: is our player visible on the bus?
+        try:
+            own_intro = await bus.introspect(bus.unique_name, PLAYER_PATH)
+            xml_str = own_intro.tostring()
+            results["player_exported"] = (
+                "org.mpris.MediaPlayer2.Player" in xml_str
+            )
+        except Exception as e:
+            results["player_exported"] = False
+            results["player_export_error"] = str(e)
+
+        # 3. Self-test: call our own PlaybackStatus via D-Bus round-trip
+        try:
+            test_intro = await bus.introspect(bus.unique_name, PLAYER_PATH)
+            test_proxy = bus.get_proxy_object(
+                bus.unique_name, PLAYER_PATH, test_intro,
+            )
+            props_iface = test_proxy.get_interface(
+                "org.freedesktop.DBus.Properties",
+            )
+            status = await props_iface.call_get(
+                "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
+            )
+            results["self_test_playback_status"] = status.value
+            results["self_test_passed"] = True
+        except Exception as e:
+            results["self_test_passed"] = False
+            results["self_test_error"] = str(e)
+
+        # 4. List any BlueZ MediaPlayer1 objects on connected devices
+        try:
+            intro = await bus.introspect(BLUEZ_SERVICE, "/")
+            proxy = bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+            obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+            objects = await obj_mgr.call_get_managed_objects()
+
+            bluez_players = []
+            for path, ifaces in objects.items():
+                if "org.bluez.MediaPlayer1" in ifaces:
+                    props = ifaces["org.bluez.MediaPlayer1"]
+                    bluez_players.append({
+                        "path": path,
+                        "status": str(props.get("Status", {}).value)
+                            if props.get("Status") else "unknown",
+                    })
+            results["bluez_media_players"] = bluez_players
+        except Exception as e:
+            results["bluez_media_players_error"] = str(e)
+
+        return web.json_response(results)
+
     @routes.get("/api/events")
     async def sse_events(request: web.Request) -> web.StreamResponse:
         """Server-Sent Events stream for real-time UI updates."""

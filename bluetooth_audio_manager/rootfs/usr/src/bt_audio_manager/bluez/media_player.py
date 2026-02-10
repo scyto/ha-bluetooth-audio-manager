@@ -228,9 +228,24 @@ class AVRCPMediaPlayer:
         await media.call_register_player(PLAYER_PATH, properties)
         self._registered = True
         logger.info(
-            "AVRCP media player registered at %s (receives speaker button events)",
-            PLAYER_PATH,
+            "AVRCP media player registered at %s on bus %s",
+            PLAYER_PATH, self._bus.unique_name,
         )
+
+        # Verify the player interface is visible via D-Bus round-trip
+        try:
+            own_intro = await self._bus.introspect(self._bus.unique_name, PLAYER_PATH)
+            visible = "org.mpris.MediaPlayer2.Player" in own_intro.tostring()
+            logger.info(
+                "MPRIS player self-introspect: visible=%s", visible,
+            )
+            if not visible:
+                logger.warning(
+                    "MPRIS player interface NOT found in introspection — "
+                    "BlueZ will not be able to call our methods"
+                )
+        except Exception as e:
+            logger.warning("MPRIS player self-introspect failed: %s", e)
 
     async def unregister(self) -> None:
         """Unregister the player from BlueZ."""
