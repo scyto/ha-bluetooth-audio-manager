@@ -329,6 +329,8 @@ class BluetoothAudioManager:
 
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
+        # Allow fresh renegotiation attempt on user-initiated connect
+        self._volume_renegotiated.discard(address)
         # If another connection attempt is already in progress, wait for it
         if address in self._connecting:
             logger.info("Connection already in progress for %s, waiting...", address)
@@ -679,11 +681,12 @@ class BluetoothAudioManager:
 
     def _on_device_disconnected(self, address: str) -> None:
         """Handle device disconnection event."""
-        # Clean up volume tracking state
+        # Clean up volume tracking state (but NOT _volume_renegotiated —
+        # that is only cleared by explicit user actions or startup init,
+        # to prevent infinite renegotiation loops).
         self._device_connect_time.pop(address, None)
         self._last_polled_volume.pop(address, None)
         self._last_signaled_volume.pop(address, None)
-        self._volume_renegotiated.discard(address)
 
         if address in self._suppress_reconnect:
             # User-initiated disconnect — don't auto-reconnect
@@ -697,10 +700,9 @@ class BluetoothAudioManager:
         """Handle device connection event (D-Bus signal)."""
         # Track connection time for AVRCP volume renegotiation checks
         self._device_connect_time[address] = time.time()
-        # Only reset renegotiation flag for organic connections (not our own
-        # renegotiation reconnect), so Check B doesn't re-trigger immediately.
-        if address not in self._connecting:
-            self._volume_renegotiated.discard(address)
+        # Do NOT clear _volume_renegotiated here — organic reconnects after
+        # a failed renegotiation would reset the flag and trigger another loop.
+        # Only explicit user actions (connect_device) clear it.
         self._last_signaled_volume.pop(address, None)
         self._last_polled_volume.pop(address, None)
         asyncio.ensure_future(self._on_device_connected_async(address))
