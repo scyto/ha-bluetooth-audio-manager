@@ -12,7 +12,11 @@ COPY requirements.txt /tmp/
 RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
+RUN mkdir -p /data
+
 COPY rootfs /
+
+ENV PYTHONPATH="/usr/src"
 
 ARG BUILD_ARCH
 ARG BUILD_DATE

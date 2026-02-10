@@ -3,6 +3,7 @@ version: "0.1.0"
 slug: bluetooth_audio_manager
 description: "Manage Bluetooth audio device connections (A2DP) with persistent pairing, auto-reconnect, and AppArmor security."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
+image: "ghcr.io/scyto/ha-bluetooth-audio-manager/{arch}"
 arch:
   - aarch64
   - amd64
