@@ -620,11 +620,17 @@ class BluetoothAudioManager:
         Called when the volume poll loop detects that AVRCP volume signals
         aren't arriving (stale transport or missing initial notification).
         Only attempted once per connection to avoid loops.
+
+        Uses _connecting + _suppress_reconnect guards to prevent
+        _on_device_connected_async and the reconnect service from
+        racing with us.
         """
-        self._broadcast_status(f"Re-establishing audio link for {address}...")
         device = self.managed_devices.get(address)
         if not device:
             return
+        self._broadcast_status(f"Fixing volume control for {address} — reconnecting audio...")
+        self._connecting.add(address)
+        self._suppress_reconnect.add(address)
         try:
             logger.info("AVRCP renegotiation: disconnecting %s...", address)
             await device.disconnect()
@@ -633,9 +639,13 @@ class BluetoothAudioManager:
             await device.connect()
             await device.wait_for_services(timeout=10)
             await self._ensure_a2dp_transport(address)
+            self._broadcast_status(f"Volume control restored for {address}")
+            await asyncio.sleep(3)
         except Exception as e:
             logger.warning("AVRCP renegotiation failed for %s: %s", address, e)
         finally:
+            self._connecting.discard(address)
+            self._suppress_reconnect.discard(address)
             self.event_bus.emit("status", {"message": ""})
             await self._broadcast_all()
 
@@ -687,7 +697,10 @@ class BluetoothAudioManager:
         """Handle device connection event (D-Bus signal)."""
         # Track connection time for AVRCP volume renegotiation checks
         self._device_connect_time[address] = time.time()
-        self._volume_renegotiated.discard(address)
+        # Only reset renegotiation flag for organic connections (not our own
+        # renegotiation reconnect), so Check B doesn't re-trigger immediately.
+        if address not in self._connecting:
+            self._volume_renegotiated.discard(address)
         self._last_signaled_volume.pop(address, None)
         self._last_polled_volume.pop(address, None)
         asyncio.ensure_future(self._on_device_connected_async(address))
