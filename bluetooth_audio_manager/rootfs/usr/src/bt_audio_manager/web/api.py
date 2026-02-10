@@ -185,34 +185,36 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
         results["bus_name"] = bus.unique_name
         results["player_path"] = PLAYER_PATH
 
-        # 2. Self-introspect: is our player visible on the bus?
+        # 2. Check local export (no D-Bus round-trip — system bus policy
+        #    blocks method calls to our own unique name, but BlueZ has
+        #    elevated permissions and CAN call us).
+        from ..bluez.media_player import MPRISPlayerInterface
         try:
-            own_intro = await bus.introspect(bus.unique_name, PLAYER_PATH)
-            xml_str = own_intro.tostring()
-            results["player_exported"] = (
-                "org.mpris.MediaPlayer2.Player" in xml_str
+            exported_ifaces = bus._path_exports.get(PLAYER_PATH, [])
+            results["player_exported"] = any(
+                isinstance(i, MPRISPlayerInterface) for i in exported_ifaces
             )
         except Exception as e:
             results["player_exported"] = False
             results["player_export_error"] = str(e)
 
-        # 3. Self-test: call our own PlaybackStatus via D-Bus round-trip
+        # 3. Verify our bus name is active on the system bus
         try:
-            test_intro = await bus.introspect(bus.unique_name, PLAYER_PATH)
-            test_proxy = bus.get_proxy_object(
-                bus.unique_name, PLAYER_PATH, test_intro,
+            dbus_intro = await bus.introspect(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus",
             )
-            props_iface = test_proxy.get_interface(
-                "org.freedesktop.DBus.Properties",
+            dbus_proxy = bus.get_proxy_object(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", dbus_intro,
             )
-            status = await props_iface.call_get(
-                "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
-            )
-            results["self_test_playback_status"] = status.value
-            results["self_test_passed"] = True
+            dbus_iface = dbus_proxy.get_interface("org.freedesktop.DBus")
+            has_owner = await dbus_iface.call_name_has_owner(bus.unique_name)
+            results["bus_name_active"] = has_owner
         except Exception as e:
-            results["self_test_passed"] = False
-            results["self_test_error"] = str(e)
+            results["bus_name_active_error"] = str(e)
+
+        # NOTE: D-Bus round-trip self-test is not possible on the system bus
+        # because the default policy denies method_call to arbitrary unique
+        # names.  BlueZ (running as root) can still call our methods.
 
         # 4. List any BlueZ MediaPlayer1 objects on connected devices
         try:

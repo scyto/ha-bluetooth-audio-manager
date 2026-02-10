@@ -232,20 +232,21 @@ class AVRCPMediaPlayer:
             PLAYER_PATH, self._bus.unique_name,
         )
 
-        # Verify the player interface is visible via D-Bus round-trip
+        # Verify the player object is exported locally (no D-Bus round-trip;
+        # the system bus default policy blocks method calls to our own unique
+        # name, but BlueZ has elevated permissions and CAN call us).
         try:
-            own_intro = await self._bus.introspect(self._bus.unique_name, PLAYER_PATH)
-            visible = "org.mpris.MediaPlayer2.Player" in own_intro.tostring()
-            logger.info(
-                "MPRIS player self-introspect: visible=%s", visible,
+            from dbus_next.service import ServiceInterface
+            exported = any(
+                isinstance(iface, MPRISPlayerInterface)
+                for iface in self._bus._path_exports.get(PLAYER_PATH, [])
             )
-            if not visible:
-                logger.warning(
-                    "MPRIS player interface NOT found in introspection — "
-                    "BlueZ will not be able to call our methods"
-                )
+            logger.info(
+                "MPRIS player export check: path=%s exported=%s bus=%s",
+                PLAYER_PATH, exported, self._bus.unique_name,
+            )
         except Exception as e:
-            logger.warning("MPRIS player self-introspect failed: %s", e)
+            logger.debug("MPRIS player export check failed: %s", e)
 
     async def unregister(self) -> None:
         """Unregister the player from BlueZ."""
