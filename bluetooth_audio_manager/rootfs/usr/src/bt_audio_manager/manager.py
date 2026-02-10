@@ -307,6 +307,8 @@ class BluetoothAudioManager:
 
     async def get_all_devices(self) -> list[dict]:
         """Get combined list of discovered and paired devices."""
+        if not self.adapter:
+            return []  # still initializing
         # Get currently visible devices from BlueZ
         discovered = await self.adapter.get_audio_devices()
 

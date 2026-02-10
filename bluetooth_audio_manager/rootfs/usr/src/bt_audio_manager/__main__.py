@@ -50,8 +50,9 @@ async def main() -> None:
         loop.add_signal_handler(sig, _signal_handler)
 
     try:
-        await manager.start()
+        # Start web server first so ingress doesn't show 502 during init
         await web_server.start()
+        await manager.start()
         logger.info("All services running. Waiting for shutdown signal...")
         await shutdown_event.wait()
     except Exception as e:
