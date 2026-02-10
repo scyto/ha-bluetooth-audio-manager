@@ -330,8 +330,12 @@ class BluetoothAudioManager:
 
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
-        # Allow fresh renegotiation attempt on user-initiated connect
-        self._renegotiation_count.pop(address, None)
+        # Do NOT reset _renegotiation_count here.  If renegotiation already
+        # ran (or timed out) and the user manually reconnects, resetting the
+        # counter would let Check B fire again after 15 s and disconnect the
+        # device the user just connected.  The counter is only cleared at
+        # add-on startup for devices that are already connected.
+
         # If another connection attempt is already in progress, wait for it
         if address in self._connecting:
             logger.info("Connection already in progress for %s, waiting...", address)
