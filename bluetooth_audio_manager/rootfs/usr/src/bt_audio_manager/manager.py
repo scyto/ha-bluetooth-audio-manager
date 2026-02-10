@@ -45,6 +45,7 @@ class BluetoothAudioManager:
         self.event_bus = EventBus()
         self._sink_poll_task: asyncio.Task | None = None
         self._last_sink_snapshot: str = ""
+        self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
 
     async def start(self) -> None:
         """Full startup sequence."""
@@ -185,6 +186,8 @@ class BluetoothAudioManager:
         # Cancel any pending auto-reconnect to avoid racing
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
+        # Clear any disconnect suppression (user wants to connect now)
+        self._suppress_reconnect.discard(address)
         self._broadcast_status(f"Connecting to {address}...")
         device = await self._get_or_create_device(address)
 
@@ -222,9 +225,13 @@ class BluetoothAudioManager:
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
 
+        # Suppress auto-reconnect for this user-initiated disconnect
+        self._suppress_reconnect.add(address)
+
         device = self.managed_devices.get(address)
         if device:
             await device.disconnect()
+        self.event_bus.emit("status", {"message": ""})
         await self._broadcast_all()
 
     async def forget_device(self, address: str) -> None:
@@ -339,7 +346,11 @@ class BluetoothAudioManager:
 
     def _on_device_disconnected(self, address: str) -> None:
         """Handle device disconnection event."""
-        if self.reconnect_service:
+        if address in self._suppress_reconnect:
+            # User-initiated disconnect — don't auto-reconnect
+            self._suppress_reconnect.discard(address)
+            logger.info("Skipping auto-reconnect for %s (user-initiated disconnect)", address)
+        elif self.reconnect_service:
             self.reconnect_service.handle_disconnect(address)
         asyncio.ensure_future(self._broadcast_all())
 
