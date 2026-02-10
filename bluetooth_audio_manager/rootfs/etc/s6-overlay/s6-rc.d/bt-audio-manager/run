@@ -4,6 +4,13 @@
 # Start the Bluetooth Audio Manager service
 # ==============================================================================
 
-bashio::log.info "Starting Bluetooth Audio Manager..."
+bashio::log.info "Starting Bluetooth Audio Manager v${BUILD_VERSION:-unknown} (${BUILD_SHA:-no-sha})..."
+bashio::log.info "PYTHONPATH=${PYTHONPATH}"
+
+if [ ! -d "/usr/src/bt_audio_manager" ]; then
+    bashio::log.error "Module directory /usr/src/bt_audio_manager NOT FOUND"
+    ls -la /usr/src/ 2>&1 | while read -r line; do bashio::log.error "  ${line}"; done
+    exit 1
+fi
 
 exec python3 -m bt_audio_manager

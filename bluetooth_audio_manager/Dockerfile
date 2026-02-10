@@ -29,6 +29,9 @@ ENV PYTHONPATH="/usr/src"
 ARG BUILD_ARCH
 ARG BUILD_DATE
 ARG BUILD_VERSION
+ARG BUILD_SHA=""
+ENV BUILD_VERSION="${BUILD_VERSION}" \
+    BUILD_SHA="${BUILD_SHA}"
 LABEL \
     io.hass.name="Bluetooth Audio Manager" \
     io.hass.type="addon" \
