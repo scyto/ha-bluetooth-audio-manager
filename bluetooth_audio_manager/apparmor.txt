@@ -39,6 +39,9 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /usr/bin/python3* ix,
 
   # Application code (PYTHONPATH=/usr/src)
+  # /usr/src/ r, is needed separately — /** covers children but not the
+  # directory itself, and Python's import needs to scandir() the parent.
+  /usr/src/ r,
   /usr/src/** r,
 
   # System libraries

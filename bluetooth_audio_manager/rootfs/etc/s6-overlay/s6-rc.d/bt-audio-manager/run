@@ -7,10 +7,10 @@
 bashio::log.info "Starting Bluetooth Audio Manager v${BUILD_VERSION:-unknown} (${BUILD_SHA:-no-sha})..."
 bashio::log.info "PYTHONPATH=${PYTHONPATH}"
 
-if [ ! -d "/usr/src/bt_audio_manager" ]; then
-    bashio::log.error "Module directory /usr/src/bt_audio_manager NOT FOUND"
-    ls -la /usr/src/ 2>&1 | while read -r line; do bashio::log.error "  ${line}"; done
-    exit 1
-fi
+# Diagnostics: verify Python can see the module
+bashio::log.info "ls /usr/src/: $(ls /usr/src/ 2>&1)"
+bashio::log.info "ls /usr/src/bt_audio_manager/: $(ls /usr/src/bt_audio_manager/ 2>&1)"
+bashio::log.info "Python sys.path: $(python3 -c 'import sys; print(sys.path)' 2>&1)"
+bashio::log.info "Python import test: $(python3 -c 'import bt_audio_manager; print("OK")' 2>&1)"
 
 exec python3 -m bt_audio_manager
