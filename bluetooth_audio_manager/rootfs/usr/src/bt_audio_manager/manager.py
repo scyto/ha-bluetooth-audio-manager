@@ -659,15 +659,33 @@ class BluetoothAudioManager:
             await device.connect_profile(A2DP_SINK_UUID)
 
             # Give BlueZ time to set up transport + AVRCP
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
             has_transport = await self._log_transport_properties(address)
-            if has_transport:
-                self._broadcast_status(f"Volume control restored for {address}")
-                logger.info("AVRCP renegotiation succeeded for %s", address)
-            else:
+            if not has_transport:
                 logger.warning("AVRCP renegotiation: no transport appeared for %s", address)
                 self._broadcast_status(f"Volume fix incomplete for {address} — try manual reconnect")
+                await asyncio.sleep(3)
+                return
+
+            logger.info("AVRCP renegotiation transport OK for %s, waiting for PA sink...", address)
+            self._broadcast_status(f"Waiting for audio sink for {address}...")
+
+            # PulseAudio may not notice the new transport automatically —
+            # wait for the PA sink to appear (module-bluez5-discover picks
+            # up the State transition when audio starts flowing).
+            sink_name = None
+            if self.pulse:
+                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
+
+            if sink_name:
+                logger.info("AVRCP renegotiation succeeded for %s — sink %s", address, sink_name)
+                self._broadcast_status(f"Volume control restored for {address}")
+                if self.keepalive:
+                    self.keepalive.set_target_sink(sink_name)
+            else:
+                logger.warning("AVRCP renegotiation: transport OK but no PA sink for %s", address)
+                self._broadcast_status(f"Audio transport restored but no sink — try manual reconnect")
             await asyncio.sleep(3)
         except Exception as e:
             logger.warning("AVRCP renegotiation failed for %s: %s", address, e)
