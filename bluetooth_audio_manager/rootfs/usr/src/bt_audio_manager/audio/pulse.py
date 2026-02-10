@@ -254,6 +254,70 @@ class PulseAudioManager:
         await self._pulse.sink_default_set(sink_name)
         logger.info("Default audio output set to %s", sink_name)
 
+    async def reload_bluez_discover(self) -> bool:
+        """Unload and reload PulseAudio's module-bluez5-discover.
+
+        Forces PA to re-enumerate all BlueZ transports and create sinks
+        for any it missed (e.g. transports that existed before the module
+        started or were recreated without a proper InterfacesAdded signal).
+
+        Returns True if the reload succeeded.
+        """
+        try:
+            # Find the module index for module-bluez5-discover
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "list", "modules", "short",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning("pactl list modules failed (rc=%d)", proc.returncode)
+                return False
+
+            module_ids = []
+            for line in stdout.decode(errors="replace").splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 2 and "module-bluez5-discover" in parts[1]:
+                    module_ids.append(parts[0])
+
+            if not module_ids:
+                logger.warning("module-bluez5-discover not found in PulseAudio")
+                return False
+
+            # Unload existing module(s)
+            for mid in module_ids:
+                logger.info("Unloading PA module-bluez5-discover (id=%s)", mid)
+                proc = await asyncio.create_subprocess_exec(
+                    "pactl", "unload-module", mid,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+
+            await asyncio.sleep(1)
+
+            # Reload the module
+            logger.info("Loading PA module-bluez5-discover")
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "load-module", "module-bluez5-discover",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "pactl load-module failed (rc=%d): %s",
+                    proc.returncode, stderr.decode(errors="replace"),
+                )
+                return False
+
+            logger.info("PA module-bluez5-discover reloaded successfully")
+            return True
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning("pactl not available for module reload: %s", exc)
+            return False
+
     async def get_sink_for_address(self, address: str) -> str | None:
         """Get the current sink name for a Bluetooth address, if it exists."""
         addr_underscored = address.replace(":", "_")

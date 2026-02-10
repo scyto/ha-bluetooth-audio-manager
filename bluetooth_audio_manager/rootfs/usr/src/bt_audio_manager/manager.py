@@ -196,8 +196,14 @@ class BluetoothAudioManager:
                     # Check for existing PA sink
                     if self.pulse:
                         sink_name = await self.pulse.get_sink_for_address(addr)
+                        if not sink_name:
+                            # PA may have lost track during add-on restart —
+                            # reload module-bluez5-discover to re-enumerate
+                            logger.info("No PA sink for %s at startup, reloading bluez5-discover...", addr)
+                            if await self.pulse.reload_bluez_discover():
+                                sink_name = await self.pulse.wait_for_bt_sink(addr, timeout=10)
                         if sink_name:
-                            logger.info("PA sink already exists for %s: %s", addr, sink_name)
+                            logger.info("PA sink for %s: %s", addr, sink_name)
                             if self.keepalive:
                                 self.keepalive.set_target_sink(sink_name)
                         else:
@@ -671,12 +677,17 @@ class BluetoothAudioManager:
             logger.info("AVRCP renegotiation transport OK for %s, waiting for PA sink...", address)
             self._broadcast_status(f"Waiting for audio sink for {address}...")
 
-            # PulseAudio may not notice the new transport automatically —
-            # wait for the PA sink to appear (module-bluez5-discover picks
-            # up the State transition when audio starts flowing).
             sink_name = None
             if self.pulse:
-                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
+                # First try: wait for PA to notice naturally
+                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=10)
+
+                if not sink_name:
+                    # PA missed the transport — reload module-bluez5-discover
+                    logger.info("PA sink not found, reloading module-bluez5-discover...")
+                    self._broadcast_status(f"Reloading audio discovery for {address}...")
+                    if await self.pulse.reload_bluez_discover():
+                        sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
 
             if sink_name:
                 logger.info("AVRCP renegotiation succeeded for %s — sink %s", address, sink_name)
