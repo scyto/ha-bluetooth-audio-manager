@@ -739,6 +739,18 @@ class BluetoothAudioManager:
                     if await self.pulse.activate_bt_card_profile(address):
                         sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
 
+            # Re-register MPRIS player to force BlueZ to re-negotiate
+            # AVRCP capabilities (including volume change notifications)
+            # with the speaker on the fresh AVRCP session.
+            if self.media_player:
+                try:
+                    logger.info("Re-registering MPRIS player to refresh AVRCP capabilities...")
+                    await self.media_player.unregister()
+                    await asyncio.sleep(1)
+                    await self.media_player.register()
+                except Exception as e:
+                    logger.warning("MPRIS player re-registration failed: %s", e)
+
             if sink_name:
                 logger.info("AVRCP renegotiation succeeded for %s — sink %s", address, sink_name)
                 self._broadcast_status(f"Volume control restored for {address}")
