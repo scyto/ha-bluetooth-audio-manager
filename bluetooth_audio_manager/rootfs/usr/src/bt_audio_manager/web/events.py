@@ -28,11 +28,12 @@ class EventBus:
         """Push an event to all connected clients."""
         if not self._clients:
             return
+        logger.info("EventBus emit: %s → %d client(s)", event, len(self._clients))
         for q in self._clients:
             try:
                 q.put_nowait({"event": event, "data": data})
             except asyncio.QueueFull:
-                logger.debug("Dropping SSE event for slow client")
+                logger.warning("Dropping SSE event '%s' for slow client (queue full)", event)
 
     @property
     def client_count(self) -> int:

@@ -41,9 +41,16 @@ def _friendly_error(e: Exception) -> str:
 async def _send_sse(
     response: web.StreamResponse, event: str, data: dict
 ) -> None:
-    """Write a single SSE frame to the stream."""
+    """Write a single SSE frame to the stream.
+
+    Includes a 2 KB padding comment to push the data through the
+    HA ingress proxy buffer (the proxy may hold small writes until
+    enough data accumulates).
+    """
     payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
-    await response.write(payload.encode())
+    # Padding flushes small events through the ingress proxy buffer
+    padding = ": " + "." * 2048 + "\n\n"
+    await response.write((payload + padding).encode())
 
 
 def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
@@ -306,7 +313,8 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             # to keep HA ingress proxy connection alive
             while True:
                 try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=30)
+                    msg = await asyncio.wait_for(queue.get(), timeout=15)
+                    logger.info("SSE sending: %s", msg["event"])
                     await _send_sse(response, msg["event"], msg["data"])
                 except asyncio.TimeoutError:
                     # SSE comment keeps proxy alive and flushes buffers
