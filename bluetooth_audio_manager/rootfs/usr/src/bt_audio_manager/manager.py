@@ -632,15 +632,16 @@ class BluetoothAudioManager:
                 logger.debug("DIAG: Volume poll error: %s", e)
 
     async def _renegotiate_a2dp(self, address: str) -> None:
-        """Force A2DP re-negotiation to restore AVRCP Absolute Volume.
+        """Force full AVRCP re-negotiation to restore Absolute Volume.
 
-        Lightweight approach: cycle just the A2DP profile via
-        DisconnectProfile + ConnectProfile.  This tears down the stale
-        transport and re-establishes it with fresh AVRCP negotiation,
-        without dropping the whole device connection.
+        A profile-only cycle (DisconnectProfile + ConnectProfile) re-creates
+        the transport but doesn't fully re-negotiate AVRCP Absolute Volume
+        in the speaker→host direction.  A full device disconnect forces
+        BlueZ to tear down the entire AVRCP stack, then ConnectProfile
+        with A2DP_SINK re-establishes everything via BREDR from scratch.
 
-        Guards with _connecting to prevent _on_device_connected_async
-        from racing with _ensure_a2dp_transport.
+        Guards with _connecting + _suppress_reconnect to prevent
+        _on_device_connected_async and the reconnect service from racing.
         """
         from .bluez.constants import A2DP_SINK_UUID
 
@@ -649,18 +650,15 @@ class BluetoothAudioManager:
             return
         self._broadcast_status(f"Fixing volume control for {address}...")
         self._connecting.add(address)
+        self._suppress_reconnect.add(address)
         try:
-            # Tear down just the A2DP profile (drops stale transport)
-            logger.info("AVRCP renegotiation: disconnecting A2DP profile for %s...", address)
-            try:
-                await device.disconnect_profile(A2DP_SINK_UUID)
-            except Exception as e:
-                logger.info("DisconnectProfile A2DP for %s: %s (continuing)", address, e)
-
+            # Full device disconnect — tears down AVRCP + A2DP completely
+            logger.info("AVRCP renegotiation: full disconnect %s...", address)
+            await device.disconnect()
             await asyncio.sleep(2)
 
-            # Re-establish A2DP — forces fresh AVRCP negotiation
-            logger.info("AVRCP renegotiation: reconnecting A2DP profile for %s...", address)
+            # Reconnect via A2DP profile (ensures BREDR, full AVRCP negotiation)
+            logger.info("AVRCP renegotiation: ConnectProfile(A2DP) for %s...", address)
             self._broadcast_status(f"Re-establishing audio for {address}...")
             await device.connect_profile(A2DP_SINK_UUID)
 
@@ -704,6 +702,7 @@ class BluetoothAudioManager:
             await asyncio.sleep(3)
         finally:
             self._connecting.discard(address)
+            self._suppress_reconnect.discard(address)
             self.event_bus.emit("status", {"message": ""})
             await self._broadcast_all()
 
