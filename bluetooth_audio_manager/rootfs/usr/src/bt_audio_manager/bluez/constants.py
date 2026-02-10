@@ -5,7 +5,9 @@ A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb"
 A2DP_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
 
 # Audio/Video Remote Control Profile (AVRCP)
-AVRCP_UUID = "0000110e-0000-1000-8000-00805f9b34fb"
+AVRCP_TARGET_UUID = "0000110c-0000-1000-8000-00805f9b34fb"      # A/V Remote Control Target
+AVRCP_CONTROLLER_UUID = "0000110e-0000-1000-8000-00805f9b34fb"  # A/V Remote Control Controller
+AVRCP_UUID = AVRCP_CONTROLLER_UUID  # backwards compat
 
 # Hands-Free Profile (HFP)
 HFP_UUID = "0000111e-0000-1000-8000-00805f9b34fb"
@@ -32,4 +34,4 @@ MEDIA_INTERFACE = "org.bluez.Media1"
 PLAYER_PATH = "/org/ha/bluetooth_audio/player"
 
 # Audio-capable device UUIDs (any of these indicate audio support)
-AUDIO_UUIDS = frozenset({A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_UUID})
+AUDIO_UUIDS = frozenset({A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID})

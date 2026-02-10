@@ -184,6 +184,12 @@ section h2 {
   font-family: monospace;
 }
 
+.device-profiles {
+  color: var(--primary);
+  font-size: 0.75rem;
+  margin-top: 2px;
+}
+
 .device-status {
   font-size: 0.75rem;
   padding: 2px 8px;

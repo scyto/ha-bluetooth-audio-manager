@@ -52,6 +52,24 @@ function setButtonsEnabled(enabled) {
   });
 }
 
+// -- Bluetooth UUID to profile label mapping --
+
+const BT_PROFILES = {
+  "0000110b-0000-1000-8000-00805f9b34fb": "A2DP Sink",
+  "0000110a-0000-1000-8000-00805f9b34fb": "A2DP Source",
+  "0000110c-0000-1000-8000-00805f9b34fb": "AVRCP Target",
+  "0000110e-0000-1000-8000-00805f9b34fb": "AVRCP Controller",
+  "0000111e-0000-1000-8000-00805f9b34fb": "HFP",
+};
+
+function profileLabels(uuids) {
+  if (!uuids || uuids.length === 0) return "";
+  const labels = uuids
+    .map((u) => BT_PROFILES[u.toLowerCase()])
+    .filter(Boolean);
+  return labels.length > 0 ? labels.join(", ") : "";
+}
+
 // -- Rendering --
 
 function renderDevices(devices) {
@@ -94,6 +112,7 @@ function renderDevices(devices) {
       }
 
       const rssiDisplay = d.rssi ? ` (${d.rssi} dBm)` : "";
+      const profiles = profileLabels(d.uuids);
 
       return `
         <div class="device-card">
@@ -101,6 +120,7 @@ function renderDevices(devices) {
             <span class="device-name">${escapeHtml(d.name)}</span>
             <span class="device-status ${statusClass}">${statusText}</span>
             <div class="device-address">${escapeHtml(d.address)}${rssiDisplay}</div>
+            ${profiles ? `<div class="device-profiles">${escapeHtml(profiles)}</div>` : ""}
           </div>
           <div class="device-actions">${actions}</div>
         </div>
