@@ -48,8 +48,12 @@ async def _send_sse(
     enough data accumulates).
     """
     payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
-    # Padding flushes small events through the ingress proxy buffer
-    padding = ": " + "." * 2048 + "\n\n"
+    # Pad to 8 KB to flush through the HA ingress proxy buffer.
+    # The proxy holds small writes until enough data accumulates;
+    # 8 KB exceeds typical proxy buffer thresholds (4 KB / 8 KB).
+    target = 8192
+    pad_len = max(0, target - len(payload) - 6)  # 6 = ": " + "\n\n"
+    padding = ": " + "." * pad_len + "\n\n" if pad_len > 0 else ""
     await response.write((payload + padding).encode())
 
 
@@ -320,8 +324,10 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
                     logger.info("SSE sending: %s", msg["event"])
                     await _send_sse(response, msg["event"], msg["data"])
                 except asyncio.TimeoutError:
-                    # SSE comment keeps proxy alive and flushes buffers
-                    await response.write(b": heartbeat\n\n")
+                    # SSE comment keeps proxy alive — padded to 8 KB
+                    # to flush through the HA ingress proxy buffer
+                    heartbeat = ": heartbeat\n" + ": " + "." * 8172 + "\n\n"
+                    await response.write(heartbeat.encode())
         except (ConnectionResetError, ConnectionError, asyncio.CancelledError) as e:
             logger.info("SSE stream closed: %s", type(e).__name__)
         except Exception as e:
