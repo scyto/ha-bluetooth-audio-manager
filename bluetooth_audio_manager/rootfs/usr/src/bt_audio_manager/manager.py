@@ -193,6 +193,14 @@ class BluetoothAudioManager:
                         await device.watch_media_player()
                     except Exception as e:
                         logger.debug("AVRCP on existing connection %s: %s", addr, e)
+                    # Device stayed connected while add-on restarted: refresh
+                    # AVRCP control profiles so remote buttons re-bind to this
+                    # process's newly registered MPRIS player.
+                    if self.media_player:
+                        try:
+                            await self._refresh_avrcp_session(addr)
+                        except Exception as e:
+                            logger.debug("AVRCP refresh on existing connection %s: %s", addr, e)
                     # Check/activate A2DP transport
                     await self._ensure_a2dp_transport(addr)
                     # Check for existing PA sink
@@ -873,17 +881,9 @@ class BluetoothAudioManager:
                     if await self.pulse.activate_bt_card_profile(address):
                         sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
 
-            # Re-register MPRIS player to force BlueZ to re-negotiate
-            # AVRCP capabilities (including volume change notifications)
-            # with the speaker on the fresh AVRCP session.
-            if self.media_player:
-                try:
-                    logger.info("Re-registering MPRIS player to refresh AVRCP capabilities...")
-                    await self.media_player.unregister()
-                    await asyncio.sleep(1)
-                    await self.media_player.register()
-                except Exception as e:
-                    logger.warning("MPRIS player re-registration failed: %s", e)
+            # Verify MediaControl1 player link — confirms BlueZ wired our
+            # MPRIS player into the fresh AVRCP session during ConnectProfile.
+            await self._log_media_control_player(address)
 
             if sink_name:
                 logger.info("AVRCP renegotiation succeeded for %s — sink %s", address, sink_name)
@@ -1024,6 +1024,77 @@ class BluetoothAudioManager:
 
         logger.info("No MediaTransport1 found for %s after 3 attempts", address)
         return False
+
+    async def _refresh_avrcp_session(self, address: str) -> None:
+        """Cycle AVRCP profiles to rebind the control channel to this process.
+
+        After an add-on restart the old D-Bus unique name is gone, but the
+        AVRCP session still references it.  Disconnecting and reconnecting
+        the AVRCP profiles forces BlueZ to re-discover our newly registered
+        MPRIS player without tearing down the A2DP audio stream.
+        """
+        from .bluez.constants import AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID
+
+        device = self.managed_devices.get(address)
+        if not device:
+            return
+
+        logger.info("AVRCP refresh: cycling AVRCP profiles for %s...", address)
+
+        # Disconnect AVRCP profiles (may not all be active)
+        for uuid in (AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID):
+            try:
+                await device.disconnect_profile(uuid)
+            except Exception:
+                pass
+        await asyncio.sleep(1)
+
+        # Reconnect AVRCP profiles
+        for uuid in (AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID):
+            try:
+                await device.connect_profile(uuid)
+            except Exception:
+                pass
+        await asyncio.sleep(2)
+
+        # Re-subscribe to the new AVRCP player node
+        device.reset_avrcp_watch()
+        try:
+            await device.watch_media_player()
+        except Exception as e:
+            logger.debug("AVRCP watch after refresh for %s: %s", address, e)
+
+        await self._log_media_control_player(address)
+
+    async def _log_media_control_player(self, address: str) -> None:
+        """Log whether BlueZ linked our MPRIS player to the device's AVRCP session."""
+        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+
+        dev_fragment = address.replace(":", "_").upper()
+        try:
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+            obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+            objects = await obj_mgr.call_get_managed_objects()
+
+            for path, ifaces in objects.items():
+                if dev_fragment not in path:
+                    continue
+                if "org.bluez.MediaControl1" not in ifaces:
+                    continue
+                mc = ifaces["org.bluez.MediaControl1"]
+                connected = mc.get("Connected")
+                player = mc.get("Player")
+                connected_val = connected.value if hasattr(connected, "value") else connected
+                player_val = player.value if hasattr(player, "value") else player
+                logger.info(
+                    "MediaControl1 for %s: Connected=%s Player=%s",
+                    address, connected_val, player_val,
+                )
+                return
+            logger.info("No MediaControl1 found for %s", address)
+        except Exception as e:
+            logger.debug("MediaControl1 check failed for %s: %s", address, e)
 
     async def _ensure_a2dp_transport(self, address: str) -> bool:
         """Check for A2DP transport and try ConnectProfile if missing.
