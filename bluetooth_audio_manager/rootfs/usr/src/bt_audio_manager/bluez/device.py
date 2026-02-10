@@ -49,6 +49,19 @@ class BluezDevice:
         self._properties_iface.on_properties_changed(self._on_properties_changed)
         logger.debug("Device %s initialized at %s", self._address, self._path)
 
+    def cleanup(self) -> None:
+        """Remove D-Bus signal subscriptions and clear callbacks.
+
+        Call this before discarding a BluezDevice to prevent leaked subscriptions.
+        """
+        if self._properties_iface:
+            self._properties_iface.off_properties_changed(self._on_properties_changed)
+        self._disconnect_callbacks.clear()
+        self._connect_callbacks.clear()
+        self._avrcp_callbacks.clear()
+        self._player_path = None
+        logger.debug("Device %s cleaned up", self._address)
+
     def _on_properties_changed(
         self, interface_name: str, changed: dict, invalidated: list
     ) -> None:

@@ -5,6 +5,7 @@ management, PulseAudio, reconnection, keep-alive, and the web server.
 """
 
 import asyncio
+import json
 import logging
 import os
 
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager add-on."""
 
+    SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+
     def __init__(self, config: AppConfig):
         self.config = config
         self.bus: MessageBus | None = None
@@ -40,6 +43,8 @@ class BluetoothAudioManager:
         self.managed_devices: dict[str, BluezDevice] = {}
         self._web_server = None
         self.event_bus = EventBus()
+        self._sink_poll_task: asyncio.Task | None = None
+        self._last_sink_snapshot: str = ""
 
     async def start(self) -> None:
         """Full startup sequence."""
@@ -81,11 +86,22 @@ class BluetoothAudioManager:
             self.keepalive = KeepAliveService(method=self.config.keep_alive_method)
             await self.keepalive.start()
 
+        # 9. Start periodic sink state polling
+        self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
+
         logger.info("Bluetooth Audio Manager started successfully")
 
     async def shutdown(self) -> None:
         """Graceful teardown in reverse order."""
         logger.info("Shutting down Bluetooth Audio Manager...")
+
+        # Stop sink polling
+        if self._sink_poll_task and not self._sink_poll_task.done():
+            self._sink_poll_task.cancel()
+            try:
+                await self._sink_poll_task
+            except asyncio.CancelledError:
+                pass
 
         # Stop keep-alive
         if self.keepalive:
@@ -116,6 +132,23 @@ class BluetoothAudioManager:
 
     # -- Device lifecycle operations --
 
+    async def _get_or_create_device(self, address: str) -> BluezDevice:
+        """Get an existing managed device or create and register a new one.
+
+        Ensures only one BluezDevice (and one D-Bus subscription) exists per address.
+        """
+        device = self.managed_devices.get(address)
+        if device:
+            return device
+
+        device = BluezDevice(self.bus, address)
+        await device.initialize()
+        device.on_disconnected(self._on_device_disconnected)
+        device.on_connected(self._on_device_connected)
+        device.on_avrcp_event(self._on_avrcp_event)
+        self.managed_devices[address] = device
+        return device
+
     async def scan_devices(self, duration: int | None = None) -> list[dict]:
         """Run a time-limited discovery scan for A2DP audio devices."""
         duration = duration or self.config.scan_duration_seconds
@@ -128,8 +161,7 @@ class BluetoothAudioManager:
     async def pair_device(self, address: str) -> dict:
         """Pair, trust, and persist a Bluetooth audio device."""
         self._broadcast_status(f"Pairing with {address}...")
-        device = BluezDevice(self.bus, address)
-        await device.initialize()
+        device = await self._get_or_create_device(address)
 
         # Pair
         await device.pair()
@@ -140,18 +172,12 @@ class BluetoothAudioManager:
         # Get name for display
         name = await device.get_name()
 
-        # Register disconnect/connect/avrcp handlers
-        device.on_disconnected(self._on_device_disconnected)
-        device.on_connected(self._on_device_connected)
-        device.on_avrcp_event(self._on_avrcp_event)
-        self.managed_devices[address] = device
-
         # Persist
         await self.store.add_device(address, name)
 
         logger.info("Device %s (%s) paired and stored", address, name)
         self.event_bus.emit("status", {"message": ""})
-        await self._broadcast_devices()
+        await self._broadcast_all()
         return {"address": address, "name": name, "connected": False}
 
     async def connect_device(self, address: str) -> bool:
@@ -160,14 +186,7 @@ class BluetoothAudioManager:
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
         self._broadcast_status(f"Connecting to {address}...")
-        device = self.managed_devices.get(address)
-        if not device:
-            device = BluezDevice(self.bus, address)
-            await device.initialize()
-            device.on_disconnected(self._on_device_disconnected)
-            device.on_connected(self._on_device_connected)
-            device.on_avrcp_event(self._on_avrcp_event)
-            self.managed_devices[address] = device
+        device = await self._get_or_create_device(address)
 
         await device.connect()
         self._broadcast_status(f"Waiting for services on {address}...")
@@ -214,13 +233,14 @@ class BluetoothAudioManager:
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
 
-        # Disconnect
+        # Disconnect and clean up D-Bus subscriptions
         device = self.managed_devices.pop(address, None)
         if device:
             try:
                 await device.disconnect()
             except DBusError:
                 pass
+            device.cleanup()
 
         # Remove from BlueZ
         from .bluez.device import address_to_path
@@ -266,6 +286,29 @@ class BluetoothAudioManager:
             return []
         return await self.pulse.list_bt_sinks()
 
+    # -- Sink state polling --
+
+    async def _sink_poll_loop(self) -> None:
+        """Periodically check PulseAudio sink state and broadcast changes.
+
+        Detects idle→running transitions (playback started/stopped) that
+        don't trigger D-Bus signals.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self.SINK_POLL_INTERVAL)
+                if not self.pulse:
+                    continue
+                sinks = await self.pulse.list_bt_sinks()
+                snapshot = json.dumps(sinks, sort_keys=True)
+                if snapshot != self._last_sink_snapshot:
+                    self._last_sink_snapshot = snapshot
+                    self.event_bus.emit("sinks_changed", {"sinks": sinks})
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.debug("Sink poll error: %s", e)
+
     # -- SSE broadcast helpers --
 
     async def _broadcast_devices(self) -> None:
@@ -280,6 +323,7 @@ class BluetoothAudioManager:
         """Push full sink list to all SSE clients."""
         try:
             sinks = await self.get_audio_sinks()
+            self._last_sink_snapshot = json.dumps(sinks, sort_keys=True)
             self.event_bus.emit("sinks_changed", {"sinks": sinks})
         except Exception as e:
             logger.debug("Broadcast sinks failed: %s", e)
