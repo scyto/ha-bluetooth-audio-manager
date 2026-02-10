@@ -75,14 +75,30 @@ class BluetoothAudioManager:
             logger.warning("PulseAudio connection failed (will retry): %s", e)
             self.pulse = None
 
-        # 6. Start reconnection service
+        # 6. Register BluezDevice objects for all stored devices so UI
+        #    actions (disconnect, forget) work immediately, even if the
+        #    device is already connected from a previous add-on session.
+        for device_info in self.store.devices:
+            addr = device_info["address"]
+            try:
+                device = await self._get_or_create_device(addr)
+                if await device.is_connected():
+                    logger.info("Device %s already connected, registering handlers", addr)
+                    try:
+                        await device.watch_media_player()
+                    except Exception as e:
+                        logger.debug("AVRCP on existing connection %s: %s", addr, e)
+            except DBusError as e:
+                logger.debug("Could not initialize stored device %s: %s", addr, e)
+
+        # 7. Start reconnection service
         self.reconnect_service = ReconnectService(self)
         await self.reconnect_service.start()
 
-        # 7. Reconnect previously paired devices
+        # 8. Reconnect stored devices that aren't already connected
         await self.reconnect_service.reconnect_all()
 
-        # 8. Start keep-alive if enabled
+        # 9. Start keep-alive if enabled
         if self.config.keep_alive_enabled:
             self.keepalive = KeepAliveService(method=self.config.keep_alive_method)
             await self.keepalive.start()
@@ -231,6 +247,8 @@ class BluetoothAudioManager:
         device = self.managed_devices.get(address)
         if device:
             await device.disconnect()
+        else:
+            logger.warning("Disconnect: device %s not in managed_devices", address)
         self.event_bus.emit("status", {"message": ""})
         await self._broadcast_all()
 
