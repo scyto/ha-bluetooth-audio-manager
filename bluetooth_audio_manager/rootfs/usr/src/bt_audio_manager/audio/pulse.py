@@ -77,12 +77,29 @@ class PulseAudioManager:
         bt_sinks = []
         for sink in sinks:
             if "bluez" in sink.name.lower():
+                # Extract human-readable state from pulsectl enum
+                state_name = getattr(sink.state, "name", None)
+                if state_name is None:
+                    # Fallback: parse "<EnumValue sink/source-state=idle>"
+                    raw = str(sink.state)
+                    state_name = raw.split("=")[-1].rstrip(">") if "=" in raw else raw
+
+                # Sample spec info
+                sample_spec = getattr(sink, "sample_spec", None)
+                sample_rate = getattr(sample_spec, "rate", None)
+                channels = getattr(sample_spec, "channels", None)
+                sample_format = getattr(sample_spec, "format", None)
+
                 bt_sinks.append(
                     {
                         "name": sink.name,
                         "description": sink.description,
-                        "state": str(sink.state),
-                        "volume": sink.volume.value_flat,
+                        "state": state_name,
+                        "volume": round(sink.volume.value_flat * 100),
+                        "mute": sink.mute,
+                        "sample_rate": sample_rate,
+                        "channels": channels,
+                        "format": str(sample_format) if sample_format else None,
                     }
                 )
         return bt_sinks

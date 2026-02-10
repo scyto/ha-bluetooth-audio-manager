@@ -117,17 +117,29 @@ function renderSinks(sinks) {
 
   list.innerHTML = sinks
     .map(
-      (s) => `
+      (s) => {
+        const stateClass = s.state === "running" ? "status-connected" : "status-paired";
+        const stateLabel = s.state.charAt(0).toUpperCase() + s.state.slice(1);
+        const vol = s.mute ? "Muted" : `${s.volume}%`;
+        const audioInfo = [
+          s.sample_rate ? `${(s.sample_rate / 1000).toFixed(1)} kHz` : null,
+          s.channels ? `${s.channels}ch` : null,
+          s.format || null,
+        ].filter(Boolean).join(" / ");
+
+        return `
       <div class="sink-card">
         <div>
           <div class="sink-name">${escapeHtml(s.description || s.name)}</div>
           <div class="sink-description">${escapeHtml(s.name)}</div>
+          <div class="sink-details">${audioInfo ? escapeHtml(audioInfo) : ""} ${escapeHtml(vol)}</div>
         </div>
         <div>
-          <span class="device-status status-connected">${escapeHtml(s.state)}</span>
+          <span class="device-status ${stateClass}">${escapeHtml(stateLabel)}</span>
         </div>
       </div>
-    `
+    `;
+      }
     )
     .join("");
 }
