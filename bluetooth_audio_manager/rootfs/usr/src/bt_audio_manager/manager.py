@@ -474,6 +474,8 @@ class BluetoothAudioManager:
                         "rssi": None,
                         "stored": True,
                         "uuids": [],
+                        "bearers": [],
+                        "has_transport": False,
                     }
                 )
 

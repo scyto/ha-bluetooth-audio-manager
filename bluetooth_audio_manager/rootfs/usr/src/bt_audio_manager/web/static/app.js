@@ -118,11 +118,26 @@ function renderDevices(devices) {
       const rssiDisplay = d.rssi ? ` (${d.rssi} dBm)` : "";
       const profiles = profileLabels(d.uuids);
 
+      // Connection detail: bearer type + transport status
+      let connDetail = "";
+      if (d.connected) {
+        const parts = [];
+        if (d.bearers && d.bearers.length > 0) {
+          parts.push(d.bearers.join(" + "));
+        }
+        if (d.has_transport) {
+          parts.push("A2DP");
+        }
+        if (parts.length > 0) {
+          connDetail = ` (${parts.join(" / ")})`;
+        }
+      }
+
       return `
         <div class="device-card">
           <div class="device-info">
             <span class="device-name">${escapeHtml(d.name)}</span>
-            <span class="device-status ${statusClass}">${statusText}</span>
+            <span class="device-status ${statusClass}">${statusText}${connDetail}</span>
             <div class="device-address">${escapeHtml(d.address)}${rssiDisplay}</div>
             ${profiles ? `<div class="device-profiles">${escapeHtml(profiles)}</div>` : ""}
           </div>

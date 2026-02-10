@@ -128,6 +128,31 @@ class BluezAdapter:
             connected_variant = props.get("Connected")
             rssi_variant = props.get("RSSI")
 
+            # Detect active bearers (BR/EDR vs LE)
+            bearers = []
+            for iface_name in interfaces:
+                if not iface_name.startswith("org.bluez.Bearer."):
+                    continue
+                bearer_props = interfaces[iface_name]
+                conn_var = bearer_props.get("Connected")
+                if conn_var and (conn_var.value if hasattr(conn_var, "value") else conn_var):
+                    # e.g. "org.bluez.Bearer.BREDR1" → "BR/EDR"
+                    short = iface_name.rsplit(".", 1)[-1]  # "BREDR1", "LE1"
+                    if "BREDR" in short:
+                        bearers.append("BR/EDR")
+                    elif "LE" in short:
+                        bearers.append("LE")
+                    else:
+                        bearers.append(short)
+
+            # Check for MediaTransport1 at sub-paths (e.g. .../fd0)
+            has_transport = False
+            dev_fragment = path + "/"
+            for obj_path in objects:
+                if obj_path.startswith(dev_fragment) and "org.bluez.MediaTransport1" in objects[obj_path]:
+                    has_transport = True
+                    break
+
             devices.append(
                 {
                     "path": path,
@@ -137,6 +162,8 @@ class BluezAdapter:
                     "connected": connected_variant.value if connected_variant else False,
                     "rssi": rssi_variant.value if rssi_variant else None,
                     "uuids": list(uuids),
+                    "bearers": bearers,
+                    "has_transport": has_transport,
                 }
             )
 
