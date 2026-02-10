@@ -55,6 +55,14 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
         """Liveness check for the HA watchdog."""
         return web.json_response({"status": "ok"})
 
+    @routes.get("/api/info")
+    async def info(request: web.Request) -> web.Response:
+        """Return add-on version info for the UI."""
+        import os
+        return web.json_response({
+            "version": os.environ.get("BUILD_VERSION", "dev"),
+        })
+
     @routes.get("/api/devices")
     async def list_devices(request: web.Request) -> web.Response:
         """List all discovered and paired audio devices."""

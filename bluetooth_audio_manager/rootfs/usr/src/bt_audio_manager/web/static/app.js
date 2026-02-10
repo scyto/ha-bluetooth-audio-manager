@@ -313,4 +313,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // SSE provides initial state + real-time updates
   connectSSE();
+
+  // Show version in footer
+  apiGet("/api/info")
+    .then((data) => {
+      $("#version-label").textContent = `v${data.version}`;
+    })
+    .catch(() => {});
 });
