@@ -133,13 +133,17 @@ class BluezDevice:
 
                 if not player_nodes:
                     if attempt < retries - 1:
-                        logger.info(
+                        logger.debug(
                             "No AVRCP player for %s yet (attempt %d/%d), retrying in %.0fs...",
                             self._address, attempt + 1, retries, delay,
                         )
                         await asyncio.sleep(delay)
                         continue
-                    logger.info("No AVRCP player found for %s after %d attempts", self._address, retries)
+                    logger.debug(
+                        "No AVRCP player on %s after %d attempts "
+                        "(normal for speakers — button events use registered MPRIS player)",
+                        self._address, retries,
+                    )
                     self._avrcp_last_search = time.monotonic()
                     return False
 
@@ -174,13 +178,13 @@ class BluezDevice:
                 return True
             except DBusError as e:
                 if attempt < retries - 1:
-                    logger.info(
+                    logger.debug(
                         "AVRCP introspect failed for %s (attempt %d/%d): %s, retrying...",
                         self._address, attempt + 1, retries, e,
                     )
                     await asyncio.sleep(delay)
                 else:
-                    logger.info("AVRCP introspect failed for %s after %d attempts: %s", self._address, retries, e)
+                    logger.debug("AVRCP introspect failed for %s after %d attempts: %s", self._address, retries, e)
                     self._avrcp_last_search = time.monotonic()
                     return False
         self._avrcp_last_search = time.monotonic()
