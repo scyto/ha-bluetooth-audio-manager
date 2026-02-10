@@ -237,6 +237,24 @@ class BluezDevice:
         await self._device_iface.call_connect()
         logger.info("Connected to %s", self._address)
 
+    async def connect_profile(self, uuid: str) -> None:
+        """Connect a specific Bluetooth profile by UUID.
+
+        Useful to explicitly activate A2DP when the device is connected
+        but the audio transport was not established.
+        """
+        logger.info("ConnectProfile %s on %s...", uuid, self._address)
+        await self._device_iface.call_connect_profile(uuid)
+        logger.info("ConnectProfile %s on %s succeeded", uuid, self._address)
+
+    async def get_uuids(self) -> list[str]:
+        """Get the list of service UUIDs advertised by the device."""
+        try:
+            result = await self._properties_iface.call_get(DEVICE_INTERFACE, "UUIDs")
+            return list(result.value) if result.value else []
+        except DBusError:
+            return []
+
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         logger.info("Disconnecting from %s...", self._address)

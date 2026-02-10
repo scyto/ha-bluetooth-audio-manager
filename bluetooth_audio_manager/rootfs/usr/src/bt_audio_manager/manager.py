@@ -175,8 +175,8 @@ class BluetoothAudioManager:
                         await device.watch_media_player()
                     except Exception as e:
                         logger.debug("AVRCP on existing connection %s: %s", addr, e)
-                    # Log transport properties (Volume diagnosis)
-                    await self._log_transport_properties(addr)
+                    # Check/activate A2DP transport
+                    await self._ensure_a2dp_transport(addr)
                     # Check for existing PA sink
                     if self.pulse:
                         sink_name = await self.pulse.get_sink_for_address(addr)
@@ -514,14 +514,16 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
 
-        # Log MediaTransport1 properties for volume diagnosis
-        await self._log_transport_properties(address)
+        # Check/activate A2DP transport (may need ConnectProfile)
+        await self._ensure_a2dp_transport(address)
 
-    async def _log_transport_properties(self, address: str) -> None:
+    async def _log_transport_properties(self, address: str) -> bool:
         """Enumerate BlueZ objects to find and log MediaTransport1 for a device.
 
         Waits briefly for the transport to appear (BlueZ may still be
         setting it up when the Connected signal fires).
+
+        Returns True if a MediaTransport1 was found.
         """
         from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
 
@@ -549,11 +551,56 @@ class BluetoothAudioManager:
                         "MediaTransport1 for %s: path=%s volume_supported=%s props=%s",
                         address, path, vol_supported, props,
                     )
-                    return  # found it
+                    return True
             except Exception as e:
                 logger.debug("Transport property check attempt %d failed: %s", attempt + 1, e)
 
         logger.info("No MediaTransport1 found for %s after 3 attempts", address)
+        return False
+
+    async def _ensure_a2dp_transport(self, address: str) -> bool:
+        """Check for A2DP transport and try ConnectProfile if missing.
+
+        When a device auto-reconnects (e.g. Bose speaker initiating after
+        disconnect), it may connect only the BLE bearer without activating
+        the A2DP audio profile.  Calling ConnectProfile with the A2DP Sink
+        UUID explicitly tells BlueZ to set up the audio transport.
+
+        Returns True if a transport exists or was successfully activated.
+        """
+        from .bluez.constants import A2DP_SINK_UUID
+
+        # First check: transport may already exist
+        if await self._log_transport_properties(address):
+            return True
+
+        # Log device UUIDs to confirm A2DP is advertised
+        device = self.managed_devices.get(address)
+        if not device:
+            return False
+
+        uuids = await device.get_uuids()
+        logger.info("Device %s UUIDs: %s", address, uuids)
+
+        has_a2dp = any("110b" in u.lower() for u in uuids)
+        if not has_a2dp:
+            logger.warning(
+                "Device %s does not advertise A2DP Sink UUID — cannot activate audio",
+                address,
+            )
+            return False
+
+        # Try ConnectProfile to explicitly activate A2DP
+        logger.info("No A2DP transport for %s, trying ConnectProfile(A2DP_SINK)...", address)
+        try:
+            await device.connect_profile(A2DP_SINK_UUID)
+        except Exception as e:
+            logger.warning("ConnectProfile(A2DP) failed for %s: %s", address, e)
+            return False
+
+        # Wait briefly then re-check for transport
+        await asyncio.sleep(3)
+        return await self._log_transport_properties(address)
 
     def _on_pa_volume_change(self, sink_name: str, volume: int, mute: bool) -> None:
         """Handle PulseAudio Bluetooth sink volume change (AVRCP Absolute Volume)."""
