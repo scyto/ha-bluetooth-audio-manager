@@ -1,4 +1,10 @@
-"""aiohttp web server for the add-on's ingress UI and REST API."""
+"""aiohttp web server for the add-on's ingress UI and REST API.
+
+NOTE: Static assets are served from /res/ (not /static/) to avoid
+HA's frontend service worker, which applies a CacheFirst strategy
+with ignoreSearch:true to any URL containing "/static/".  Using /res/
+lets the request fall through to the /api/ NetworkOnly route instead.
+"""
 
 import logging
 import os
@@ -25,7 +31,7 @@ _BUILD_VERSION = os.environ.get("BUILD_VERSION", "dev")
 async def _no_cache_static(request: web.Request, handler):
     """Prevent browser caching of static assets."""
     response = await handler(request)
-    if request.path.startswith("/static/"):
+    if request.path.startswith("/res/"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -45,19 +51,25 @@ class WebServer:
         api_routes = create_api_routes(manager)
         self._app.router.add_routes(api_routes)
 
-        # Static files (UI)
-        self._app.router.add_static("/static", STATIC_DIR)
+        # Static files — served from /res/ to bypass HA service worker
+        self._app.router.add_static("/res", STATIC_DIR)
 
         # Root serves the main page
         self._app.router.add_get("/", self._serve_index)
 
     def _get_index_html(self) -> str:
-        """Read index.html and inject cache-busting version query strings."""
+        """Read index.html and inject versioned asset URLs."""
         if self._index_html is None:
             raw = (STATIC_DIR / "index.html").read_text()
-            # Append version query string to static asset URLs
-            raw = raw.replace("static/style.css", f"static/style.css?v={_BUILD_VERSION}")
-            raw = raw.replace("static/app.js", f"static/app.js?v={_BUILD_VERSION}")
+            # Rewrite asset paths: static/ -> res/ with version query string
+            raw = raw.replace(
+                'href="static/style.css"',
+                f'href="res/style.css?v={_BUILD_VERSION}"',
+            )
+            raw = raw.replace(
+                'src="static/app.js"',
+                f'src="res/app.js?v={_BUILD_VERSION}"',
+            )
             self._index_html = raw
         return self._index_html
 
