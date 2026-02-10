@@ -3,6 +3,10 @@
  *
  * Simple vanilla JS interface for device management.
  * Communicates with the add-on's REST API.
+ *
+ * Uses polling instead of SSE because HA's service worker
+ * (StrategyHandler.js) intercepts EventSource connections and
+ * breaks SSE streaming through the ingress proxy.
  */
 
 // HA ingress serves the page at /api/hassio_ingress/<token>/
@@ -312,67 +316,42 @@ function appendAvrcpEvent(data) {
   );
 }
 
-// -- Server-Sent Events (real-time updates) --
+// -- Polling (replaces SSE which is broken by HA's service worker) --
 
-let eventSource = null;
+let pollTimer = null;
+let lastMprisTs = 0;
+let lastAvrcpTs = 0;
 
-function connectSSE() {
-  if (eventSource) {
-    eventSource.close();
-  }
+async function pollState() {
+  try {
+    const params = new URLSearchParams({
+      mpris_after: lastMprisTs,
+      avrcp_after: lastAvrcpTs,
+    });
+    const data = await apiGet(`/api/state?${params}`);
 
-  const sseUrl = `${API_BASE}/api/events`;
-  console.log("[SSE] Connecting to", sseUrl);
-  eventSource = new EventSource(sseUrl);
-
-  eventSource.onopen = () => {
-    console.log("[SSE] Connection opened");
-  };
-
-  eventSource.addEventListener("devices_changed", (e) => {
-    console.log("[SSE] devices_changed received");
-    const data = JSON.parse(e.data);
     renderDevices(data.devices);
-  });
-
-  eventSource.addEventListener("sinks_changed", (e) => {
-    console.log("[SSE] sinks_changed received");
-    const data = JSON.parse(e.data);
     renderSinks(data.sinks);
-  });
 
-  eventSource.addEventListener("status", (e) => {
-    const data = JSON.parse(e.data);
-    if (data.message) {
-      console.log("[SSE] status:", data.message);
-      showStatus(data.message);
-    } else {
-      hideStatus();
+    // Append only new events
+    for (const ev of data.mpris_events) {
+      appendMprisCommand(ev);
+      if (ev.ts > lastMprisTs) lastMprisTs = ev.ts;
     }
-  });
-
-  eventSource.addEventListener("mpris_command", (e) => {
-    console.log("[SSE] mpris_command received");
-    const data = JSON.parse(e.data);
-    appendMprisCommand(data);
-  });
-
-  eventSource.addEventListener("avrcp_event", (e) => {
-    console.log("[SSE] avrcp_event received");
-    const data = JSON.parse(e.data);
-    appendAvrcpEvent(data);
-  });
-
-  eventSource.onerror = (e) => {
-    console.warn("[SSE] Error/disconnected, readyState:", eventSource.readyState);
-    // readyState 2 = CLOSED — EventSource won't auto-reconnect.
-    // HA ingress proxy can kill the SSE stream when other requests complete.
-    // Manually reconnect after a short delay.
-    if (eventSource.readyState === EventSource.CLOSED) {
-      console.log("[SSE] Connection permanently closed, reconnecting in 3s...");
-      setTimeout(connectSSE, 3000);
+    for (const ev of data.avrcp_events) {
+      appendAvrcpEvent(ev);
+      if (ev.ts > lastAvrcpTs) lastAvrcpTs = ev.ts;
     }
-  };
+  } catch (e) {
+    console.warn("[Poll] Error:", e.message);
+  }
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  console.log("[Poll] Starting (3s interval)");
+  pollState();
+  pollTimer = setInterval(pollState, 3000);
 }
 
 // -- Init --
@@ -381,12 +360,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-scan").addEventListener("click", scanDevices);
   $("#btn-refresh").addEventListener("click", refreshDevices);
 
-  // SSE provides real-time updates (and sends initial state on connect)
-  connectSSE();
-
-  // Also fetch initial state via REST as a fallback — SSE initial
-  // data may be delayed by ingress proxy buffering
-  refreshDevices();
+  // Poll for state updates every 3 seconds
+  startPolling();
 
   // Show version in footer
   apiGet("/api/info")

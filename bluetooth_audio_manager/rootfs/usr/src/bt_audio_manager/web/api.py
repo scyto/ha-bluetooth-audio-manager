@@ -174,6 +174,34 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             logger.error("Failed to list audio sinks: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
+    @routes.get("/api/state")
+    async def state(request: web.Request) -> web.Response:
+        """Combined state endpoint for UI polling.
+
+        Returns devices, sinks, and recent MPRIS/AVRCP events in one
+        request.  The client passes ``?mpris_after=<ts>&avrcp_after=<ts>``
+        to receive only events newer than the given timestamps.
+        """
+        try:
+            mpris_after = float(request.query.get("mpris_after", 0))
+            avrcp_after = float(request.query.get("avrcp_after", 0))
+
+            devices = await manager.get_all_devices()
+            sinks = await manager.get_audio_sinks()
+
+            mpris = [e for e in manager.recent_mpris if e["ts"] > mpris_after]
+            avrcp = [e for e in manager.recent_avrcp if e["ts"] > avrcp_after]
+
+            return web.json_response({
+                "devices": devices,
+                "sinks": sinks,
+                "mpris_events": mpris,
+                "avrcp_events": avrcp,
+            })
+        except Exception as e:
+            logger.error("Failed to get state: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
     @routes.get("/api/diagnostics/mpris")
     async def diagnostics_mpris(request: web.Request) -> web.Response:
         """Diagnostic endpoint for MPRIS/AVRCP troubleshooting."""
