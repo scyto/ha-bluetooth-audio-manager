@@ -620,11 +620,14 @@ class BluetoothAudioManager:
                 logger.debug("DIAG: Volume poll error: %s", e)
 
     async def _renegotiate_a2dp(self, address: str) -> None:
-        """Force A2DP disconnect + ConnectProfile to re-negotiate AVRCP.
+        """Force A2DP re-negotiation by disconnecting and letting the
+        speaker auto-reconnect, then adding A2DP via ConnectProfile.
 
-        Uses ConnectProfile(A2DP_SINK) instead of generic Connect() to
-        force a BREDR connection.  Generic Connect() often picks BLE on
-        dual-mode devices, which doesn't set up A2DP/AVRCP properly.
+        Dual-mode speakers auto-reconnect via BLE after disconnect.
+        Calling ConnectProfile(A2DP_SINK) during that window gets
+        br-connection-canceled.  Instead we wait for the speaker to
+        settle on a stable connection (even if BLE-only), then layer
+        A2DP on top with ConnectProfile.
 
         Guards with _connecting + _suppress_reconnect to prevent
         _on_device_connected_async and the reconnect service from racing.
@@ -640,10 +643,39 @@ class BluetoothAudioManager:
         try:
             logger.info("AVRCP renegotiation: disconnecting %s...", address)
             await device.disconnect()
-            # Wait for full disconnect (BREDR + LE bearers to drop)
-            await asyncio.sleep(3)
 
-            logger.info("AVRCP renegotiation: ConnectProfile(A2DP_SINK) for %s...", address)
+            # Wait for device to auto-reconnect and stabilize.
+            # Dual-mode speakers often LE-bounce (connect → disconnect →
+            # reconnect) before settling.  We need a stable connection
+            # for ≥3s before proceeding.
+            logger.info("AVRCP renegotiation: waiting for %s to reconnect...", address)
+            self._broadcast_status(f"Waiting for {address} to reconnect...")
+            stable_since: float | None = None
+            connected = False
+            for _ in range(60):  # up to 30 seconds
+                await asyncio.sleep(0.5)
+                try:
+                    is_conn = await device.is_connected()
+                except Exception:
+                    is_conn = False
+
+                if is_conn:
+                    if stable_since is None:
+                        stable_since = time.time()
+                    elif time.time() - stable_since > 3:
+                        connected = True
+                        break
+                else:
+                    stable_since = None  # reset on disconnect
+
+            if not connected:
+                logger.warning("AVRCP renegotiation: %s did not reconnect within 30s", address)
+                self._broadcast_status(f"Device {address} did not reconnect — try manual reconnect")
+                await asyncio.sleep(3)
+                return
+
+            logger.info("AVRCP renegotiation: %s reconnected, adding A2DP profile...", address)
+            self._broadcast_status(f"Re-establishing audio profile for {address}...")
             await device.connect_profile(A2DP_SINK_UUID)
 
             # Give BlueZ time to set up transport + AVRCP
