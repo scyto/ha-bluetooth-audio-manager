@@ -17,12 +17,21 @@ STATIC_DIR = Path(__file__).parent / "static"
 PORT = 8099
 
 
+@web.middleware
+async def _no_cache_static(request: web.Request, handler):
+    """Prevent browser caching of static assets during development."""
+    response = await handler(request)
+    if request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
 class WebServer:
     """Ingress web server providing the device management UI and REST API."""
 
     def __init__(self, manager: "BluetoothAudioManager"):
         self._manager = manager
-        self._app = web.Application()
+        self._app = web.Application(middlewares=[_no_cache_static])
         self._runner: web.AppRunner | None = None
 
         # API routes

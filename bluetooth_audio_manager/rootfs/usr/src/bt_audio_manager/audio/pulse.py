@@ -20,6 +20,13 @@ _FALLBACK_SERVERS = [
     "unix:/run/audio/native",
 ]
 
+# PulseAudio sample format names (PA_SAMPLE_* enum values)
+_PA_FORMATS = {
+    0: "u8", 1: "aLaw", 2: "uLaw", 3: "s16le", 4: "s16be",
+    5: "float32le", 6: "float32be", 7: "s32le", 8: "s32be",
+    9: "s24le", 10: "s24be", 11: "s24-32le", 12: "s24-32be",
+}
+
 
 class PulseAudioManager:
     """Manages PulseAudio sinks for Bluetooth audio devices."""
@@ -84,11 +91,21 @@ class PulseAudioManager:
                     raw = str(sink.state)
                     state_name = raw.split("=")[-1].rstrip(">") if "=" in raw else raw
 
-                # Sample spec info
+                # Sample spec info — pulsectl exposes ctypes values,
+                # convert to plain ints for JSON serialization.
                 sample_spec = getattr(sink, "sample_spec", None)
-                sample_rate = getattr(sample_spec, "rate", None)
-                channels = getattr(sample_spec, "channels", None)
-                sample_format = getattr(sample_spec, "format", None)
+                sample_rate = None
+                channels = None
+                format_name = None
+                if sample_spec is not None:
+                    raw_rate = getattr(sample_spec, "rate", None)
+                    raw_ch = getattr(sample_spec, "channels", None)
+                    raw_fmt = getattr(sample_spec, "format", None)
+                    sample_rate = int(raw_rate) if raw_rate is not None else None
+                    channels = int(raw_ch) if raw_ch is not None else None
+                    if raw_fmt is not None:
+                        fmt_int = int(raw_fmt)
+                        format_name = _PA_FORMATS.get(fmt_int, str(fmt_int))
 
                 bt_sinks.append(
                     {
@@ -99,7 +116,7 @@ class PulseAudioManager:
                         "mute": sink.mute,
                         "sample_rate": sample_rate,
                         "channels": channels,
-                        "format": str(sample_format) if sample_format else None,
+                        "format": format_name,
                     }
                 )
         return bt_sinks
