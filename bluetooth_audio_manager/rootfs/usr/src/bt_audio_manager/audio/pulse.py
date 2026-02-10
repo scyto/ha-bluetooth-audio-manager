@@ -20,12 +20,10 @@ _FALLBACK_SERVERS = [
     "unix:/run/audio/native",
 ]
 
-# PulseAudio sample format names (PA_SAMPLE_* enum values)
-_PA_FORMATS = {
-    0: "u8", 1: "aLaw", 2: "uLaw", 3: "s16le", 4: "s16be",
-    5: "float32le", 6: "float32be", 7: "s32le", 8: "s32be",
-    9: "s24le", 10: "s24be", 11: "s24-32le", 12: "s24-32be",
-}
+# Regex for parsing "pactl list sinks" sample spec line,
+# e.g. "s16le 2ch 48000Hz"
+_SPEC_SUFFIX_HZ = "Hz"
+_SPEC_SUFFIX_CH = "ch"
 
 
 class PulseAudioManager:
@@ -78,9 +76,65 @@ class PulseAudioManager:
             self._pulse.close()
             self._pulse = None
 
+    async def _pactl_sample_specs(self) -> dict[str, dict]:
+        """Parse sample specs from ``pactl list sinks``.
+
+        pulsectl's ctypes wrapper returns garbage for the sample_spec
+        struct on bluez sinks (struct alignment / wire-protocol mismatch),
+        so we shell out to pactl which deserializes correctly.
+
+        Returns a dict keyed by sink name, e.g.
+        ``{"bluez_sink.XX.a2dp_sink": {"format": "s16le", "rate": 48000, "channels": 2}}``
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "list", "sinks",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0:
+                return {}
+        except (FileNotFoundError, OSError) as exc:
+            logger.debug("pactl not available: %s", exc)
+            return {}
+
+        specs: dict[str, dict] = {}
+        current_name: str | None = None
+        for line in stdout.decode(errors="replace").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Name:"):
+                current_name = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Sample Specification:") and current_name:
+                # e.g. "s16le 2ch 48000Hz"
+                spec_str = stripped.split(":", 1)[1].strip()
+                fmt = None
+                rate = None
+                channels = None
+                for part in spec_str.split():
+                    if part.endswith(_SPEC_SUFFIX_HZ):
+                        try:
+                            rate = int(part[: -len(_SPEC_SUFFIX_HZ)])
+                        except ValueError:
+                            pass
+                    elif part.endswith(_SPEC_SUFFIX_CH):
+                        try:
+                            channels = int(part[: -len(_SPEC_SUFFIX_CH)])
+                        except ValueError:
+                            pass
+                    else:
+                        fmt = part
+                specs[current_name] = {
+                    "format": fmt,
+                    "rate": rate,
+                    "channels": channels,
+                }
+        return specs
+
     async def list_bt_sinks(self) -> list[dict]:
         """List all Bluetooth A2DP sinks currently available."""
         sinks = await self._pulse.sink_list()
+        sample_specs = await self._pactl_sample_specs()
         bt_sinks = []
         for sink in sinks:
             if "bluez" in sink.name.lower():
@@ -91,29 +145,8 @@ class PulseAudioManager:
                     raw = str(sink.state)
                     state_name = raw.split("=")[-1].rstrip(">") if "=" in raw else raw
 
-                # Sample spec info — pulsectl exposes ctypes values,
-                # convert to plain ints for JSON serialization.
-                sample_spec = getattr(sink, "sample_spec", None)
-                sample_rate = None
-                channels = None
-                format_name = None
-                if sample_spec is not None:
-                    raw_rate = getattr(sample_spec, "rate", None)
-                    raw_ch = getattr(sample_spec, "channels", None)
-                    raw_fmt = getattr(sample_spec, "format", None)
-                    # Validate ctypes values — during sink setup the struct
-                    # may contain garbage from uninitialized memory.
-                    if raw_rate is not None:
-                        r = int(raw_rate)
-                        if 8000 <= r <= 192000:
-                            sample_rate = r
-                    if raw_ch is not None:
-                        c = int(raw_ch)
-                        if 1 <= c <= 8:
-                            channels = c
-                    if raw_fmt is not None:
-                        f = int(raw_fmt)
-                        format_name = _PA_FORMATS.get(f)
+                # Sample spec from pactl (reliable) instead of pulsectl ctypes
+                spec = sample_specs.get(sink.name, {})
 
                 bt_sinks.append(
                     {
@@ -122,9 +155,9 @@ class PulseAudioManager:
                         "state": state_name,
                         "volume": round(sink.volume.value_flat * 100),
                         "mute": sink.mute,
-                        "sample_rate": sample_rate,
-                        "channels": channels,
-                        "format": format_name,
+                        "sample_rate": spec.get("rate"),
+                        "channels": spec.get("channels"),
+                        "format": spec.get("format"),
                     }
                 )
         return bt_sinks
