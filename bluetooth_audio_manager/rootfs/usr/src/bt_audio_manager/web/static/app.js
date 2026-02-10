@@ -278,19 +278,23 @@ function appendLogEntry(logSelector, cssClass, html) {
   log.scrollTop = log.scrollHeight;
 }
 
+function eventTime(data) {
+  // Use server timestamp if available, otherwise current time
+  const d = data.ts ? new Date(data.ts * 1000) : new Date();
+  return d.toLocaleTimeString();
+}
+
 function appendMprisCommand(data) {
-  const time = new Date().toLocaleTimeString();
   appendLogEntry(
     "#mpris-log",
     "log-entry",
-    `<span class="log-time">${escapeHtml(time)}</span>`
+    `<span class="log-time">${escapeHtml(eventTime(data))}</span>`
     + `<span class="log-command">${escapeHtml(data.command)}</span>`
     + (data.detail ? ` <span class="log-detail">${escapeHtml(data.detail)}</span>` : ""),
   );
 }
 
 function appendAvrcpEvent(data) {
-  const time = new Date().toLocaleTimeString();
   const valueStr = typeof data.value === "object"
     ? JSON.stringify(data.value)
     : String(data.value);
@@ -298,7 +302,7 @@ function appendAvrcpEvent(data) {
   appendLogEntry(
     "#avrcp-log",
     "log-entry",
-    `<span class="log-time">${escapeHtml(time)}</span>`
+    `<span class="log-time">${escapeHtml(eventTime(data))}</span>`
     + `<span class="log-prop">${escapeHtml(data.property)}</span> = `
     + `<span class="log-value">${escapeHtml(valueStr)}</span>`,
   );

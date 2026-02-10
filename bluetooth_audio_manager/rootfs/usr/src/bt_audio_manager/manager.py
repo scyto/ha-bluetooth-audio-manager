@@ -5,9 +5,11 @@ management, PulseAudio, reconnection, keep-alive, and the web server.
 """
 
 import asyncio
+import collections
 import json
 import logging
 import os
+import time
 
 from dbus_next.aio import MessageBus
 from dbus_next import BusType, Message, MessageType
@@ -31,6 +33,7 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager add-on."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    MAX_RECENT_EVENTS = 50  # ring buffer size for MPRIS/AVRCP events
 
     def __init__(self, config: AppConfig):
         self.config = config
@@ -48,6 +51,9 @@ class BluetoothAudioManager:
         self._sink_poll_task: asyncio.Task | None = None
         self._last_sink_snapshot: str = ""
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
+        # Ring buffers so SSE clients get recent events on reconnect
+        self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
+        self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
 
     async def start(self) -> None:
         """Full startup sequence."""
@@ -78,10 +84,12 @@ class BluetoothAudioManager:
                     vol_raw = changed["Volume"].value  # 0-127 uint16
                     vol_pct = round(vol_raw / 127 * 100)
                     logger.info("AVRCP transport volume: %d%% (raw %d)", vol_pct, vol_raw)
-                    self.event_bus.emit("mpris_command", {
-                        "command": "Volume",
-                        "detail": f"{vol_pct}%",
-                    })
+                    entry = {"command": "Volume", "detail": f"{vol_pct}%", "ts": time.time()}
+                    self.recent_mpris.append(entry)
+                    self.event_bus.emit("mpris_command", entry)
+                elif iface_name == "org.bluez.MediaTransport1":
+                    # Log any other transport property changes for debugging
+                    logger.debug("MediaTransport1 changed: %s", list(changed.keys()))
             return False  # don't consume
         self.bus.add_message_handler(_dbus_msg_handler)
 
@@ -467,10 +475,9 @@ class BluetoothAudioManager:
 
     def _on_avrcp_command(self, command: str, detail: str) -> None:
         """Handle MPRIS command from speaker buttons (via registered MPRIS player)."""
-        self.event_bus.emit("mpris_command", {
-            "command": command,
-            "detail": detail,
-        })
+        entry = {"command": command, "detail": detail, "ts": time.time()}
+        self.recent_mpris.append(entry)
+        self.event_bus.emit("mpris_command", entry)
 
     def _on_avrcp_event(self, address: str, prop_name: str, value: object) -> None:
         """Handle AVRCP MediaPlayer1 property change — push to SSE."""
@@ -479,8 +486,6 @@ class BluetoothAudioManager:
             safe_val = {k: str(v) for k, v in value.items()}
         else:
             safe_val = str(value) if not isinstance(value, (str, int, float, bool)) else value
-        self.event_bus.emit("avrcp_event", {
-            "address": address,
-            "property": prop_name,
-            "value": safe_val,
-        })
+        entry = {"address": address, "property": prop_name, "value": safe_val, "ts": time.time()}
+        self.recent_avrcp.append(entry)
+        self.event_bus.emit("avrcp_event", entry)

@@ -277,6 +277,13 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             await _send_sse(response, "devices_changed", {"devices": devices})
             await _send_sse(response, "sinks_changed", {"sinks": sinks})
 
+            # Replay recent MPRIS/AVRCP events so reconnecting clients
+            # don't lose transient events (HA ingress drops SSE often)
+            for entry in manager.recent_mpris:
+                await _send_sse(response, "mpris_command", entry)
+            for entry in manager.recent_avrcp:
+                await _send_sse(response, "avrcp_event", entry)
+
             # Stream events as they occur
             while True:
                 msg = await queue.get()
