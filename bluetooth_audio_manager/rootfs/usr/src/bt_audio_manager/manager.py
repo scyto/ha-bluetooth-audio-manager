@@ -10,7 +10,7 @@ import logging
 import os
 
 from dbus_next.aio import MessageBus
-from dbus_next import BusType
+from dbus_next import BusType, MessageType
 from dbus_next.errors import DBusError
 
 from .audio.keepalive import KeepAliveService
@@ -54,6 +54,17 @@ class BluetoothAudioManager:
         # 1. Connect to system D-Bus
         self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         logger.info("Connected to system D-Bus")
+
+        # Debug: log ALL incoming D-Bus method calls so we can see if BlueZ
+        # sends anything when speaker buttons are pressed.
+        def _dbus_msg_sniffer(msg):
+            if msg.message_type == MessageType.METHOD_CALL:
+                logger.info(
+                    "D-Bus INCOMING method_call: %s.%s path=%s sender=%s",
+                    msg.interface, msg.member, msg.path, msg.sender,
+                )
+            return False  # don't consume — let normal dispatch handle it
+        self.bus.add_message_handler(_dbus_msg_sniffer)
 
         # 2. Initialize BlueZ adapter
         self.adapter = BluezAdapter(self.bus)

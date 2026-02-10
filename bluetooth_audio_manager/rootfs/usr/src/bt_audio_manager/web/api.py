@@ -216,7 +216,9 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
         # because the default policy denies method_call to arbitrary unique
         # names.  BlueZ (running as root) can still call our methods.
 
-        # 4. List any BlueZ MediaPlayer1 objects on connected devices
+        # 4. Enumerate all BlueZ objects — show device interfaces
+        #    (especially MediaControl1 which indicates AVRCP is active)
+        #    and any MediaPlayer1 objects.
         try:
             intro = await bus.introspect(BLUEZ_SERVICE, "/")
             proxy = bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
@@ -224,6 +226,7 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             objects = await obj_mgr.call_get_managed_objects()
 
             bluez_players = []
+            device_details = []
             for path, ifaces in objects.items():
                 if "org.bluez.MediaPlayer1" in ifaces:
                     props = ifaces["org.bluez.MediaPlayer1"]
@@ -232,9 +235,23 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
                         "status": str(props.get("Status", {}).value)
                             if props.get("Status") else "unknown",
                     })
+                if "org.bluez.Device1" in ifaces:
+                    dev_props = ifaces["org.bluez.Device1"]
+                    addr = str(dev_props.get("Address", {}).value) if dev_props.get("Address") else "?"
+                    connected = dev_props.get("Connected", {}).value if dev_props.get("Connected") else False
+                    iface_names = sorted(ifaces.keys())
+                    device_details.append({
+                        "path": path,
+                        "address": addr,
+                        "connected": connected,
+                        "interfaces": iface_names,
+                        "has_media_control": "org.bluez.MediaControl1" in ifaces,
+                        "has_media_transport": "org.bluez.MediaTransport1" in ifaces,
+                    })
             results["bluez_media_players"] = bluez_players
+            results["bluez_devices"] = device_details
         except Exception as e:
-            results["bluez_media_players_error"] = str(e)
+            results["bluez_objects_error"] = str(e)
 
         return web.json_response(results)
 
