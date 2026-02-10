@@ -27,6 +27,10 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /run/pulse/** rw,
   /tmp/pulse-*/** rw,
 
+  # PulseAudio client config (needed for pulsectl connection)
+  /root/.config/pulse/ rw,
+  /root/.config/pulse/** rw,
+
   # Persistent data storage
   /data/** rw,
   /data/ r,

@@ -6,6 +6,7 @@ management, PulseAudio, reconnection, keep-alive, and the web server.
 
 import asyncio
 import logging
+import os
 
 from dbus_next.aio import MessageBus
 from dbus_next import BusType
@@ -57,6 +58,8 @@ class BluetoothAudioManager:
         await self.store.load()
 
         # 5. Initialize PulseAudio manager
+        pulse_server = os.environ.get("PULSE_SERVER", "<unset>")
+        logger.info("PULSE_SERVER=%s", pulse_server)
         self.pulse = PulseAudioManager()
         try:
             await self.pulse.connect()

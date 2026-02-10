@@ -5,7 +5,9 @@
  * Communicates with the add-on's REST API.
  */
 
-const API_BASE = "";
+// HA ingress serves the page at /api/hassio_ingress/<token>/
+// Use the current page path as the base so API calls route through ingress
+const API_BASE = document.location.pathname.replace(/\/$/, "");
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);

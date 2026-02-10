@@ -12,7 +12,7 @@ COPY requirements.txt /tmp/
 RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
-RUN mkdir -p /data
+RUN mkdir -p /data /root/.config/pulse
 
 COPY rootfs /
 
