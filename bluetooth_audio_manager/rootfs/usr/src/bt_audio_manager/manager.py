@@ -175,6 +175,11 @@ class BluetoothAudioManager:
                 device = await self._get_or_create_device(addr)
                 if await device.is_connected():
                     logger.info("Device %s already connected, initializing fully", addr)
+                    # Track connect time so AVRCP renegotiation checks work
+                    self._device_connect_time[addr] = time.time()
+                    self._volume_renegotiated.discard(addr)
+                    self._last_signaled_volume.pop(addr, None)
+                    self._last_polled_volume.pop(addr, None)
                     # Wait for services (should already be resolved)
                     try:
                         await device.wait_for_services(timeout=5)
