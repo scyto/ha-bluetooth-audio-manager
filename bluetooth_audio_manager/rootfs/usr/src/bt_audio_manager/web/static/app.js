@@ -26,7 +26,10 @@ async function apiPost(path, body = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => null);
+    throw new Error(data?.error || `API error: ${resp.status}`);
+  }
   return resp.json();
 }
 

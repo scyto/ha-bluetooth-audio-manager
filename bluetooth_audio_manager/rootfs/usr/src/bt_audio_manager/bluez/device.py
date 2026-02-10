@@ -82,58 +82,80 @@ class BluezDevice:
         """
         self._avrcp_callbacks.append(callback)
 
-    async def watch_media_player(self) -> bool:
+    async def watch_media_player(self, retries: int = 3, delay: float = 2.0) -> bool:
         """Introspect for MediaPlayer1 child nodes and subscribe to signals.
+
+        BlueZ may take a moment to create the player node after A2DP connects,
+        so we retry a few times with a delay.
 
         Returns True if a media player was found and subscribed.
         """
-        try:
-            # Introspect the device path to find player child nodes
-            introspection = await self._bus.introspect(BLUEZ_SERVICE, self._path)
-            xml_data = introspection.tostring()
-            root = ET.fromstring(xml_data)
-
-            player_nodes = [
-                n.get("name") for n in root.findall("node")
-                if n.get("name", "").startswith("player")
-            ]
-
-            if not player_nodes:
-                logger.debug("No AVRCP players found for %s", self._address)
-                return False
-
-            # Use the first player
-            player_name = player_nodes[0]
-            self._player_path = f"{self._path}/{player_name}"
-            logger.info(
-                "AVRCP player found for %s: %s", self._address, self._player_path
-            )
-
-            # Subscribe to PropertiesChanged on the player
-            player_introspection = await self._bus.introspect(
-                BLUEZ_SERVICE, self._player_path
-            )
-            player_proxy = self._bus.get_proxy_object(
-                BLUEZ_SERVICE, self._player_path, player_introspection
-            )
-            player_props = player_proxy.get_interface(PROPERTIES_INTERFACE)
-            player_props.on_properties_changed(self._on_media_player_changed)
-
-            # Read initial state
-            try:
-                all_props = await player_props.call_get_all(MEDIA_PLAYER_INTERFACE)
-                for prop_name, variant in all_props.items():
-                    val = variant.value
-                    logger.info("AVRCP %s initial: %s = %s", self._address, prop_name, val)
-                    for cb in self._avrcp_callbacks:
-                        cb(self._address, prop_name, val)
-            except DBusError as e:
-                logger.debug("Could not read initial AVRCP state: %s", e)
-
+        if self._player_path:
+            logger.debug("AVRCP already watching %s", self._player_path)
             return True
-        except DBusError as e:
-            logger.debug("AVRCP introspect failed for %s: %s", self._address, e)
-            return False
+
+        for attempt in range(retries):
+            try:
+                introspection = await self._bus.introspect(BLUEZ_SERVICE, self._path)
+                xml_data = introspection.tostring()
+                root = ET.fromstring(xml_data)
+
+                player_nodes = [
+                    n.get("name") for n in root.findall("node")
+                    if n.get("name", "").startswith("player")
+                ]
+
+                if not player_nodes:
+                    if attempt < retries - 1:
+                        logger.info(
+                            "No AVRCP player for %s yet (attempt %d/%d), retrying in %.0fs...",
+                            self._address, attempt + 1, retries, delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    logger.info("No AVRCP player found for %s after %d attempts", self._address, retries)
+                    return False
+
+                # Use the first player
+                player_name = player_nodes[0]
+                self._player_path = f"{self._path}/{player_name}"
+                logger.info(
+                    "AVRCP player found for %s: %s", self._address, self._player_path
+                )
+
+                # Subscribe to PropertiesChanged on the player
+                player_introspection = await self._bus.introspect(
+                    BLUEZ_SERVICE, self._player_path
+                )
+                player_proxy = self._bus.get_proxy_object(
+                    BLUEZ_SERVICE, self._player_path, player_introspection
+                )
+                player_props = player_proxy.get_interface(PROPERTIES_INTERFACE)
+                player_props.on_properties_changed(self._on_media_player_changed)
+
+                # Read initial state
+                try:
+                    all_props = await player_props.call_get_all(MEDIA_PLAYER_INTERFACE)
+                    for prop_name, variant in all_props.items():
+                        val = variant.value
+                        logger.info("AVRCP %s initial: %s = %s", self._address, prop_name, val)
+                        for cb in self._avrcp_callbacks:
+                            cb(self._address, prop_name, val)
+                except DBusError as e:
+                    logger.debug("Could not read initial AVRCP state: %s", e)
+
+                return True
+            except DBusError as e:
+                if attempt < retries - 1:
+                    logger.info(
+                        "AVRCP introspect failed for %s (attempt %d/%d): %s, retrying...",
+                        self._address, attempt + 1, retries, e,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.info("AVRCP introspect failed for %s after %d attempts: %s", self._address, retries, e)
+                    return False
+        return False
 
     def _on_media_player_changed(
         self, interface_name: str, changed: dict, invalidated: list

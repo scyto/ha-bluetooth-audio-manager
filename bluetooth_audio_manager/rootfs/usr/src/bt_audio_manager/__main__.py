@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -31,7 +32,8 @@ async def main() -> None:
     setup_logging(config.log_level)
 
     logger = logging.getLogger(__name__)
-    logger.info("Bluetooth Audio Manager v%s starting...", "0.1.0")
+    version = os.environ.get("BUILD_VERSION", "dev")
+    logger.info("Bluetooth Audio Manager v%s starting...", version)
 
     manager = BluetoothAudioManager(config)
     web_server = WebServer(manager)

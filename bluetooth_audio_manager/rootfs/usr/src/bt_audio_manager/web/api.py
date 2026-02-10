@@ -6,11 +6,36 @@ import logging
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from dbus_next.errors import DBusError
 
 if TYPE_CHECKING:
     from ..manager import BluetoothAudioManager
 
 logger = logging.getLogger(__name__)
+
+# Map common BlueZ D-Bus error strings to user-friendly messages
+_BLUEZ_ERROR_MAP = {
+    "Page Timeout": "Device not responding. Make sure it is in pairing mode and nearby.",
+    "In Progress": "A pairing or connection attempt is already in progress. Please wait.",
+    "Already Exists": "Device is already paired.",
+    "Does Not Exist": "Device not found. Try scanning again.",
+    "Not Ready": "Bluetooth adapter is not ready. Try again in a moment.",
+    "Connection refused": "Device refused the connection. Is it in pairing mode?",
+    "br-connection-canceled": "Connection was canceled (device may have been busy).",
+    "le-connection-abort-by-local": "Connection aborted locally.",
+    "Software caused connection abort": "Connection dropped unexpectedly. Try again.",
+    "Host is down": "Device is not reachable. Make sure it is powered on and nearby.",
+}
+
+
+def _friendly_error(e: Exception) -> str:
+    """Convert a DBusError or other exception to a user-friendly message."""
+    msg = str(e)
+    if isinstance(e, DBusError):
+        for pattern, friendly in _BLUEZ_ERROR_MAP.items():
+            if pattern in msg:
+                return friendly
+    return msg
 
 
 async def _send_sse(
@@ -55,6 +80,7 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
     @routes.post("/api/pair")
     async def pair(request: web.Request) -> web.Response:
         """Pair and trust a Bluetooth audio device."""
+        address = None
         try:
             body = await request.json()
             address = body.get("address")
@@ -66,11 +92,12 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             return web.json_response(result)
         except Exception as e:
             logger.error("Pair failed for %s: %s", address, e)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
 
     @routes.post("/api/connect")
     async def connect(request: web.Request) -> web.Response:
         """Connect to a paired device."""
+        address = None
         try:
             body = await request.json()
             address = body.get("address")
@@ -82,11 +109,12 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             return web.json_response({"connected": success, "address": address})
         except Exception as e:
             logger.error("Connect failed for %s: %s", address, e)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
 
     @routes.post("/api/disconnect")
     async def disconnect(request: web.Request) -> web.Response:
         """Disconnect a device without forgetting it."""
+        address = None
         try:
             body = await request.json()
             address = body.get("address")
@@ -98,11 +126,12 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             return web.json_response({"disconnected": True, "address": address})
         except Exception as e:
             logger.error("Disconnect failed for %s: %s", address, e)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
 
     @routes.post("/api/forget")
     async def forget(request: web.Request) -> web.Response:
         """Unpair and remove a device completely."""
+        address = None
         try:
             body = await request.json()
             address = body.get("address")
@@ -114,7 +143,7 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             return web.json_response({"forgotten": True, "address": address})
         except Exception as e:
             logger.error("Forget failed for %s: %s", address, e)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
 
     @routes.get("/api/audio/sinks")
     async def audio_sinks(request: web.Request) -> web.Response:

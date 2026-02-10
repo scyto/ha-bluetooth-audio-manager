@@ -150,11 +150,15 @@ class BluetoothAudioManager:
         await self.store.add_device(address, name)
 
         logger.info("Device %s (%s) paired and stored", address, name)
+        self.event_bus.emit("status", {"message": ""})
         await self._broadcast_devices()
         return {"address": address, "name": name, "connected": False}
 
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
+        # Cancel any pending auto-reconnect to avoid racing
+        if self.reconnect_service:
+            self.reconnect_service.cancel_reconnect(address)
         self._broadcast_status(f"Connecting to {address}...")
         device = self.managed_devices.get(address)
         if not device:
