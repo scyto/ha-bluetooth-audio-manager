@@ -38,6 +38,9 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /usr/lib/python3*/** r,
   /usr/bin/python3* ix,
 
+  # Application code (PYTHONPATH=/usr/src)
+  /usr/src/** r,
+
   # System libraries
   /usr/lib/libpulse* r,
   /usr/lib/libbluetooth* r,
