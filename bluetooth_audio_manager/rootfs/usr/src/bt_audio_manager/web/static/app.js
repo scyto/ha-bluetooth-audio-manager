@@ -355,8 +355,12 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-scan").addEventListener("click", scanDevices);
   $("#btn-refresh").addEventListener("click", refreshDevices);
 
-  // SSE provides initial state + real-time updates
+  // SSE provides real-time updates (and sends initial state on connect)
   connectSSE();
+
+  // Also fetch initial state via REST as a fallback — SSE initial
+  // data may be delayed by ingress proxy buffering
+  refreshDevices();
 
   // Show version in footer
   apiGet("/api/info")
