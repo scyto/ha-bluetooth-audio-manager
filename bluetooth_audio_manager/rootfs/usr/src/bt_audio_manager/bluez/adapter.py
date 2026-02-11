@@ -129,6 +129,14 @@ class BluezAdapter:
             connected_variant = props.get("Connected")
             rssi_variant = props.get("RSSI")
 
+            paired = paired_variant.value if paired_variant else False
+            connected = connected_variant.value if connected_variant else False
+            rssi = rssi_variant.value if rssi_variant else None
+
+            # Skip stale BlueZ cache entries: unpaired, disconnected, no recent RSSI
+            if not paired and not connected and rssi is None:
+                continue
+
             # Detect active bearers (BR/EDR vs LE)
             bearers = []
             for iface_name in interfaces:
@@ -163,9 +171,9 @@ class BluezAdapter:
                     "adapter": adapter_name,
                     "address": address_variant.value if address_variant else "unknown",
                     "name": name_variant.value if name_variant else "Unknown Device",
-                    "paired": paired_variant.value if paired_variant else False,
-                    "connected": connected_variant.value if connected_variant else False,
-                    "rssi": rssi_variant.value if rssi_variant else None,
+                    "paired": paired,
+                    "connected": connected,
+                    "rssi": rssi,
                     "uuids": list(uuids),
                     "bearers": bearers,
                     "has_transport": has_transport,
