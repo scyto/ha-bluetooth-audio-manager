@@ -8,6 +8,7 @@ import sys
 
 from .config import AppConfig
 from .manager import BluetoothAudioManager
+from .web.log_handler import WebSocketLogHandler
 from .web.server import WebServer
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -36,7 +37,13 @@ async def main() -> None:
     logger.info("Bluetooth Audio Manager v%s starting...", version)
 
     manager = BluetoothAudioManager(config)
-    web_server = WebServer(manager)
+
+    # Stream application logs to the UI via WebSocket
+    ws_log_handler = WebSocketLogHandler(manager.event_bus)
+    ws_log_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger().addHandler(ws_log_handler)
+
+    web_server = WebServer(manager, log_handler=ws_log_handler)
 
     # Handle shutdown signals
     loop = asyncio.get_running_loop()
