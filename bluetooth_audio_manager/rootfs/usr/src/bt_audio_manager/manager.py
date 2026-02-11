@@ -193,6 +193,15 @@ class BluetoothAudioManager:
                         await device.watch_media_player()
                     except Exception as e:
                         logger.debug("AVRCP on existing connection %s: %s", addr, e)
+
+                    # Device stayed connected while add-on restarted: refresh
+                    # AVRCP control profiles so remote buttons re-bind to this
+                    # process's newly registered MPRIS player.
+                    if self.media_player:
+                        try:
+                            await self._refresh_avrcp_session(addr)
+                        except Exception as e:
+                            logger.debug("AVRCP refresh on existing connection %s: %s", addr, e)
                     # Check/activate A2DP transport
                     await self._ensure_a2dp_transport(addr)
                     # Check for existing PA sink
@@ -968,6 +977,77 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.warning("Disconnect/reconnect cycle failed for %s: %s", address, e)
             return False
+
+    async def _refresh_avrcp_session(self, address: str) -> None:
+        """Rebuild AVRCP session for devices connected across add-on restart.
+
+        We observed some speakers keep a stale control state across process
+        restart even when AVRCP profile toggle calls succeed. A full ACL
+        reconnect is the reliable recovery (same behavior as manual speaker
+        power-cycle + reconnect).
+        """
+        from .bluez.constants import AVRCP_CONTROLLER_UUID, AVRCP_TARGET_UUID
+
+        device = self.managed_devices.get(address)
+        if not device:
+            return
+
+        try:
+            if not await device.is_connected():
+                return
+        except Exception:
+            return
+
+        logger.info("Refreshing AVRCP session for %s after add-on restart", address)
+
+        # Best-effort profile bounce first (cheap/noisy logging only).
+        for uuid in (AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID):
+            try:
+                await device.disconnect_profile(uuid)
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.debug("AVRCP disconnect_profile(%s) on %s: %s", uuid, address, e)
+
+        for uuid in (AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID):
+            try:
+                await device.connect_profile(uuid)
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.debug("AVRCP connect_profile(%s) on %s: %s", uuid, address, e)
+
+        # Force complete reconnect regardless of profile-call results; this
+        # is the path that consistently restores Bose button/volume control
+        # after add-on restart when device stayed connected.
+        logger.info("Forcing reconnect for %s to rebuild AVRCP control channel", address)
+        self._connecting.add(address)
+        self._suppress_reconnect.add(address)
+        try:
+            await device.disconnect()
+            await asyncio.sleep(2)
+            await device.connect()
+            await device.wait_for_services(timeout=10)
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.warning("AVRCP reconnect fallback failed for %s: %s", address, e)
+        finally:
+            self._connecting.discard(address)
+            self._suppress_reconnect.discard(address)
+
+        # Make sure BlueZ tracks our current player registration for the fresh
+        # session and refresh local subscriptions.
+        if self.media_player:
+            try:
+                await self.media_player.unregister()
+                await asyncio.sleep(1)
+                await self.media_player.register()
+            except Exception as e:
+                logger.warning("MPRIS player re-registration failed during AVRCP refresh: %s", e)
+
+        await asyncio.sleep(1.0)
+        try:
+            await device.watch_media_player(retries=2, delay=1.0)
+        except Exception as e:
+            logger.debug("AVRCP watch after refresh failed for %s: %s", address, e)
 
     def _on_pa_volume_change(self, sink_name: str, volume: int, mute: bool) -> None:
         """Handle PulseAudio Bluetooth sink volume change (AVRCP Absolute Volume)."""
