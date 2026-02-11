@@ -880,7 +880,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Show version in header pill and footer
   apiGet("/api/info")
     .then((data) => {
-      const ver = `v${data.version}`;
+      const ver = data.version;
       $("#build-version").textContent = ver;
       $("#version-label").textContent = `${ver} (${data.adapter})`;
     })
