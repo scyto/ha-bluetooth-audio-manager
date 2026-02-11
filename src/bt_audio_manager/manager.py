@@ -821,12 +821,17 @@ class BluetoothAudioManager:
     async def _get_supervisor_usb_names() -> dict[str, str]:
         """Query the HA Supervisor hardware API for USB device names.
 
-        Returns two mappings:
+        Returns mappings keyed by:
         - USB id (vendor:product, lowercase) → device description
-        - hci adapter name → device description (when sysfs path reveals it)
-        Combined into a single dict keyed by both.
+        - hci adapter name (hci:hciX) → device description
+
+        The hci mapping is built by cross-referencing bluetooth devices
+        (which have hci names but no USB product info) with their parent
+        USB devices (which have product info but no hci names) via sysfs
+        path prefix matching.
         """
         import aiohttp
+        import re
         token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
             return {}
@@ -842,14 +847,20 @@ class BluetoothAudioManager:
 
             devices = result.get("data", {}).get("devices", [])
             names: dict[str, str] = {}
+            # sysfs path → (usb_id, full_name) for parent-path matching
+            usb_by_path: dict[str, tuple[str, str]] = {}
 
+            # Pass 1: collect USB devices with vendor/product info
             for dev in devices:
                 attrs = dev.get("attributes", {})
-                subsystem = dev.get("subsystem", "")
-                sysfs = dev.get("sysfs", dev.get("by_id", ""))
+                sysfs = dev.get("sysfs", "")
                 dev_name = dev.get("name", "")
 
-                # Build a human-readable name from available attributes
+                vid = attrs.get("ID_VENDOR_ID", "")
+                pid = attrs.get("ID_MODEL_ID", "")
+                if not (vid and pid):
+                    continue
+
                 name = (
                     attrs.get("ID_MODEL_FROM_DATABASE")
                     or attrs.get("ID_MODEL")
@@ -861,29 +872,50 @@ class BluetoothAudioManager:
                     or ""
                 )
                 full_name = f"{vendor} {name}".strip() if vendor and name else (name or vendor or dev_name)
-
                 if not full_name:
                     continue
 
-                # Key by USB vendor:product if available
+                usb_id = f"{vid.lower()}:{pid.lower()}"
+                names[usb_id] = full_name
+                if sysfs:
+                    usb_by_path[sysfs] = (usb_id, full_name)
+
+            # Pass 2: find bluetooth/hci devices and map to parent USB names
+            for dev in devices:
+                sysfs = dev.get("sysfs", dev.get("by_id", ""))
+                subsystem = dev.get("subsystem", "")
+                dev_name = dev.get("name", "")
+
+                if subsystem != "bluetooth" and "bluetooth" not in sysfs.lower():
+                    continue
+
+                # Extract hci name from sysfs path or device name
+                m = re.search(r"(hci\d+)", sysfs) or re.search(r"(hci\d+)", dev_name)
+                if not m:
+                    continue
+                hci_name = m.group(1)
+                hci_key = f"hci:{hci_name}"
+
+                # Check if this device itself has vendor/product info
+                attrs = dev.get("attributes", {})
                 vid = attrs.get("ID_VENDOR_ID", "")
                 pid = attrs.get("ID_MODEL_ID", "")
                 if vid and pid:
                     usb_id = f"{vid.lower()}:{pid.lower()}"
-                    names[usb_id] = full_name
+                    if usb_id in names:
+                        names[hci_key] = names[usb_id]
+                        continue
 
-                # Key by hci name if the sysfs path reveals the BT adapter
-                # e.g. sysfs path containing /bluetooth/hci0
-                if "bluetooth" in sysfs.lower() or subsystem == "bluetooth":
-                    import re
-                    m = re.search(r"(hci\d+)", sysfs)
-                    if m:
-                        names[f"hci:{m.group(1)}"] = full_name
+                # Find parent USB device by sysfs path prefix
+                if sysfs:
+                    for usb_sysfs, (_uid, usb_name) in usb_by_path.items():
+                        if sysfs.startswith(usb_sysfs + "/"):
+                            names[hci_key] = usb_name
+                            break
 
             logger.info("Supervisor HW names: %s", names)
-            # Also log raw device list for debugging (first time only)
-            if not names:
-                for dev in devices[:20]:
+            if not any(k.startswith("hci:") for k in names):
+                for dev in devices[:30]:
                     logger.info("Supervisor HW device: subsystem=%s name=%s sysfs=%s attrs=%s",
                                 dev.get("subsystem"), dev.get("name"),
                                 dev.get("sysfs", dev.get("by_id", "")),
