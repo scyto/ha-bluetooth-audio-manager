@@ -178,46 +178,33 @@ class BluetoothAudioManager:
                 device = await self._get_or_create_device(addr)
                 if await device.is_connected():
                     logger.info("Device %s already connected, initializing fully", addr)
-                    # Track connect time so AVRCP renegotiation checks work
-                    self._device_connect_time[addr] = time.time()
                     self._renegotiation_count.pop(addr, None)
                     self._last_signaled_volume.pop(addr, None)
                     self._last_polled_volume.pop(addr, None)
-                    # Wait for services (should already be resolved)
-                    try:
-                        await device.wait_for_services(timeout=5)
-                    except Exception as e:
-                        logger.debug("wait_for_services for %s: %s", addr, e)
-                    # Try AVRCP media player subscription
-                    try:
-                        await device.watch_media_player()
-                    except Exception as e:
-                        logger.debug("AVRCP on existing connection %s: %s", addr, e)
-                    # Device stayed connected while add-on restarted: refresh
-                    # AVRCP control profiles so remote buttons re-bind to this
-                    # process's newly registered MPRIS player.
                     if self.media_player:
+                        # Bounce the connection so the speaker re-initiates
+                        # with fresh AVRCP including absolute volume
+                        await self._bounce_for_avrcp(addr)
+                    else:
+                        # No MPRIS player — just set up A2DP transport
+                        self._device_connect_time[addr] = time.time()
                         try:
-                            await self._refresh_avrcp_session(addr)
+                            await device.wait_for_services(timeout=5)
                         except Exception as e:
-                            logger.debug("AVRCP refresh on existing connection %s: %s", addr, e)
-                    # Check/activate A2DP transport
-                    await self._ensure_a2dp_transport(addr)
-                    # Check for existing PA sink
-                    if self.pulse:
-                        sink_name = await self.pulse.get_sink_for_address(addr)
-                        if not sink_name:
-                            # PA may have lost track during add-on restart —
-                            # activate the card profile to create the sink
-                            logger.info("No PA sink for %s at startup, activating card profile...", addr)
-                            if await self.pulse.activate_bt_card_profile(addr):
-                                sink_name = await self.pulse.wait_for_bt_sink(addr, timeout=10)
-                        if sink_name:
-                            logger.info("PA sink for %s: %s", addr, sink_name)
-                            if self.keepalive:
-                                self.keepalive.set_target_sink(sink_name)
-                        else:
-                            logger.warning("No PA sink found for already-connected device %s", addr)
+                            logger.debug("wait_for_services for %s: %s", addr, e)
+                        await self._ensure_a2dp_transport(addr)
+                        if self.pulse:
+                            sink_name = await self.pulse.get_sink_for_address(addr)
+                            if not sink_name:
+                                logger.info("No PA sink for %s at startup, activating card profile...", addr)
+                                if await self.pulse.activate_bt_card_profile(addr):
+                                    sink_name = await self.pulse.wait_for_bt_sink(addr, timeout=10)
+                            if sink_name:
+                                logger.info("PA sink for %s: %s", addr, sink_name)
+                                if self.keepalive:
+                                    self.keepalive.set_target_sink(sink_name)
+                            else:
+                                logger.warning("No PA sink found for already-connected device %s", addr)
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
 
@@ -1065,6 +1052,125 @@ class BluetoothAudioManager:
             logger.debug("AVRCP watch after refresh for %s: %s", address, e)
 
         await self._log_media_control_player(address)
+
+    async def _bounce_for_avrcp(self, address: str) -> None:
+        """Disconnect and wait for speaker-initiated reconnect for fresh AVRCP.
+
+        When the add-on restarts while a speaker stays connected, the
+        HCI-level AVRCP session is stale — BlueZ reuses cached state and
+        doesn't re-register for EVENT_VOLUME_CHANGED.  Only a speaker-
+        initiated reconnection triggers the full AVRCP GetCapabilities
+        exchange that includes absolute volume registration.
+        """
+        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+
+        device = self.managed_devices.get(address)
+        if not device:
+            return
+
+        logger.info(
+            "AVRCP bounce: disconnecting %s so speaker re-initiates with fresh AVRCP...",
+            address,
+        )
+        self._connecting.add(address)
+        self._suppress_reconnect.add(address)
+
+        try:
+            await device.disconnect()
+
+            # Wait for the speaker to reconnect on its own — speaker-initiated
+            # connections negotiate AVRCP capabilities including absolute volume
+            reconnected = False
+            for i in range(30):
+                await asyncio.sleep(1)
+                try:
+                    if await device.is_connected():
+                        logger.info(
+                            "AVRCP bounce: %s reconnected after %ds (speaker-initiated)",
+                            address, i + 1,
+                        )
+                        reconnected = True
+                        break
+                except Exception:
+                    pass
+
+            if not reconnected:
+                logger.info(
+                    "AVRCP bounce: %s did not auto-reconnect in 30s, "
+                    "falling back to device.connect()...",
+                    address,
+                )
+                try:
+                    await device.connect()
+                    reconnected = True
+                except Exception as e:
+                    logger.warning(
+                        "AVRCP bounce: fallback connect failed for %s: %s",
+                        address, e,
+                    )
+
+            if not reconnected:
+                logger.warning("AVRCP bounce: could not reconnect %s", address)
+                return
+
+            # Post-reconnection setup
+            try:
+                await device.wait_for_services(timeout=10)
+            except Exception as e:
+                logger.debug("wait_for_services after bounce %s: %s", address, e)
+
+            try:
+                await device.watch_media_player()
+            except Exception as e:
+                logger.debug("AVRCP watch after bounce %s: %s", address, e)
+
+            await self._ensure_a2dp_transport(address)
+
+            # Wait for and verify PA sink
+            if self.pulse:
+                sink_name = await self.pulse.get_sink_for_address(address)
+                if not sink_name:
+                    logger.info("No PA sink for %s after bounce, activating card profile...", address)
+                    if await self.pulse.activate_bt_card_profile(address):
+                        sink_name = await self.pulse.wait_for_bt_sink(address, timeout=10)
+                if sink_name:
+                    logger.info("PA sink for %s: %s", address, sink_name)
+                    if self.keepalive:
+                        self.keepalive.set_target_sink(sink_name)
+                else:
+                    logger.warning("No PA sink found for %s after bounce", address)
+
+            # Seed volume tracking from transport to prevent the diagnostic
+            # poller from triggering unnecessary renegotiation
+            try:
+                dev_fragment = address.replace(":", "_").upper()
+                intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+                proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+                obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+                objects = await obj_mgr.call_get_managed_objects()
+                for path, ifaces in objects.items():
+                    if dev_fragment not in path:
+                        continue
+                    if "org.bluez.MediaTransport1" not in ifaces:
+                        continue
+                    tp = ifaces["org.bluez.MediaTransport1"]
+                    if "Volume" in tp:
+                        vol_raw = tp["Volume"].value if hasattr(tp["Volume"], "value") else tp["Volume"]
+                        self._last_signaled_volume[address] = vol_raw
+                        self._last_polled_volume[address] = vol_raw
+                        logger.info(
+                            "AVRCP bounce: seeded volume %d%% (raw %d) for %s",
+                            round(vol_raw / 127 * 100), vol_raw, address,
+                        )
+                    break
+            except Exception as e:
+                logger.debug("Failed to seed volume from transport for %s: %s", address, e)
+
+        except Exception as e:
+            logger.warning("AVRCP bounce failed for %s: %s", address, e)
+        finally:
+            self._connecting.discard(address)
+            self._suppress_reconnect.discard(address)
 
     async def _log_media_control_player(self, address: str) -> None:
         """Log whether BlueZ linked our MPRIS player to the device's AVRCP session."""
