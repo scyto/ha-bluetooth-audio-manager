@@ -466,9 +466,16 @@ function renderAdaptersModal(adapters) {
         ? '<span class="badge bg-success">Powered</span>'
         : '<span class="badge bg-secondary">Off</span>';
 
-      const displayName = a.hw_model
-        ? `${escapeHtml(a.name)} &mdash; ${escapeHtml(a.hw_model)}`
-        : escapeHtml(a.name);
+      // Friendly name: prefer resolved hw_model (not raw modalias), else alias
+      const hwResolved = a.hw_model && a.hw_model !== a.modalias;
+      const friendlyName = hwResolved
+        ? a.hw_model
+        : (a.alias && a.alias !== a.name ? a.alias : "");
+
+      // Technical line: hci name + modalias
+      const techParts = [a.name];
+      if (a.modalias) techParts.push(a.modalias);
+      const techLine = techParts.join(" \u2014 ");
 
       const selectBtn =
         !a.selected && a.powered
@@ -481,7 +488,8 @@ function renderAdaptersModal(adapters) {
         <div class="card adapter-card mb-2">
           <div class="card-body d-flex justify-content-between align-items-center py-2">
             <div>
-              <div class="fw-semibold">${displayName}</div>
+              ${friendlyName ? `<div class="fw-semibold">${escapeHtml(friendlyName)}</div>` : ""}
+              <div class="${friendlyName ? "small text-muted" : "fw-semibold"}">${escapeHtml(techLine)}</div>
               <div class="font-monospace small text-muted">${escapeHtml(a.address)}</div>
             </div>
             <div class="d-flex align-items-center gap-2">
