@@ -235,6 +235,30 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.debug("Failed to enumerate connected BlueZ devices: %s", e)
 
+        # 6c. If any device already has an active A2DP transport, signal
+        #     PlaybackStatus=Playing so the speaker enables AVRCP volume buttons
+        #     immediately (we won't see a State transition signal for transports
+        #     that were already active before we started).
+        if self.media_player:
+            try:
+                from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+                intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+                proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+                obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+                objects = await obj_mgr.call_get_managed_objects()
+                for path, ifaces in objects.items():
+                    if "org.bluez.MediaTransport1" not in ifaces:
+                        continue
+                    tp = ifaces["org.bluez.MediaTransport1"]
+                    state_v = tp.get("State")
+                    state = state_v.value if hasattr(state_v, "value") else state_v
+                    if state == "active":
+                        logger.info("Active A2DP transport found at startup (%s) — setting PlaybackStatus=Playing", path)
+                        self.media_player.set_playback_status("Playing")
+                        break
+            except Exception as e:
+                logger.debug("Could not check transport state at startup: %s", e)
+
         # 7. Start reconnection service
         self.reconnect_service = ReconnectService(self)
         await self.reconnect_service.start()
