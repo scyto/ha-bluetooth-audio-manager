@@ -194,8 +194,11 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             devices = await manager.scan_devices(duration)
             return web.json_response({"devices": devices})
         except Exception as e:
+            if "In Progress" in str(e):
+                # Scan already running — not an error
+                return web.json_response({"scanning": True})
             logger.error("Scan failed: %s", e)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
 
     @routes.post("/api/pair")
     async def pair(request: web.Request) -> web.Response:

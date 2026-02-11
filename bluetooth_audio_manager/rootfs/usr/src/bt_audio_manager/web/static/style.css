@@ -119,6 +119,11 @@ header h1 {
   font-size: 0.875rem;
 }
 
+.status-bar.error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .hidden { display: none !important; }
 
 .spinner {
