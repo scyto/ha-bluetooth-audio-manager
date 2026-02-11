@@ -806,8 +806,9 @@ class BluetoothAudioManager:
                     if hci_key in usb_names:
                         a["hw_model"] = usb_names[hci_key]
                         continue
-                    # Try match by Modalias → USB vendor:product
-                    usb_id = self._modalias_to_usb_id(a["modalias"])
+                    # Try match by real USB ID from sysfs (preferred),
+                    # fall back to modalias-derived ID (less reliable in Docker)
+                    usb_id = a.get("usb_id") or self._modalias_to_usb_id(a["modalias"])
                     if usb_id and usb_id in usb_names:
                         a["hw_model"] = usb_names[usb_id]
 

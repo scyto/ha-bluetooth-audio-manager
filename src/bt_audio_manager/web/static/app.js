@@ -467,10 +467,10 @@ function renderAdaptersModal(adapters) {
         : '<span class="badge bg-secondary">Off</span>';
 
       // Friendly name: prefer resolved hw_model (not raw modalias), else alias
+      // Filter out hostname-like aliases (contain dots) — BlueZ defaults alias to hostname
       const hwResolved = a.hw_model && a.hw_model !== a.modalias;
-      const friendlyName = hwResolved
-        ? a.hw_model
-        : (a.alias && a.alias !== a.name ? a.alias : "");
+      const aliasUseful = a.alias && a.alias !== a.name && !a.alias.includes(".");
+      const friendlyName = hwResolved ? a.hw_model : (aliasUseful ? a.alias : "");
 
       // Technical line: hci name + modalias
       const techParts = [a.name];
