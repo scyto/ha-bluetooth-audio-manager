@@ -265,8 +265,9 @@ function renderAddDeviceTile() {
     ? '<i class="fas fa-spinner fa-spin"></i>'
     : '<i class="fas fa-plus"></i>';
   const scanClass = isScanning ? " scanning" : "";
-  return `
-    <div class="col-12 col-md-auto add-device-col">
+  const wrapper = $("#add-device-wrapper");
+  if (wrapper) {
+    wrapper.innerHTML = `
       <div class="card add-device-tile${scanClass}" id="add-device-tile"
            onclick="scanDevices()" role="button" tabindex="0"
            title="Scan for nearby Bluetooth audio devices">
@@ -275,20 +276,20 @@ function renderAddDeviceTile() {
           <span>${scanLabel}</span>
         </div>
       </div>
-    </div>
-  `;
+    `;
+  }
 }
 
 function renderDevices(devices) {
   const grid = $("#devices-grid");
-  const tileHtml = renderAddDeviceTile();
+  renderAddDeviceTile();
 
   if (!devices || devices.length === 0) {
-    grid.innerHTML = tileHtml;
+    grid.innerHTML = "";
     return;
   }
 
-  grid.innerHTML = tileHtml + devices
+  grid.innerHTML = devices
     .map((d) => {
       const badgeClass = d.connected
         ? "badge-connected"

@@ -280,17 +280,22 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ============================================
-   Add Device Tile (compact)
+   Devices Layout (Add-Device in left margin)
    ============================================ */
 
-.add-device-col {
-  flex: 0 0 auto;
-  width: auto;
+.devices-layout {
+  position: relative;
+}
+
+/* Default: horizontal pill above the grid */
+#add-device-wrapper {
+  margin-bottom: 0.75rem;
 }
 
 .add-device-tile {
   border: 2px dashed var(--bs-border-color);
   cursor: pointer;
+  display: inline-block;
   transition: transform var(--transition-base), border-color var(--transition-base);
 }
 
@@ -299,7 +304,7 @@ h1, h2, h3, h4, h5, h6 {
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.625rem 1.25rem;
+  padding: 0.5rem 1rem;
   color: var(--bs-secondary-color);
   font-weight: 500;
   font-size: 0.875rem;
@@ -331,6 +336,23 @@ h1, h2, h3, h4, h5, h6 {
 @keyframes scan-pulse {
   0%, 100% { border-color: var(--accent-primary); opacity: 1; }
   50% { border-color: var(--bs-border-color); opacity: 0.7; }
+}
+
+/* Wide screens: vertical button in the left margin */
+@media (min-width: 1440px) {
+  #add-device-wrapper {
+    position: absolute;
+    right: calc(100% + 0.75rem);
+    top: 0;
+    margin-bottom: 0;
+  }
+
+  .add-device-tile .card-body {
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.75rem 0.5rem;
+    font-size: 0.75rem;
+  }
 }
 
 /* ============================================
