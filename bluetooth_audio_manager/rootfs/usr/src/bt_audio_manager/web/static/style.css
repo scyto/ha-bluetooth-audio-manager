@@ -280,6 +280,50 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ============================================
+   Add Device Tile
+   ============================================ */
+
+.add-device-tile {
+  border: 2px dashed var(--bs-border-color);
+  cursor: pointer;
+  transition: transform var(--transition-base), border-color var(--transition-base);
+}
+
+.add-device-tile .card-body {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--bs-secondary-color);
+  font-weight: 500;
+}
+
+.add-device-tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.add-device-tile:hover .card-body {
+  color: var(--accent-primary);
+}
+
+.add-device-tile.scanning {
+  border-color: var(--accent-primary);
+  animation: scan-pulse 2s ease-in-out infinite;
+}
+
+.add-device-tile.scanning .card-body {
+  color: var(--accent-primary);
+}
+
+@keyframes scan-pulse {
+  0%, 100% { border-color: var(--accent-primary); opacity: 1; }
+  50% { border-color: var(--bs-border-color); opacity: 0.7; }
+}
+
+/* ============================================
    Device Cards
    ============================================ */
 
