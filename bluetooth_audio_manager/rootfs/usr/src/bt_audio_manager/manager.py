@@ -55,6 +55,7 @@ class BluetoothAudioManager:
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
+        self._a2dp_attempts: dict[str, int] = {}  # addr → consecutive A2DP activation failures
         # Ring buffers so WebSocket clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
@@ -390,6 +391,7 @@ class BluetoothAudioManager:
     async def pair_device(self, address: str) -> dict:
         """Pair, trust, persist, and connect a Bluetooth audio device."""
         self._broadcast_status(f"Pairing with {address}...")
+        self._a2dp_attempts.pop(address, None)  # fresh pair — reset retry counter
         # Mark as connecting early so the Connected signal fired during pair()
         # doesn't race with connect_device() and double-fire HFP disconnect.
         self._connecting.add(address)
@@ -518,6 +520,7 @@ class BluetoothAudioManager:
     async def forget_device(self, address: str) -> None:
         """Unpair, remove from BlueZ, and delete from persistent store."""
         self._broadcast_status(f"Forgetting {address}...")
+        self._a2dp_attempts.pop(address, None)
         # Cancel reconnection
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
@@ -1220,6 +1223,8 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.debug("MediaControl1 check failed for %s: %s", address, e)
 
+    MAX_A2DP_ATTEMPTS = 3  # give up after this many consecutive failures
+
     async def _ensure_a2dp_transport(self, address: str) -> bool:
         """Check for A2DP transport and try ConnectProfile if missing.
 
@@ -1234,7 +1239,19 @@ class BluetoothAudioManager:
 
         # First check: transport may already exist
         if await self._log_transport_properties(address):
+            self._a2dp_attempts.pop(address, None)
             return True
+
+        # Bail out if we've already retried too many times
+        attempts = self._a2dp_attempts.get(address, 0)
+        if attempts >= self.MAX_A2DP_ATTEMPTS:
+            logger.warning(
+                "A2DP transport activation for %s failed after %d attempts — giving up",
+                address, attempts,
+            )
+            return False
+
+        self._a2dp_attempts[address] = attempts + 1
 
         # Log device UUIDs to confirm A2DP is advertised
         try:
@@ -1260,6 +1277,7 @@ class BluetoothAudioManager:
             await device.connect_profile(A2DP_SINK_UUID)
             await asyncio.sleep(3)
             if await self._log_transport_properties(address):
+                self._a2dp_attempts.pop(address, None)
                 return True
         except Exception as e:
             logger.warning("ConnectProfile(A2DP) failed for %s: %s", address, e)
@@ -1272,16 +1290,23 @@ class BluetoothAudioManager:
             "A2DP still missing for %s, trying full disconnect/reconnect cycle...",
             address,
         )
+        # Mark as connecting so the Connected signal handler won't re-enter
+        self._connecting.add(address)
         try:
             await device.disconnect()
             await asyncio.sleep(2)
             await device.connect()
             await device.wait_for_services(timeout=10)
             await asyncio.sleep(3)
-            return await self._log_transport_properties(address)
+            found = await self._log_transport_properties(address)
+            if found:
+                self._a2dp_attempts.pop(address, None)
+            return found
         except Exception as e:
             logger.warning("Disconnect/reconnect cycle failed for %s: %s", address, e)
             return False
+        finally:
+            self._connecting.discard(address)
 
     def _on_pa_volume_change(self, sink_name: str, volume: int, mute: bool) -> None:
         """Handle PulseAudio Bluetooth sink volume change (AVRCP Absolute Volume)."""
