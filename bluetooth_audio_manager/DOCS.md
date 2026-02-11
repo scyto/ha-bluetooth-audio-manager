@@ -84,5 +84,16 @@ Bluetooth sink is listed. Try setting it as the default output.
 UI (device menu > Settings). Try the `infrasound` method if `silence` doesn't
 work.
 
+**`br-connection-key-missing` error when connecting**: The pairing keys stored
+by BlueZ are out of sync with the speaker. Click **Forget** in the add-on UI,
+then clear the pairing on the speaker itself (usually hold the Bluetooth button
+for ~10 seconds until the speaker announces "ready to pair" or the LED enters
+pairing mode). Then scan and pair again from the add-on.
+
+**`Authentication Rejected` when pairing**: The speaker still has old pairing
+keys for your system's Bluetooth address and is refusing the new pairing
+attempt. Clear the speaker's paired-device list (hold the Bluetooth button for
+~10 seconds) so both sides start fresh, then re-pair from the add-on.
+
 **Existing BLE integrations stopped working**: This should not happen by
 design. Check the add-on logs for errors and file an issue on GitHub.
