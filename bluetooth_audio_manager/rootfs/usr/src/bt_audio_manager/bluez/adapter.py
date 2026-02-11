@@ -133,10 +133,6 @@ class BluezAdapter:
             connected = connected_variant.value if connected_variant else False
             rssi = rssi_variant.value if rssi_variant else None
 
-            # Skip stale BlueZ cache entries: unpaired, disconnected, no recent RSSI
-            if not paired and not connected and rssi is None:
-                continue
-
             # Detect active bearers (BR/EDR vs LE)
             bearers = []
             for iface_name in interfaces:
