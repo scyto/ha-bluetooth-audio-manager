@@ -332,6 +332,28 @@ async function debugDisconnectHfp(address) {
   }
 }
 
+async function debugHfpReconnectCycle(address) {
+  try {
+    showStatus(`HFP Reconnect Cycle on ${address} (audio will drop)...`);
+    await apiPost("/api/debug/hfp-reconnect-cycle", { address });
+  } catch (e) {
+    showError(`HFP Reconnect Cycle failed: ${e.message}`);
+  } finally {
+    hideStatus();
+  }
+}
+
+async function debugRegisterNullHfp(address) {
+  try {
+    showStatus(`Registering Null HFP Handler + reconnect on ${address} (audio will drop)...`);
+    await apiPost("/api/debug/register-null-hfp", { address });
+  } catch (e) {
+    showError(`Register Null HFP failed: ${e.message}`);
+  } finally {
+    hideStatus();
+  }
+}
+
 function renderDebugActions(devices) {
   const container = $("#debug-actions");
   const placeholder = $("#debug-placeholder");
@@ -359,6 +381,8 @@ function renderDebugActions(devices) {
           <button class="btn btn-small btn-warning" onclick="debugMprisAvrcpCycle('${d.address}')">MPRIS+AVRCP Cycle</button>
           <button class="btn btn-small btn-danger" onclick="debugFullRenegotiate('${d.address}')">Full Renegotiate</button>
           <button class="btn btn-small btn-primary" onclick="debugDisconnectHfp('${d.address}')">Disconnect HFP</button>
+          <button class="btn btn-small btn-danger" onclick="debugHfpReconnectCycle('${d.address}')">HFP + Reconnect</button>
+          <button class="btn btn-small btn-warning" onclick="debugRegisterNullHfp('${d.address}')">Null HFP Handler</button>
         </div>
       </div>
     `)
