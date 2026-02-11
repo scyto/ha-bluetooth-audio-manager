@@ -127,11 +127,18 @@
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-/* Nav button active state */
-.nav-btn.active {
-  background: rgba(255, 255, 255, 0.2) !important;
-  border-color: rgba(255, 255, 255, 0.5) !important;
-  color: #fff !important;
+.app-header .btn-light {
+  background: #fff;
+  color: #1e293b;
+  font-weight: 500;
+  font-size: 0.875rem;
+  border: none;
+  transition: all var(--transition-fast);
+}
+
+.app-header .btn-light:hover {
+  background: #f1f5f9;
+  transform: translateY(-1px);
 }
 
 /* Connection status badge consistent width */
@@ -546,10 +553,6 @@
 
   .toast {
     min-width: 100%;
-  }
-
-  .btn-group .nav-btn span {
-    display: none;
   }
 }
 

@@ -56,11 +56,6 @@ function switchView(viewName) {
   // Show selected view
   const target = $(`#view-${viewName}`);
   if (target) target.classList.remove("d-none");
-
-  // Update nav button active state
-  $$(".nav-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.view === viewName);
-  });
 }
 
 // ============================================
@@ -118,9 +113,8 @@ function hideBanner() {
 }
 
 function setButtonsEnabled(enabled) {
-  $$("#btn-scan, #btn-refresh").forEach((btn) => {
-    btn.disabled = !enabled;
-  });
+  const btns = [$("#btn-scan"), $("#btn-refresh")];
+  btns.forEach((btn) => { if (btn) btn.disabled = !enabled; });
 }
 
 // ============================================
