@@ -308,6 +308,68 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             logger.error("Failed to get state: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
+    # ---- Debug endpoints for interactive AVRCP testing ----
+
+    @routes.post("/api/debug/avrcp-cycle")
+    async def debug_avrcp_cycle(request: web.Request) -> web.Response:
+        """Debug: cycle AVRCP profiles only."""
+        address = None
+        try:
+            body = await request.json()
+            address = body.get("address")
+            if not address:
+                return web.json_response({"error": "address is required"}, status=400)
+            result = await manager.debug_avrcp_cycle(address)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("debug_avrcp_cycle failed for %s: %s", address, e)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
+
+    @routes.post("/api/debug/mpris-reregister")
+    async def debug_mpris_reregister(request: web.Request) -> web.Response:
+        """Debug: unregister + re-register MPRIS player."""
+        address = None
+        try:
+            body = await request.json()
+            address = body.get("address")
+            if not address:
+                return web.json_response({"error": "address is required"}, status=400)
+            result = await manager.debug_mpris_reregister(address)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("debug_mpris_reregister failed for %s: %s", address, e)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
+
+    @routes.post("/api/debug/mpris-avrcp-cycle")
+    async def debug_mpris_avrcp_cycle(request: web.Request) -> web.Response:
+        """Debug: unregister MPRIS, cycle AVRCP, re-register MPRIS."""
+        address = None
+        try:
+            body = await request.json()
+            address = body.get("address")
+            if not address:
+                return web.json_response({"error": "address is required"}, status=400)
+            result = await manager.debug_mpris_avrcp_cycle(address)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("debug_mpris_avrcp_cycle failed for %s: %s", address, e)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
+
+    @routes.post("/api/debug/full-renegotiate")
+    async def debug_full_renegotiate(request: web.Request) -> web.Response:
+        """Debug: full disconnect + ConnectProfile(A2DP) renegotiation."""
+        address = None
+        try:
+            body = await request.json()
+            address = body.get("address")
+            if not address:
+                return web.json_response({"error": "address is required"}, status=400)
+            result = await manager.debug_full_renegotiate(address)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("debug_full_renegotiate failed for %s: %s", address, e)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
+
     @routes.get("/api/diagnostics/mpris")
     async def diagnostics_mpris(request: web.Request) -> web.Response:
         """Diagnostic endpoint for MPRIS/AVRCP troubleshooting."""
