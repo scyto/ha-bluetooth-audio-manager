@@ -76,11 +76,49 @@ Two methods are available:
 5. Go to **Settings > System > Audio** to see/select the Bluetooth speaker
 6. Use TTS, media player, or automations to play audio through it
 
+## Supported devices
+
+### A2DP speakers and receivers (fully supported)
+
+Any Classic Bluetooth device that advertises A2DP Sink will work. This includes
+most Bluetooth speakers (Bose, JBL, Sony, UE, Anker, etc.), soundbars, and
+Bluetooth audio receiver dongles (3.5 mm / RCA adapters). Stereo audio via SBC
+codec; AAC and aptX depend on the HAOS BlueZ/PulseAudio build.
+
+Bluetooth headphones and earbuds with A2DP also work for audio playback. AVRCP
+buttons (play/pause/next/prev) and Absolute Volume are supported.
+
+### HFP-only devices (optional, mono)
+
+Mono Bluetooth headsets and some car kits that only support the Hands-Free
+Profile can be enabled by setting `block_hfp: false` (see Configuration above).
+
+**Limitations:**
+
+- Audio is mono, narrow-band (8 kHz or 16 kHz with mSBC)
+- No AVRCP button support (play/pause/next/prev)
+- Volume is handled by PulseAudio via the HFP channel, not AVRCP Absolute Volume
+- Best suited for TTS announcements, not music
+
+### LE Audio / Auracast (not supported)
+
+Bluetooth LE Audio devices using the LC3 codec (some 2024+ earbuds, Auracast
+broadcast speakers) are **not supported**. HAOS uses PulseAudio which has no
+LC3 codec support. LE Audio requires PipeWire, which HAOS does not currently
+ship. This is a platform limitation, not an add-on limitation.
+
+### BLE-only audio (not supported)
+
+Hearing aids and assistive listening devices that use BLE-only protocols (ASHA)
+are **not supported**. These require custom BLE GATT interaction that is outside
+the scope of this add-on.
+
 ## Requirements
 
 - A Bluetooth adapter (built-in or USB dongle) accessible to HAOS
 - The Bluetooth adapter must be powered on (managed by HAOS, not this add-on)
-- The target device must support A2DP (Advanced Audio Distribution Profile)
+- A2DP devices: must support A2DP (Advanced Audio Distribution Profile)
+- HFP devices: must support HFP (requires `block_hfp: false`)
 
 ## Troubleshooting
 
