@@ -24,8 +24,7 @@ RUN chmod +x /init \
     && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/finish \
     && chmod +x /etc/cont-init.d/01-verify-dbus.sh \
-    && chmod +x /etc/cont-init.d/02-init-storage.sh \
-    && chmod +x /etc/cont-init.d/03-btmon-capture.sh
+    && chmod +x /etc/cont-init.d/02-init-storage.sh
 
 ENV PYTHONPATH="/usr/src"
 
