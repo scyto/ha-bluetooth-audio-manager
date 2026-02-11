@@ -38,13 +38,15 @@ Bluetooth integration (used for BLE sensors, beacons, etc.):
 | `auto_reconnect` | `true` | Automatically reconnect disconnected devices |
 | `reconnect_interval_seconds` | `30` | Initial reconnection delay |
 | `reconnect_max_backoff_seconds` | `300` | Maximum reconnection delay |
-| `keep_alive_enabled` | `false` | Stream inaudible audio to prevent speaker sleep |
-| `keep_alive_method` | `infrasound` | Keep-alive type: `silence` or `infrasound` |
 | `scan_duration_seconds` | `15` | How long to scan for devices |
 
-### Keep-alive methods
+### Per-device keep-alive
 
-Many Bluetooth speakers enter standby after a period of silence:
+Many Bluetooth speakers enter standby after a period of silence. Keep-alive
+streams inaudible audio to prevent this. It is configured per-device in the
+web UI: open the device's menu (three-dot icon) and select **Settings**.
+
+Two methods are available:
 
 - **infrasound** (recommended): Streams a 2 Hz sine wave at very low amplitude.
   Below human hearing threshold. Prevents speakers that detect digital silence
@@ -78,8 +80,9 @@ Some devices exit pairing mode after 30-60 seconds.
 **Connected but no audio**: Check Settings > System > Audio to verify the
 Bluetooth sink is listed. Try setting it as the default output.
 
-**Speaker keeps disconnecting**: Enable the keep-alive option in the add-on
-configuration. Try the `infrasound` method if `silence` doesn't work.
+**Speaker keeps disconnecting**: Enable keep-alive for the device in the web
+UI (device menu > Settings). Try the `infrasound` method if `silence` doesn't
+work.
 
 **Existing BLE integrations stopped working**: This should not happen by
 design. Check the add-on logs for errors and file an issue on GitHub.

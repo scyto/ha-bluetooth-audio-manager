@@ -200,6 +200,53 @@
     </div>
   </div>
 
+  <!-- ========== DEVICE SETTINGS MODAL ========== -->
+  <div class="modal fade" id="deviceSettingsModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="fas fa-cog me-2"></i>Device Settings</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <h6 id="device-settings-name" class="fw-semibold mb-1"></h6>
+          <p id="device-settings-address" class="font-monospace small text-muted mb-3"></p>
+
+          <!-- Keep-Alive Toggle -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-keep-alive-enabled">
+              <label class="form-check-label" for="setting-keep-alive-enabled">
+                <strong>Keep-Alive</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              Stream inaudible audio to prevent the speaker from auto-shutting down during silence.
+            </div>
+          </div>
+
+          <!-- Keep-Alive Method -->
+          <div class="mb-3" id="keep-alive-method-group">
+            <label for="setting-keep-alive-method" class="form-label">Keep-Alive Method</label>
+            <select class="form-select" id="setting-keep-alive-method">
+              <option value="infrasound">Infrasound (2 Hz tone &mdash; recommended)</option>
+              <option value="silence">Silence (PCM zeros)</option>
+            </select>
+            <div class="form-text">
+              Infrasound is recommended for speakers that detect digital silence.
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="saveDeviceSettings()">
+            <i class="fas fa-save me-1"></i>Save
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Footer -->
   <footer class="app-footer text-center py-2 text-muted">
     <span id="version-label"></span>

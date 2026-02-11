@@ -272,6 +272,39 @@ def create_api_routes(
             logger.error("Forget failed for %s: %s", address, e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
 
+    @routes.put("/api/devices/{address}/settings")
+    async def update_device_settings(request: web.Request) -> web.Response:
+        """Update per-device settings (keep-alive, etc.)."""
+        address = request.match_info["address"]
+        try:
+            body = await request.json()
+            allowed_keys = {"keep_alive_enabled", "keep_alive_method"}
+            settings = {k: v for k, v in body.items() if k in allowed_keys}
+            if not settings:
+                return web.json_response(
+                    {"error": "No valid settings provided"}, status=400
+                )
+            if "keep_alive_method" in settings:
+                if settings["keep_alive_method"] not in ("silence", "infrasound"):
+                    return web.json_response(
+                        {"error": "keep_alive_method must be 'silence' or 'infrasound'"},
+                        status=400,
+                    )
+            if "keep_alive_enabled" in settings:
+                if not isinstance(settings["keep_alive_enabled"], bool):
+                    return web.json_response(
+                        {"error": "keep_alive_enabled must be a boolean"}, status=400
+                    )
+            result = await manager.update_device_settings(address, settings)
+            if result is None:
+                return web.json_response(
+                    {"error": f"Device {address} not found"}, status=404
+                )
+            return web.json_response({"address": address, "settings": settings})
+        except Exception as e:
+            logger.error("Failed to update settings for %s: %s", address, e)
+            return web.json_response({"error": str(e)}, status=500)
+
     @routes.get("/api/audio/sinks")
     async def audio_sinks(request: web.Request) -> web.Response:
         """List Bluetooth PulseAudio sinks."""

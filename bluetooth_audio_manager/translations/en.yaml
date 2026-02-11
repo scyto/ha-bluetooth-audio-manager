@@ -11,14 +11,6 @@ configuration:
   reconnect_max_backoff_seconds:
     name: Max Reconnect Backoff
     description: Maximum delay in seconds between reconnection attempts (exponential backoff cap).
-  keep_alive_enabled:
-    name: Keep-Alive
-    description: Stream inaudible audio to prevent Bluetooth speakers from auto-shutting down.
-  keep_alive_method:
-    name: Keep-Alive Method
-    description: >-
-      Type of inaudible audio to stream. "infrasound" sends a 2Hz tone (recommended
-      for speakers that detect digital silence). "silence" sends PCM zeros.
   scan_duration_seconds:
     name: Scan Duration
     description: How long to scan for discoverable Bluetooth audio devices (in seconds).
