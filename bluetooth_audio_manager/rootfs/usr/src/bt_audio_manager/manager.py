@@ -390,6 +390,9 @@ class BluetoothAudioManager:
     async def pair_device(self, address: str) -> dict:
         """Pair, trust, persist, and connect a Bluetooth audio device."""
         self._broadcast_status(f"Pairing with {address}...")
+        # Mark as connecting early so the Connected signal fired during pair()
+        # doesn't race with connect_device() and double-fire HFP disconnect.
+        self._connecting.add(address)
         try:
             device = await self._get_or_create_device(address)
 
@@ -409,16 +412,19 @@ class BluetoothAudioManager:
             await self._broadcast_all()
 
             # Follow through with full connect + A2DP sink wait
-            connected = await self.connect_device(address)
+            # _connecting is already set; pass _from_pair so connect_device
+            # skips the duplicate-connection guard.
+            connected = await self.connect_device(address, _from_pair=True)
             return {"address": address, "name": name, "connected": connected}
         except Exception:
+            self._connecting.discard(address)
             self.event_bus.emit("status", {"message": ""})
             raise
 
-    async def connect_device(self, address: str) -> bool:
+    async def connect_device(self, address: str, *, _from_pair: bool = False) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
         # If another connection attempt is already in progress, wait for it
-        if address in self._connecting:
+        if not _from_pair and address in self._connecting:
             logger.info("Connection already in progress for %s, waiting...", address)
             self._broadcast_status(f"Waiting for connection to {address}...")
             for _ in range(60):
