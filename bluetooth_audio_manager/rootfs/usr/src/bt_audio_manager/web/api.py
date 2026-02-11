@@ -154,18 +154,26 @@ def create_api_routes(
 
     @routes.post("/api/scan")
     async def scan(request: web.Request) -> web.Response:
-        """Start a discovery scan for Bluetooth audio devices."""
+        """Start a background discovery scan for Bluetooth audio devices.
+
+        Returns immediately. Devices appear incrementally via WebSocket
+        'devices_changed' events.
+        """
         try:
             body = await request.json() if request.body_exists else {}
             duration = body.get("duration", manager.config.scan_duration_seconds)
-            devices = await manager.scan_devices(duration)
-            return web.json_response({"devices": devices})
+            await manager.scan_devices(duration)
+            return web.json_response({"scanning": True, "duration": duration})
         except Exception as e:
             if "In Progress" in str(e):
-                # Scan already running — not an error
                 return web.json_response({"scanning": True})
             logger.error("Scan failed: %s", e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
+
+    @routes.get("/api/scan/status")
+    async def scan_status(request: web.Request) -> web.Response:
+        """Check if a scan is currently in progress."""
+        return web.json_response({"scanning": manager.is_scanning})
 
     @routes.post("/api/pair")
     async def pair(request: web.Request) -> web.Response:
@@ -585,6 +593,10 @@ def create_api_routes(
             sinks = await manager.get_audio_sinks()
             await ws.send_json({"type": "devices_changed", "devices": devices})
             await ws.send_json({"type": "sinks_changed", "sinks": sinks})
+            await ws.send_json({
+                "type": "scan_state",
+                "scanning": manager.is_scanning,
+            })
 
             # Replay recent MPRIS/AVRCP events
             for entry in manager.recent_mpris:

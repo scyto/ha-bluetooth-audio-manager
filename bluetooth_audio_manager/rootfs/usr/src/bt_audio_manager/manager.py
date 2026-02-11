@@ -59,6 +59,10 @@ class BluetoothAudioManager:
         # Ring buffers so WebSocket clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
+        # Scanning state
+        self._scanning: bool = False
+        self._scan_task: asyncio.Task | None = None
+        self._scan_debounce_handle: asyncio.TimerHandle | None = None
 
     async def start(self) -> None:
         """Full startup sequence."""
@@ -74,6 +78,25 @@ class BluetoothAudioManager:
                     "D-Bus method_call: %s.%s path=%s sender=%s",
                     msg.interface, msg.member, msg.path, msg.sender,
                 )
+            elif (
+                msg.message_type == MessageType.SIGNAL
+                and msg.member == "InterfacesAdded"
+                and msg.path == "/"
+                and self._scanning
+                and msg.body
+                and len(msg.body) >= 2
+            ):
+                # ObjectManager.InterfacesAdded — new device discovered
+                obj_path = msg.body[0]
+                ifaces = msg.body[1]
+                if (
+                    isinstance(obj_path, str)
+                    and obj_path.startswith("/org/bluez/")
+                    and isinstance(ifaces, dict)
+                    and "org.bluez.Device1" in ifaces
+                ):
+                    logger.info("New device discovered during scan: %s", obj_path)
+                    self._schedule_scan_broadcast()
             elif (
                 msg.message_type == MessageType.SIGNAL
                 and msg.path
@@ -97,6 +120,15 @@ class BluetoothAudioManager:
                             "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
                             iface_name, prop_names, msg.path,
                         )
+
+                    # During scanning, broadcast when UUIDs or Name change
+                    # (UUIDs often arrive after InterfacesAdded)
+                    if (
+                        self._scanning
+                        and iface_name == "org.bluez.Device1"
+                        and {"UUIDs", "Name"}.intersection(prop_names)
+                    ):
+                        self._schedule_scan_broadcast()
 
                     if iface_name == "org.bluez.MediaTransport1":
                         if "Volume" in changed:
@@ -333,6 +365,14 @@ class BluetoothAudioManager:
             except asyncio.CancelledError:
                 pass
 
+        # Cancel any running scan
+        if self._scan_task and not self._scan_task.done():
+            self._scan_task.cancel()
+            try:
+                await self._scan_task
+            except asyncio.CancelledError:
+                pass
+
         # Stop all per-device keep-alive instances
         for addr in list(self._keepalives):
             await self._stop_keepalive(addr)
@@ -425,18 +465,85 @@ class BluetoothAudioManager:
         self.managed_devices[address] = device
         return device
 
-    async def scan_devices(self, duration: int | None = None) -> list[dict]:
-        """Run a time-limited discovery scan for A2DP audio devices."""
+    SCAN_DEBOUNCE_SECONDS = 1.0  # coalesce rapid D-Bus signals during scan
+
+    async def scan_devices(self, duration: int | None = None) -> None:
+        """Start a background discovery scan for A2DP audio devices.
+
+        Returns immediately. Devices appear incrementally via WebSocket
+        'devices_changed' events. A 'scan_finished' event is emitted when done.
+        """
         duration = duration or self.config.scan_duration_seconds
-        self._broadcast_status(f"Scanning for Bluetooth audio devices ({duration}s)...")
+
+        # If already scanning, cancel the old scan and start fresh
+        if self._scanning and self._scan_task and not self._scan_task.done():
+            self._scan_task.cancel()
+            try:
+                await self._scan_task
+            except asyncio.CancelledError:
+                pass
+            await self.adapter.stop_discovery()
+
+        self._scanning = True
+        self.event_bus.emit("scan_started", {"duration": duration})
+        self._scan_task = asyncio.create_task(self._run_scan(duration))
+
+    async def _run_scan(self, duration: int) -> None:
+        """Background scan task: runs discovery for *duration* seconds."""
         try:
-            devices = await self.adapter.discover_for_duration(duration)
-        except Exception:
-            self.event_bus.emit("status", {"message": ""})
-            raise
-        self.event_bus.emit("status", {"message": ""})
+            await self.adapter.start_discovery()
+            await asyncio.sleep(duration)
+        except asyncio.CancelledError:
+            logger.info("Scan cancelled")
+            return
+        except Exception as e:
+            logger.error("Scan failed: %s", e)
+            self.event_bus.emit("scan_finished", {"error": str(e)})
+            return
+        finally:
+            self._scanning = False
+            self._cancel_scan_debounce()
+            try:
+                await self.adapter.stop_discovery()
+            except Exception:
+                pass
+
+        # Final broadcast after scan completes
         await self._broadcast_devices()
-        return devices
+        self.event_bus.emit("scan_finished", {})
+
+    def _schedule_scan_broadcast(self) -> None:
+        """Schedule a debounced device broadcast during scanning.
+
+        If a broadcast is already scheduled, this is a no-op.
+        Ensures we don't flood ObjectManager queries on every D-Bus signal.
+        """
+        if not self._scanning:
+            return
+        if self._scan_debounce_handle and not self._scan_debounce_handle.cancelled():
+            return  # already scheduled
+        loop = asyncio.get_event_loop()
+        self._scan_debounce_handle = loop.call_later(
+            self.SCAN_DEBOUNCE_SECONDS,
+            lambda: asyncio.ensure_future(self._debounced_scan_broadcast()),
+        )
+
+    async def _debounced_scan_broadcast(self) -> None:
+        """Execute the debounced broadcast."""
+        self._scan_debounce_handle = None
+        if self._scanning:
+            await self._broadcast_devices()
+
+    def _cancel_scan_debounce(self) -> None:
+        """Cancel any pending debounced broadcast."""
+        if self._scan_debounce_handle and not self._scan_debounce_handle.cancelled():
+            self._scan_debounce_handle.cancel()
+        self._scan_debounce_handle = None
+
+    @property
+    def is_scanning(self) -> bool:
+        """Whether a background scan is currently in progress."""
+        return self._scanning
 
     async def pair_device(self, address: str) -> dict:
         """Pair, trust, persist, and connect a Bluetooth audio device."""

@@ -126,8 +126,58 @@ function hideBanner() {
 }
 
 function setButtonsEnabled(enabled) {
-  const btns = [$("#btn-scan"), $("#btn-refresh")];
-  btns.forEach((btn) => { if (btn) btn.disabled = !enabled; });
+  const btn = $("#btn-refresh");
+  if (btn) btn.disabled = !enabled;
+}
+
+// ============================================
+// Section 5a: Scanning State
+// ============================================
+
+let isScanning = false;
+let scanTimerId = null;
+let scanSecondsRemaining = 0;
+
+function setScanningState(scanning, duration) {
+  isScanning = scanning;
+  if (scanning && duration) {
+    scanSecondsRemaining = duration;
+    clearInterval(scanTimerId);
+    scanTimerId = setInterval(() => {
+      scanSecondsRemaining--;
+      if (scanSecondsRemaining <= 0) {
+        clearInterval(scanTimerId);
+        scanTimerId = null;
+      }
+      updateAddDeviceTile();
+    }, 1000);
+  } else {
+    clearInterval(scanTimerId);
+    scanTimerId = null;
+    scanSecondsRemaining = 0;
+  }
+  updateAddDeviceTile();
+}
+
+function updateAddDeviceTile() {
+  const tile = $("#add-device-tile");
+  if (!tile) return;
+  if (isScanning) {
+    tile.classList.add("scanning");
+    const label = scanSecondsRemaining > 0
+      ? `Scanning... ${scanSecondsRemaining}s`
+      : "Finishing...";
+    tile.innerHTML = `
+      <i class="fas fa-spinner fa-spin fa-2x mb-2"></i>
+      <span>${label}</span>
+    `;
+  } else {
+    tile.classList.remove("scanning");
+    tile.innerHTML = `
+      <i class="fas fa-plus fa-2x mb-2"></i>
+      <span>Add Device</span>
+    `;
+  }
 }
 
 // ============================================
@@ -205,23 +255,38 @@ function profileLabels(uuids) {
 // Cached sinks for merging into device cards
 let currentSinks = [];
 
-function renderDevices(devices) {
-  const grid = $("#devices-grid");
-
-  if (!devices || devices.length === 0) {
-    grid.innerHTML = `
-      <div class="col-12">
-        <div class="empty-state">
-          <i class="fas fa-bluetooth"></i>
-          <h5>No Bluetooth audio devices found</h5>
-          <p>Put your speaker in pairing mode and click Scan.</p>
+function renderAddDeviceTile() {
+  const scanLabel = isScanning
+    ? (scanSecondsRemaining > 0 ? `Scanning... ${scanSecondsRemaining}s` : "Finishing...")
+    : "Add Device";
+  const scanIcon = isScanning
+    ? '<i class="fas fa-spinner fa-spin fa-2x mb-2"></i>'
+    : '<i class="fas fa-plus fa-2x mb-2"></i>';
+  const scanClass = isScanning ? " scanning" : "";
+  return `
+    <div class="col-md-6 col-lg-4">
+      <div class="card add-device-tile h-100${scanClass}" id="add-device-tile"
+           onclick="scanDevices()" role="button" tabindex="0"
+           title="Scan for nearby Bluetooth audio devices">
+        <div class="card-body">
+          ${scanIcon}
+          <span>${scanLabel}</span>
         </div>
       </div>
-    `;
+    </div>
+  `;
+}
+
+function renderDevices(devices) {
+  const grid = $("#devices-grid");
+  const tileHtml = renderAddDeviceTile();
+
+  if (!devices || devices.length === 0) {
+    grid.innerHTML = tileHtml;
     return;
   }
 
-  grid.innerHTML = devices
+  grid.innerHTML = tileHtml + devices
     .map((d) => {
       const badgeClass = d.connected
         ? "badge-connected"
@@ -624,8 +689,12 @@ async function refreshDevices() {
 }
 
 async function scanDevices() {
+  if (isScanning) return;
   try {
-    await apiPost("/api/scan");
+    const result = await apiPost("/api/scan");
+    if (result.scanning) {
+      setScanningState(true, result.duration);
+    }
   } catch (e) {
     showToast(`Scan failed: ${e.message}`, "error");
   }
@@ -808,6 +877,23 @@ function connectWebSocket() {
           showToast(`Keep-alive started for ${msg.address}`, "info");
         } else {
           showToast(`Keep-alive stopped for ${msg.address}`, "info");
+        }
+        break;
+      case "scan_started":
+        setScanningState(true, msg.duration);
+        break;
+      case "scan_finished":
+        setScanningState(false);
+        if (msg.error) {
+          showToast(`Scan failed: ${msg.error}`, "error");
+        }
+        break;
+      case "scan_state":
+        // Sent on WS connect — sync scanning state
+        if (msg.scanning && !isScanning) {
+          setScanningState(true);
+        } else if (!msg.scanning && isScanning) {
+          setScanningState(false);
         }
         break;
       case "status":

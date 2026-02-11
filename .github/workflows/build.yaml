@@ -175,12 +175,17 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update bluetooth_audio_manager_dev config.yaml with commit SHA
+      - name: Sync dev config.yaml from dev branch and set version
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          # Fetch the full dev config.yaml from the dev branch so options/schema
+          # changes propagate to main (HAOS reads config.yaml from main)
+          git fetch origin dev --depth=1
+          git show origin/dev:bluetooth_audio_manager_dev/config.yaml > bluetooth_audio_manager_dev/config.yaml
+          # Override version with the build SHA
           sed -i "s/^version: .*/version: \"sha-${SHORT_SHA}\"/" bluetooth_audio_manager_dev/config.yaml
-          echo "Updated bluetooth_audio_manager_dev/config.yaml:"
-          grep -E "^(version|image):" bluetooth_audio_manager_dev/config.yaml
+          echo "Synced bluetooth_audio_manager_dev/config.yaml from dev:"
+          cat bluetooth_audio_manager_dev/config.yaml
 
       - name: Commit and push version update to main
         run: |
