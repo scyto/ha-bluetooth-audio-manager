@@ -63,22 +63,11 @@
     </div>
   </div>
 
-  <!-- Reconnect Banner (hidden by default, shown when WS disconnects) -->
-  <div id="reconnect-banner" class="reconnect-banner">
-    <div class="spinner-border text-warning" role="status"></div>
-    <span id="reconnect-banner-text">Server unavailable &mdash; reconnecting...</span>
-    <span class="reconnect-time" id="reconnect-elapsed"></span>
-  </div>
-
-  <!-- Operation Banner (for scan, pair, connect, etc.) -->
-  <div id="operation-banner" class="operation-banner d-none">
-    <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-    <span id="operation-banner-text">Working...</span>
-  </div>
-
   <!-- ========== DEVICES VIEW (default) ========== -->
   <div id="view-devices" class="view-panel">
     <div class="container py-3">
+      <!-- Alert container for status messages (reconnect, operations) -->
+      <div id="alert-container"></div>
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h2 class="mb-0">Devices</h2>
         <div class="d-flex align-items-center gap-2">

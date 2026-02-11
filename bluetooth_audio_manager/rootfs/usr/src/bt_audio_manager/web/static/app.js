@@ -109,19 +109,28 @@ function showToast(message, level = "info") {
 }
 
 // ============================================
-// Section 5: Operation Banner
+// Section 5: Operation Banner (contained alert)
 // ============================================
 
 function showBanner(text) {
-  const banner = $("#operation-banner");
-  $("#operation-banner-text").textContent = text;
-  banner.classList.remove("d-none");
+  hideBanner(); // Remove any existing operation alert
+  const container = $("#alert-container");
+  if (!container) return;
+  const el = document.createElement("div");
+  el.id = "operation-alert";
+  el.className = "alert alert-info d-flex align-items-center gap-2 mb-3";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `
+    <div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div>
+    <span>${escapeHtml(text)}</span>
+  `;
+  container.prepend(el);
   setButtonsEnabled(false);
 }
 
 function hideBanner() {
-  const banner = $("#operation-banner");
-  banner.classList.add("d-none");
+  const existing = $("#operation-alert");
+  if (existing) existing.remove();
   setButtonsEnabled(true);
 }
 
@@ -190,10 +199,22 @@ let reconnectTimerId = null;
 let reconnectStartTime = null;
 
 function showReconnectBanner() {
-  const banner = $("#reconnect-banner");
-  banner.classList.add("visible");
+  if ($("#reconnect-alert")) return; // Already showing
+  const container = $("#alert-container");
+  if (!container) return;
   document.body.classList.add("server-unavailable");
   reconnectStartTime = Date.now();
+
+  const el = document.createElement("div");
+  el.id = "reconnect-alert";
+  el.className = "alert alert-warning d-flex align-items-center gap-2 mb-3";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `
+    <div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Reconnecting...</span></div>
+    <span>Reconnecting to server\u2026</span>
+    <span id="reconnect-elapsed" class="text-muted small"></span>
+  `;
+  container.prepend(el);
 
   // Update elapsed time every second
   clearInterval(reconnectTimerId);
@@ -202,18 +223,18 @@ function showReconnectBanner() {
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
     const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-    $("#reconnect-elapsed").textContent = `(${timeStr})`;
+    const elapsedEl = $("#reconnect-elapsed");
+    if (elapsedEl) elapsedEl.textContent = `(${timeStr})`;
   }, 1000);
 }
 
 function hideReconnectBanner() {
-  const banner = $("#reconnect-banner");
-  banner.classList.remove("visible");
+  const existing = $("#reconnect-alert");
+  if (existing) existing.remove();
   document.body.classList.remove("server-unavailable");
   clearInterval(reconnectTimerId);
   reconnectTimerId = null;
   reconnectStartTime = null;
-  $("#reconnect-elapsed").textContent = "";
 }
 
 function setConnectionStatus(state) {

@@ -210,67 +210,12 @@ h1, h2, h3, h4, h5, h6 {
   text-align: center;
 }
 
-/* ============================================
-   Reconnect Banner
-   ============================================ */
-
-.reconnect-banner {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  padding: 0.75rem 1rem;
-  background: var(--bs-warning-bg-subtle, #332701);
-  border: 1px solid var(--bs-warning-border-subtle, #664d03);
-  color: var(--bs-warning-text-emphasis, #ffda6a);
-  margin: 0;
-}
-
-.reconnect-banner.visible {
-  display: flex;
-}
-
-.reconnect-banner .spinner-border {
-  width: 1rem;
-  height: 1rem;
-  border-width: 0.15em;
-}
-
-.reconnect-banner .reconnect-time {
-  color: var(--bs-secondary-color);
-  font-size: 0.85em;
-}
-
 /* Server unavailable — dims device cards and disables interaction */
 .server-unavailable .device-card {
   opacity: 0.45;
   pointer-events: none;
   filter: grayscale(40%);
   transition: opacity 0.4s ease, filter 0.4s ease;
-}
-
-/* ============================================
-   Operation Banner (translucent alert style)
-   ============================================ */
-
-.operation-banner {
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  padding: 0.75rem 1rem;
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--bs-body-color);
-  font-size: 0.9375rem;
-}
-
-.operation-banner:not(.d-none) {
-  display: flex;
-}
-
-.operation-banner .spinner-border {
-  width: 1rem;
-  height: 1rem;
-  border-width: 0.15em;
 }
 
 /* ============================================
