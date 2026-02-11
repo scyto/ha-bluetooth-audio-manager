@@ -280,8 +280,13 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ============================================
-   Add Device Tile
+   Add Device Tile (compact)
    ============================================ */
+
+.add-device-col {
+  flex: 0 0 auto;
+  width: auto;
+}
 
 .add-device-tile {
   border: 2px dashed var(--bs-border-color);
@@ -290,19 +295,24 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .add-device-tile .card-body {
-  min-height: 180px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
   color: var(--bs-secondary-color);
   font-weight: 500;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.add-device-tile .card-body i {
+  font-size: 1rem;
 }
 
 .add-device-tile:hover {
-  transform: translateY(-2px);
+  transform: translateY(-1px);
   border-color: var(--accent-primary);
-  color: var(--accent-primary);
 }
 
 .add-device-tile:hover .card-body {
