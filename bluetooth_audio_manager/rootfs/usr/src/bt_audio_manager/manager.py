@@ -390,26 +390,30 @@ class BluetoothAudioManager:
     async def pair_device(self, address: str) -> dict:
         """Pair, trust, persist, and connect a Bluetooth audio device."""
         self._broadcast_status(f"Pairing with {address}...")
-        device = await self._get_or_create_device(address)
+        try:
+            device = await self._get_or_create_device(address)
 
-        # Pair
-        await device.pair()
+            # Pair
+            await device.pair()
 
-        # Trust (enables BlueZ-level auto-reconnect)
-        await device.set_trusted(True)
+            # Trust (enables BlueZ-level auto-reconnect)
+            await device.set_trusted(True)
 
-        # Get name for display
-        name = await device.get_name()
+            # Get name for display
+            name = await device.get_name()
 
-        # Persist
-        await self.store.add_device(address, name)
+            # Persist
+            await self.store.add_device(address, name)
 
-        logger.info("Device %s (%s) paired and stored", address, name)
-        await self._broadcast_all()
+            logger.info("Device %s (%s) paired and stored", address, name)
+            await self._broadcast_all()
 
-        # Follow through with full connect + A2DP sink wait
-        connected = await self.connect_device(address)
-        return {"address": address, "name": name, "connected": connected}
+            # Follow through with full connect + A2DP sink wait
+            connected = await self.connect_device(address)
+            return {"address": address, "name": name, "connected": connected}
+        except Exception:
+            self.event_bus.emit("status", {"message": ""})
+            raise
 
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
@@ -485,6 +489,7 @@ class BluetoothAudioManager:
             return await device.is_connected()
         finally:
             self._connecting.discard(address)
+            self.event_bus.emit("status", {"message": ""})
 
     async def disconnect_device(self, address: str) -> None:
         """Disconnect a device without removing it from the store."""
@@ -506,6 +511,7 @@ class BluetoothAudioManager:
 
     async def forget_device(self, address: str) -> None:
         """Unpair, remove from BlueZ, and delete from persistent store."""
+        self._broadcast_status(f"Forgetting {address}...")
         # Cancel reconnection
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
@@ -533,6 +539,7 @@ class BluetoothAudioManager:
         # Remove from persistent store
         await self.store.remove_device(address)
         logger.info("Device %s forgotten", address)
+        self.event_bus.emit("status", {"message": ""})
         await self._broadcast_all()
 
     async def get_all_devices(self) -> list[dict]:
@@ -758,7 +765,7 @@ class BluetoothAudioManager:
             logger.debug("Broadcast sinks failed: %s", e)
 
     async def _broadcast_all(self) -> None:
-        """Push both device and sink state to SSE clients."""
+        """Push both device and sink state to WebSocket clients."""
         await self._broadcast_devices()
         await self._broadcast_sinks()
 
