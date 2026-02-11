@@ -17,35 +17,40 @@
   <div id="toast-container" class="toast-container position-fixed top-0 start-50 translate-middle-x p-3 toast-z"></div>
 
   <!-- Header -->
-  <div class="app-header text-white py-3 mb-0">
-    <div class="container-fluid px-3">
+  <div class="app-header text-white py-4 mb-4">
+    <div class="container">
       <div class="row align-items-center">
-        <div class="col">
-          <h1 class="mb-0"><i class="fas fa-bluetooth-b me-2"></i>Bluetooth Audio Manager</h1>
-          <p class="mb-0 opacity-75">Manage Bluetooth audio device connections</p>
-          <div class="build-info">
-            <span class="build-label">Build</span>
-            <span id="build-version" class="build-version">loading...</span>
+        <div class="col d-flex align-items-center gap-3">
+          <img src="static/logo.png" alt="Logo" class="header-logo">
+          <div>
+            <h1 class="mb-0">Bluetooth Audio Manager</h1>
+            <p class="mb-0 opacity-75">Manage Bluetooth audio device connections</p>
+            <div class="build-info">
+              <span class="build-label">Build</span>
+              <span id="build-version" class="build-version">loading...</span>
+            </div>
           </div>
         </div>
-        <div class="col-auto d-flex align-items-center gap-2">
-          <!-- Navigation buttons -->
-          <div class="btn-group" role="group">
-            <button type="button" class="btn btn-outline-light nav-btn active" data-view="devices" onclick="switchView('devices')">
-              <i class="fas fa-headphones me-1"></i>Devices
+        <div class="col-auto">
+          <!-- Views dropdown -->
+          <div class="dropdown d-inline-block me-2">
+            <button class="btn btn-outline-light dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="Views">
+              <i class="fas fa-eye me-1"></i>Views
             </button>
-            <button type="button" class="btn btn-outline-light nav-btn" data-view="events" onclick="switchView('events')">
-              <i class="fas fa-list me-1"></i>Events
-            </button>
-            <button type="button" class="btn btn-outline-light nav-btn" data-view="logs" onclick="switchView('logs')">
-              <i class="fas fa-scroll me-1"></i>Logs
-            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="#" onclick="switchView('events'); return false;">
+                <i class="fas fa-list me-2"></i>Events
+              </a></li>
+              <li><a class="dropdown-item" href="#" onclick="switchView('logs'); return false;">
+                <i class="fas fa-scroll me-2"></i>Logs
+              </a></li>
+            </ul>
           </div>
 
           <!-- Settings dropdown -->
-          <div class="dropdown">
+          <div class="dropdown d-inline-block me-2">
             <button class="btn btn-outline-light dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="Settings">
-              <i class="fas fa-cog"></i>
+              <i class="fas fa-cog me-1"></i>Settings
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="#" onclick="openAdaptersModal(); return false;">
@@ -54,8 +59,10 @@
             </ul>
           </div>
 
-          <!-- Logo -->
-          <img src="static/logo.png" alt="Logo" class="header-logo">
+          <!-- Add Device button -->
+          <button type="button" class="btn btn-light" id="btn-scan" onclick="scanDevices()">
+            <i class="fas fa-plus me-2"></i>Add Device
+          </button>
         </div>
       </div>
     </div>
@@ -76,14 +83,11 @@
 
   <!-- ========== DEVICES VIEW (default) ========== -->
   <div id="view-devices" class="view-panel">
-    <div class="container-fluid px-3 py-3">
+    <div class="container py-3">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h2 class="mb-0">Devices</h2>
         <div class="d-flex align-items-center gap-2">
           <span id="connection-status" class="badge bg-secondary">Connecting...</span>
-          <button type="button" id="btn-scan" class="btn btn-primary btn-sm" onclick="scanDevices()">
-            <i class="fas fa-search me-1"></i>Scan
-          </button>
           <button type="button" id="btn-refresh" class="btn btn-outline-secondary btn-sm" onclick="refreshDevices()">
             <i class="fas fa-sync-alt me-1"></i>Refresh
           </button>
@@ -99,7 +103,7 @@
 
   <!-- ========== EVENTS VIEW ========== -->
   <div id="view-events" class="view-panel d-none">
-    <div class="container-fluid px-3 py-3">
+    <div class="container py-3">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h2 class="mb-0">
           <i class="fas fa-list me-2"></i>Events
@@ -122,7 +126,7 @@
   <div id="view-logs" class="view-panel d-none">
     <!-- Logs Toolbar -->
     <div class="logs-toolbar bg-body border-bottom sticky-top">
-      <div class="container-fluid py-2 px-3">
+      <div class="container py-2">
         <div class="row g-2 align-items-center">
           <div class="col-auto">
             <select class="form-select form-select-sm" id="log-level-filter" aria-label="Filter by log level" onchange="filterLogs()">
