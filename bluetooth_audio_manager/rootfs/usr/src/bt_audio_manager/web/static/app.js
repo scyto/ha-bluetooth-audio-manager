@@ -258,10 +258,12 @@ function renderDevices(devices) {
 
       // Kebab dropdown for paired/stored devices (Settings + Forget)
       const keepAliveActive = (d.stored || d.paired) && d.keep_alive_active;
+      const mpdActive = (d.stored || d.paired) && d.mpd_enabled;
       let kebab = "";
       if (d.stored || d.paired) {
         const kaEnabled = d.keep_alive_enabled || false;
         const kaMethod = d.keep_alive_method || "infrasound";
+        const mpdEnabled = d.mpd_enabled || false;
         const safeName = escapeHtml(d.name).replace(/'/g, "\\'");
         kebab = `
           <div class="dropdown">
@@ -270,7 +272,7 @@ function renderDevices(devices) {
               <i class="fas fa-ellipsis-v"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}'); return false;">
+              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
               <li><hr class="dropdown-divider"></li>
@@ -326,6 +328,7 @@ function renderDevices(devices) {
                 <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
                 <div class="d-flex align-items-center gap-1">
                   ${keepAliveActive ? '<i class="fas fa-heartbeat text-danger keep-alive-indicator" title="Keep-alive active"></i>' : ""}
+                  ${mpdActive ? '<i class="fas fa-music text-primary" title="MPD media player enabled"></i>' : ""}
                   <span class="badge ${badgeClass}">${statusText}</span>
                   ${kebab}
                 </div>
@@ -677,17 +680,51 @@ async function selectAdapter(adapterName) {
 }
 
 // ============================================
-// Section 11b: Device Settings Modal
+// Section 11b: Add-on Settings Modal
+// ============================================
+
+async function openSettingsModal() {
+  try {
+    const data = await apiGet("/api/settings");
+    $("#setting-auto-reconnect").checked = data.auto_reconnect;
+    $("#setting-reconnect-interval").value = data.reconnect_interval_seconds;
+    $("#setting-reconnect-max-backoff").value = data.reconnect_max_backoff_seconds;
+    $("#setting-scan-duration").value = data.scan_duration_seconds;
+    new bootstrap.Modal("#settingsModal").show();
+  } catch (e) {
+    showToast(`Failed to load settings: ${e.message}`, "error");
+  }
+}
+
+async function saveSettings() {
+  const settings = {
+    auto_reconnect: $("#setting-auto-reconnect").checked,
+    reconnect_interval_seconds: parseInt($("#setting-reconnect-interval").value, 10),
+    reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
+    scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
+  };
+  try {
+    await apiPut("/api/settings", settings);
+    showToast("Settings saved", "success");
+    bootstrap.Modal.getInstance($("#settingsModal"))?.hide();
+  } catch (e) {
+    showToast(`Failed to save settings: ${e.message}`, "error");
+  }
+}
+
+// ============================================
+// Section 11c: Device Settings Modal
 // ============================================
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, kaEnabled, kaMethod) {
+function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
   $("#setting-keep-alive-enabled").checked = kaEnabled;
   $("#setting-keep-alive-method").value = kaMethod || "infrasound";
+  $("#setting-mpd-enabled").checked = mpdEnabled || false;
   toggleKeepAliveMethodVisibility();
   new bootstrap.Modal("#deviceSettingsModal").show();
 }
@@ -702,6 +739,7 @@ async function saveDeviceSettings() {
   const settings = {
     keep_alive_enabled: $("#setting-keep-alive-enabled").checked,
     keep_alive_method: $("#setting-keep-alive-method").value,
+    mpd_enabled: $("#setting-mpd-enabled").checked,
   };
   try {
     await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
@@ -745,6 +783,9 @@ function connectWebSocket() {
         renderSinks(msg.sinks);
         // Re-render devices to update merged sink info
         refreshDevicesFromCache();
+        break;
+      case "settings_changed":
+        // Settings updated by another client — no action needed unless modal is open
         break;
       case "mpris_command":
         appendMprisCommand(msg);

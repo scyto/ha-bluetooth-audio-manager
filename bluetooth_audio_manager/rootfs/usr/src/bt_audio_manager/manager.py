@@ -16,6 +16,7 @@ from dbus_next import BusType, Message, MessageType
 from dbus_next.errors import DBusError
 
 from .audio.keepalive import KeepAliveService
+from .audio.mpd import MPDManager
 from .audio.pulse import PulseAudioManager
 from .bluez.adapter import BluezAdapter
 from .bluez.agent import PairingAgent
@@ -45,6 +46,7 @@ class BluetoothAudioManager:
         self.store: PersistenceStore | None = None
         self.reconnect_service: ReconnectService | None = None
         self._keepalives: dict[str, KeepAliveService] = {}  # per-device keep-alive
+        self.mpd: MPDManager | None = None  # lazy-started when a device has mpd_enabled
         self.media_player: AVRCPMediaPlayer | None = None
         self.managed_devices: dict[str, BluezDevice] = {}
         self._web_server = None
@@ -109,6 +111,9 @@ class BluetoothAudioManager:
                             entry = {"address": addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
                             self.recent_avrcp.append(entry)
                             self.event_bus.emit("avrcp_event", entry)
+                            # Sync volume to MPD
+                            if self.mpd and self.mpd.is_running:
+                                asyncio.ensure_future(self.mpd.set_volume(vol_pct))
                         if "State" in changed:
                             state = changed["State"].value
                             # Tell speaker we're Playing so it enables AVRCP volume buttons
@@ -310,11 +315,12 @@ class BluetoothAudioManager:
         # 9. Migrate global keep-alive → per-device (one-time for upgrading users)
         await self._migrate_global_keepalive()
 
-        # 9b. Start keep-alive for any connected devices that have it enabled
+        # 9b. Start keep-alive and MPD for any connected devices that have them enabled
         for device_info in self.store.devices:
             addr = device_info["address"]
             if addr in self._device_connect_time:
                 await self._start_keepalive_if_enabled(addr)
+                await self._start_mpd_if_enabled(addr)
 
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
@@ -332,6 +338,10 @@ class BluetoothAudioManager:
                 await self._sink_poll_task
             except asyncio.CancelledError:
                 pass
+
+        # Stop MPD if running
+        if self.mpd and self.mpd.is_running:
+            await self.mpd.stop()
 
         # Stop all per-device keep-alive instances
         for addr in list(self._keepalives):
@@ -536,6 +546,7 @@ class BluetoothAudioManager:
                     # HFP is the only active profile.
                     await self._disconnect_hfp(address)
                     await self._start_keepalive_if_enabled(address)
+                    await self._start_mpd_if_enabled(address)
                     await self._broadcast_all()
                     return True
                 logger.warning("A2DP sink for %s did not appear in PulseAudio", address)
@@ -848,6 +859,7 @@ class BluetoothAudioManager:
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
         asyncio.ensure_future(self._stop_keepalive(address))
+        asyncio.ensure_future(self._stop_mpd_if_unused())
 
         if address in self._suppress_reconnect:
             # User-initiated disconnect — don't auto-reconnect
@@ -1151,6 +1163,7 @@ class BluetoothAudioManager:
                 if sink_name:
                     logger.info("HFP cycle: PA sink for %s: %s", address, sink_name)
                     await self._start_keepalive_if_enabled(address)
+                    await self._start_mpd_if_enabled(address)
 
         except DBusError as e:
             logger.warning("HFP cycle: failed for %s: %s", address, e)
@@ -1384,6 +1397,9 @@ class BluetoothAudioManager:
         entry = {"command": command, "detail": detail, "ts": time.time()}
         self.recent_mpris.append(entry)
         self.event_bus.emit("mpris_command", entry)
+        # Forward to MPD if running
+        if self.mpd and self.mpd.is_running:
+            asyncio.ensure_future(self.mpd.handle_command(command, detail))
 
     def _on_avrcp_event(self, address: str, prop_name: str, value: object) -> None:
         """Handle AVRCP MediaPlayer1 property change — push to WebSocket."""
@@ -1457,6 +1473,52 @@ class BluetoothAudioManager:
             logger.info("Keep-alive stopped for %s", address)
             self.event_bus.emit("keepalive_changed", {"address": address, "enabled": False})
 
+    # -- Per-device MPD management --
+
+    def _get_mpd_target_address(self) -> str | None:
+        """Find the first connected device that has mpd_enabled=true."""
+        if not self.store:
+            return None
+        for device_info in self.store.devices:
+            addr = device_info["address"]
+            if addr in self._device_connect_time and device_info.get("mpd_enabled", False):
+                return addr
+        return None
+
+    async def _start_mpd_if_enabled(self, address: str) -> None:
+        """Start MPD and route audio to this device if mpd_enabled in its settings."""
+        settings = self.store.get_device_settings(address)
+        if not settings.get("mpd_enabled", False):
+            return
+        if not self.pulse:
+            return
+
+        sink_name = await self.pulse.get_sink_for_address(address)
+        if not sink_name:
+            logger.debug("No PA sink for %s yet, MPD start deferred", address)
+            return
+
+        await self.pulse.set_default_sink(sink_name)
+        logger.info("PA default sink set to %s for MPD", sink_name)
+
+        if not self.mpd:
+            self.mpd = MPDManager()
+        if not self.mpd.is_running:
+            try:
+                await self.mpd.start()
+            except Exception as e:
+                logger.warning("MPD start failed: %s", e)
+                self.mpd = None
+
+    async def _stop_mpd_if_unused(self) -> None:
+        """Stop MPD if no connected device has mpd_enabled."""
+        if not self.mpd or not self.mpd.is_running:
+            return
+        if self._get_mpd_target_address() is not None:
+            return  # still have an active target
+        await self.mpd.stop()
+        logger.info("MPD stopped (no mpd-enabled device connected)")
+
     async def update_device_settings(self, address: str, settings: dict) -> dict | None:
         """Update per-device settings and react to changes immediately."""
         device_info = await self.store.update_device_settings(address, settings)
@@ -1472,6 +1534,14 @@ class BluetoothAudioManager:
                     await self._start_keepalive_if_enabled(address)
                 else:
                     await self._stop_keepalive(address)
+
+        # React to MPD changes if device is connected
+        if address in self._device_connect_time:
+            if "mpd_enabled" in settings:
+                if device_info.get("mpd_enabled", False):
+                    await self._start_mpd_if_enabled(address)
+                else:
+                    await self._stop_mpd_if_unused()
 
         await self._broadcast_devices()
         return device_info

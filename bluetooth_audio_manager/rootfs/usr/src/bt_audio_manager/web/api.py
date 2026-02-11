@@ -278,7 +278,7 @@ def create_api_routes(
         address = request.match_info["address"]
         try:
             body = await request.json()
-            allowed_keys = {"keep_alive_enabled", "keep_alive_method"}
+            allowed_keys = {"keep_alive_enabled", "keep_alive_method", "mpd_enabled"}
             settings = {k: v for k, v in body.items() if k in allowed_keys}
             if not settings:
                 return web.json_response(
@@ -295,6 +295,11 @@ def create_api_routes(
                     return web.json_response(
                         {"error": "keep_alive_enabled must be a boolean"}, status=400
                     )
+            if "mpd_enabled" in settings:
+                if not isinstance(settings["mpd_enabled"], bool):
+                    return web.json_response(
+                        {"error": "mpd_enabled must be a boolean"}, status=400
+                    )
             result = await manager.update_device_settings(address, settings)
             if result is None:
                 return web.json_response(
@@ -304,6 +309,56 @@ def create_api_routes(
         except Exception as e:
             logger.error("Failed to update settings for %s: %s", address, e)
             return web.json_response({"error": str(e)}, status=500)
+
+    @routes.get("/api/settings")
+    async def get_settings(request: web.Request) -> web.Response:
+        """Return current runtime settings (auto_reconnect, intervals, etc.)."""
+        return web.json_response(manager.config.runtime_settings)
+
+    @routes.put("/api/settings")
+    async def update_settings(request: web.Request) -> web.Response:
+        """Update runtime settings (hot-reload, no restart needed)."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        # Validate and apply each setting
+        errors = []
+        if "auto_reconnect" in body:
+            if not isinstance(body["auto_reconnect"], bool):
+                errors.append("auto_reconnect must be a boolean")
+        if "reconnect_interval_seconds" in body:
+            v = body["reconnect_interval_seconds"]
+            if not isinstance(v, int) or v < 5 or v > 600:
+                errors.append("reconnect_interval_seconds must be an integer between 5 and 600")
+        if "reconnect_max_backoff_seconds" in body:
+            v = body["reconnect_max_backoff_seconds"]
+            if not isinstance(v, int) or v < 60 or v > 3600:
+                errors.append("reconnect_max_backoff_seconds must be an integer between 60 and 3600")
+        if "scan_duration_seconds" in body:
+            v = body["scan_duration_seconds"]
+            if not isinstance(v, int) or v < 5 or v > 60:
+                errors.append("scan_duration_seconds must be an integer between 5 and 60")
+
+        if errors:
+            return web.json_response({"error": "; ".join(errors)}, status=400)
+
+        # Apply to live config
+        allowed = {"auto_reconnect", "reconnect_interval_seconds",
+                    "reconnect_max_backoff_seconds", "scan_duration_seconds"}
+        for key in allowed:
+            if key in body:
+                setattr(manager.config, key, body[key])
+
+        # Persist
+        manager.config.save_runtime_settings()
+
+        # Broadcast change to all WS clients
+        manager.event_bus.emit("settings_changed", manager.config.runtime_settings)
+
+        logger.info("Runtime settings updated: %s", manager.config.runtime_settings)
+        return web.json_response(manager.config.runtime_settings)
 
     @routes.get("/api/audio/sinks")
     async def audio_sinks(request: web.Request) -> web.Response:

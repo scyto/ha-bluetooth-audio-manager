@@ -1,5 +1,5 @@
 name: "Bluetooth Audio Manager"
-version: "0.1.95"
+version: "0.1.97"
 slug: bluetooth_audio_manager
 description: "Manage Bluetooth audio device connections (A2DP) with persistent pairing, auto-reconnect, and AppArmor security."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
@@ -26,26 +26,24 @@ ingress_port: 8099
 panel_icon: "mdi:bluetooth-audio"
 panel_title: "BT Audio"
 
+# MPD media player (port exposed for HA's MPD integration)
+ports:
+  "6600/tcp": 6600
+ports_description:
+  "6600/tcp": "MPD server for HA MPD integration"
+
 # Storage
 map:
   - type: data
     read_only: false
 
-# User options
+# User options (runtime settings like auto_reconnect are in the add-on UI)
 options:
   log_level: "info"
-  auto_reconnect: true
-  reconnect_interval_seconds: 30
-  reconnect_max_backoff_seconds: 300
-  scan_duration_seconds: 30
   bt_adapter: "auto"
 
 schema:
   log_level: "list(debug|info|warning|error)"
-  auto_reconnect: bool
-  reconnect_interval_seconds: "int(5,600)"
-  reconnect_max_backoff_seconds: "int(60,3600)"
-  scan_duration_seconds: "int(5,60)"
   bt_adapter: "str"
 
 apparmor: true

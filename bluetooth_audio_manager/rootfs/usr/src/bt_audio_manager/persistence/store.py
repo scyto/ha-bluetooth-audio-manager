@@ -18,6 +18,7 @@ DEFAULT_STORE_PATH = "/data/paired_devices.json"
 DEFAULT_DEVICE_SETTINGS = {
     "keep_alive_enabled": False,
     "keep_alive_method": "infrasound",
+    "mpd_enabled": False,
 }
 
 
