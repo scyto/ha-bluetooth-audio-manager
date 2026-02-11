@@ -124,6 +124,54 @@ function setButtonsEnabled(enabled) {
 }
 
 // ============================================
+// Section 5b: Reconnect Banner & Connection Status
+// ============================================
+
+let reconnectTimerId = null;
+let reconnectStartTime = null;
+
+function showReconnectBanner() {
+  const banner = $("#reconnect-banner");
+  banner.classList.add("visible");
+  document.body.classList.add("server-unavailable");
+  reconnectStartTime = Date.now();
+
+  // Update elapsed time every second
+  clearInterval(reconnectTimerId);
+  reconnectTimerId = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - reconnectStartTime) / 1000);
+    const mins = Math.floor(elapsed / 60);
+    const secs = elapsed % 60;
+    const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+    $("#reconnect-elapsed").textContent = `(${timeStr})`;
+  }, 1000);
+}
+
+function hideReconnectBanner() {
+  const banner = $("#reconnect-banner");
+  banner.classList.remove("visible");
+  document.body.classList.remove("server-unavailable");
+  clearInterval(reconnectTimerId);
+  reconnectTimerId = null;
+  reconnectStartTime = null;
+  $("#reconnect-elapsed").textContent = "";
+}
+
+function setConnectionStatus(state) {
+  const badge = $("#connection-status");
+  if (!badge) return;
+  const map = {
+    connecting: { text: "Connecting...", cls: "bg-secondary" },
+    connected: { text: "Connected", cls: "bg-success" },
+    reconnecting: { text: "Reconnecting...", cls: "bg-warning text-dark" },
+    disconnected: { text: "Disconnected", cls: "bg-danger" },
+  };
+  const info = map[state] || map.connecting;
+  badge.textContent = info.text;
+  badge.className = `badge ${info.cls}`;
+}
+
+// ============================================
 // Section 6: BT Profile UUID Labels
 // ============================================
 
@@ -155,10 +203,12 @@ function renderDevices(devices) {
 
   if (!devices || devices.length === 0) {
     grid.innerHTML = `
-      <div class="col-12 text-center py-5">
-        <i class="fas fa-bluetooth fa-3x mb-3 text-muted opacity-50"></i>
-        <h5 class="text-muted">No Bluetooth audio devices found</h5>
-        <p class="text-muted">Put your speaker in pairing mode and click Scan.</p>
+      <div class="col-12">
+        <div class="empty-state">
+          <i class="fas fa-bluetooth"></i>
+          <h5>No Bluetooth audio devices found</h5>
+          <p>Put your speaker in pairing mode and click Scan.</p>
+        </div>
       </div>
     `;
     return;
@@ -614,6 +664,8 @@ function connectWebSocket() {
   ws.onopen = () => {
     console.log("[WS] Connected");
     wsReconnectDelay = 1000;
+    hideReconnectBanner();
+    setConnectionStatus("connected");
   };
 
   ws.onmessage = (e) => {
@@ -651,6 +703,8 @@ function connectWebSocket() {
   ws.onclose = () => {
     console.log("[WS] Closed, reconnecting in", wsReconnectDelay, "ms");
     ws = null;
+    showReconnectBanner();
+    setConnectionStatus("reconnecting");
     setTimeout(connectWebSocket, wsReconnectDelay);
     wsReconnectDelay = Math.min(wsReconnectDelay * WS_BACKOFF, WS_MAX_DELAY);
   };
@@ -688,16 +742,23 @@ const _origRenderDevices = renderDevices;
 // ============================================
 
 document.addEventListener("DOMContentLoaded", () => {
+  // Set initial connection state
+  setConnectionStatus("connecting");
+
   // WebSocket provides real-time updates (initial state sent on connect)
   connectWebSocket();
 
   // Load adapter info (once at startup)
   loadAdapters();
 
-  // Show version and adapter in footer
+  // Show version in header pill and footer
   apiGet("/api/info")
     .then((data) => {
-      $("#version-label").textContent = `v${data.version} (${data.adapter})`;
+      const ver = `v${data.version}`;
+      $("#build-version").textContent = ver;
+      $("#version-label").textContent = `${ver} (${data.adapter})`;
     })
-    .catch(() => {});
+    .catch(() => {
+      $("#build-version").textContent = "unknown";
+    });
 });
