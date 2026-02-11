@@ -24,6 +24,7 @@ class AppConfig:
     reconnect_max_backoff_seconds: int = 300
     scan_duration_seconds: int = 15
     bt_adapter: str = "auto"
+    block_hfp: bool = True
 
     @property
     def adapter_path(self) -> str:
@@ -56,6 +57,7 @@ class AppConfig:
                 reconnect_max_backoff_seconds=data.get("reconnect_max_backoff_seconds", 300),
                 scan_duration_seconds=data.get("scan_duration_seconds", 15),
                 bt_adapter=data.get("bt_adapter", "auto"),
+                block_hfp=data.get("block_hfp", True),
             )
         except (json.JSONDecodeError, KeyError) as e:
             logger.error("Failed to parse options: %s, using defaults", e)

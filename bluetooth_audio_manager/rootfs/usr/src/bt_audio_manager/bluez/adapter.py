@@ -16,6 +16,7 @@ from .constants import (
     BLUEZ_SERVICE,
     DEFAULT_ADAPTER_PATH,
     DEVICE_INTERFACE,
+    HFP_UUID,
     OBJECT_MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
 )
@@ -66,22 +67,25 @@ class BluezAdapter:
         address = await self._properties_iface.call_get(ADAPTER_INTERFACE, "Address")
         logger.info("Adapter %s initialized at %s", address.value, self._adapter_path)
 
-    async def start_discovery(self) -> None:
-        """Start A2DP-filtered discovery on Classic Bluetooth only.
+    async def start_discovery(self, *, include_hfp: bool = False) -> None:
+        """Start audio-filtered discovery on Classic Bluetooth only.
 
         Sets a discovery filter BEFORE starting discovery. BlueZ merges
         filters from multiple D-Bus clients, so our filter narrows only
         our own view without affecting HA's passive BLE scanning.
         """
+        uuids = [A2DP_SINK_UUID, A2DP_SOURCE_UUID]
+        if include_hfp:
+            uuids.append(HFP_UUID)
         await self._adapter_iface.call_set_discovery_filter(
             {
-                "UUIDs": Variant("as", [A2DP_SINK_UUID, A2DP_SOURCE_UUID]),
+                "UUIDs": Variant("as", uuids),
                 "Transport": Variant("s", "bredr"),
             }
         )
         await self._adapter_iface.call_start_discovery()
         self._discovering = True
-        logger.info("A2DP device discovery started (Transport=bredr)")
+        logger.info("Audio device discovery started (Transport=bredr, HFP=%s)", include_hfp)
 
     async def stop_discovery(self) -> None:
         """Stop our discovery session.
@@ -219,9 +223,9 @@ class BluezAdapter:
             logger.warning("Device %s not found on any adapter", address)
         return removed_any
 
-    async def discover_for_duration(self, seconds: int) -> list[dict]:
+    async def discover_for_duration(self, seconds: int, *, include_hfp: bool = False) -> list[dict]:
         """Run discovery for a fixed duration and return found audio devices."""
-        await self.start_discovery()
+        await self.start_discovery(include_hfp=include_hfp)
         await asyncio.sleep(seconds)
         await self.stop_discovery()
         return await self.get_audio_devices()

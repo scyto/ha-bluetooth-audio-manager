@@ -39,6 +39,19 @@ Bluetooth integration (used for BLE sensors, beacons, etc.):
 | `reconnect_interval_seconds` | `30` | Initial reconnection delay |
 | `reconnect_max_backoff_seconds` | `300` | Maximum reconnection delay |
 | `scan_duration_seconds` | `15` | How long to scan for devices |
+| `block_hfp` | `true` | Block HFP connections (see below) |
+
+### HFP blocking
+
+By default, the add-on blocks Hands-Free Profile (HFP) connections. This
+forces A2DP speakers to use AVRCP for volume control, which gives better
+results with most stereo speakers.
+
+Set `block_hfp: false` to allow HFP-only devices (mono Bluetooth headsets,
+some car kits) to connect. When disabled, HFP devices will appear in discovery
+and connect using the `headset_head_unit` PulseAudio profile. Audio quality is
+mono (8 kHz or 16 kHz with mSBC) — suitable for TTS announcements. A2DP
+speakers continue to work normally in either mode.
 
 ### Per-device keep-alive
 

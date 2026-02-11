@@ -158,7 +158,10 @@ class BluetoothAudioManager:
         # 3c. Register null HFP handler to prevent HFP from being established
         #     Speakers like Bose send volume buttons as HFP AT+VGS commands
         #     instead of AVRCP.  Blocking HFP forces AVRCP volume.
-        await self._register_null_hfp_handler()
+        if self.config.block_hfp:
+            await self._register_null_hfp_handler()
+        else:
+            logger.info("HFP blocking disabled — HFP-only devices can connect")
 
         # 4. Load persistent device store
         self.store = PersistenceStore()
@@ -188,7 +191,8 @@ class BluetoothAudioManager:
                     self._last_signaled_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
                     # Disconnect any pre-existing HFP (null handler blocks new ones)
-                    await self._disconnect_hfp(addr)
+                    if self.config.block_hfp:
+                        await self._disconnect_hfp(addr)
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
 
@@ -270,7 +274,8 @@ class BluetoothAudioManager:
                 try:
                     device = await self._get_or_create_device(addr)
                     self._device_connect_time[addr] = time.time()
-                    await self._disconnect_hfp(addr)
+                    if self.config.block_hfp:
+                        await self._disconnect_hfp(addr)
                 except Exception as e:
                     logger.debug("Could not initialize unmanaged device %s: %s", addr, e)
         except Exception as e:
@@ -426,11 +431,13 @@ class BluetoothAudioManager:
         return device
 
     async def scan_devices(self, duration: int | None = None) -> list[dict]:
-        """Run a time-limited discovery scan for A2DP audio devices."""
+        """Run a time-limited discovery scan for audio devices."""
         duration = duration or self.config.scan_duration_seconds
         self._broadcast_status(f"Scanning for Bluetooth audio devices ({duration}s)...")
         try:
-            devices = await self.adapter.discover_for_duration(duration)
+            devices = await self.adapter.discover_for_duration(
+                duration, include_hfp=not self.config.block_hfp
+            )
         except Exception:
             self.event_bus.emit("status", {"message": ""})
             raise
@@ -534,7 +541,8 @@ class BluetoothAudioManager:
                     # Disconnect HFP only AFTER A2DP is up — doing it earlier
                     # can cause the speaker to drop the entire connection when
                     # HFP is the only active profile.
-                    await self._disconnect_hfp(address)
+                    if self.config.block_hfp:
+                        await self._disconnect_hfp(address)
                     await self._start_keepalive_if_enabled(address)
                     await self._broadcast_all()
                     return True
@@ -883,7 +891,8 @@ class BluetoothAudioManager:
             logger.debug("Cannot access reconnected device %s: %s", address, e)
 
         # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
-        await self._disconnect_hfp(address)
+        if self.config.block_hfp:
+            await self._disconnect_hfp(address)
 
         # Check/activate A2DP transport (may need ConnectProfile)
         await self._ensure_a2dp_transport(address)

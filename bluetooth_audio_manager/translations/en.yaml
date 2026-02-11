@@ -14,3 +14,9 @@ configuration:
   scan_duration_seconds:
     name: Scan Duration
     description: How long to scan for discoverable Bluetooth audio devices (in seconds).
+  block_hfp:
+    name: Block HFP
+    description: >-
+      Block Hands-Free Profile (HFP) connections. When enabled (default),
+      speakers use AVRCP for volume control. Disable to allow HFP-only
+      devices (mono headsets, car kits) to connect.
