@@ -23,6 +23,10 @@
         <div class="col">
           <h1 class="mb-0"><i class="fas fa-bluetooth-b me-2"></i>Bluetooth Audio Manager</h1>
           <p class="mb-0 opacity-75">Manage Bluetooth audio device connections</p>
+          <div class="build-info">
+            <span class="build-label">Build</span>
+            <span id="build-version" class="build-version">loading...</span>
+          </div>
         </div>
         <div class="col-auto d-flex align-items-center gap-2">
           <!-- Navigation buttons -->
@@ -57,7 +61,14 @@
     </div>
   </div>
 
-  <!-- Operation Banner -->
+  <!-- Reconnect Banner (hidden by default, shown when WS disconnects) -->
+  <div id="reconnect-banner" class="reconnect-banner">
+    <div class="spinner-border text-warning" role="status"></div>
+    <span id="reconnect-banner-text">Server unavailable &mdash; reconnecting...</span>
+    <span class="reconnect-time" id="reconnect-elapsed"></span>
+  </div>
+
+  <!-- Operation Banner (for scan, pair, connect, etc.) -->
   <div id="operation-banner" class="operation-banner d-none">
     <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
     <span id="operation-banner-text">Working...</span>
@@ -68,7 +79,8 @@
     <div class="container-fluid px-3 py-3">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h2 class="mb-0">Devices</h2>
-        <div class="d-flex gap-2">
+        <div class="d-flex align-items-center gap-2">
+          <span id="connection-status" class="badge bg-secondary">Connecting...</span>
           <button type="button" id="btn-scan" class="btn btn-primary btn-sm" onclick="scanDevices()">
             <i class="fas fa-search me-1"></i>Scan
           </button>

@@ -101,11 +101,82 @@
   border-radius: var(--radius-md);
 }
 
+/* Build info pill */
+.build-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.build-label {
+  color: var(--header-text-muted);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.build-version {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  color: var(--header-text);
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
 /* Nav button active state */
 .nav-btn.active {
   background: rgba(255, 255, 255, 0.2) !important;
   border-color: rgba(255, 255, 255, 0.5) !important;
   color: #fff !important;
+}
+
+/* Connection status badge consistent width */
+#connection-status {
+  min-width: 85px;
+  text-align: center;
+}
+
+/* ============================================
+   Reconnect Banner
+   ============================================ */
+
+.reconnect-banner {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--bs-warning-bg-subtle, #332701);
+  border: 1px solid var(--bs-warning-border-subtle, #664d03);
+  color: var(--bs-warning-text-emphasis, #ffda6a);
+  margin: 0;
+}
+
+.reconnect-banner.visible {
+  display: flex;
+}
+
+.reconnect-banner .spinner-border {
+  width: 1rem;
+  height: 1rem;
+  border-width: 0.15em;
+}
+
+.reconnect-banner .reconnect-time {
+  color: var(--bs-secondary-color);
+  font-size: 0.85em;
+}
+
+/* Server unavailable — dims device cards and disables interaction */
+.server-unavailable .device-card {
+  opacity: 0.45;
+  pointer-events: none;
+  filter: grayscale(40%);
+  transition: opacity 0.4s ease, filter 0.4s ease;
 }
 
 /* ============================================
@@ -321,6 +392,39 @@
   flex: 1;
   word-break: break-word;
   color: var(--bs-body-color);
+}
+
+/* ============================================
+   Empty State
+   ============================================ */
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 2rem;
+  color: var(--bs-secondary-color);
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-state i {
+  font-size: 3.5rem;
+  margin-bottom: 1rem;
+  opacity: 0.4;
+}
+
+.empty-state h5 {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--bs-body-color);
+}
+
+.empty-state p {
+  font-size: 0.9375rem;
+  max-width: 300px;
+  margin: 0 auto;
 }
 
 /* ============================================
