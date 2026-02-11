@@ -385,6 +385,36 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             logger.error("debug_disconnect_hfp failed for %s: %s", address, e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
 
+    @routes.post("/api/debug/hfp-reconnect-cycle")
+    async def debug_hfp_reconnect_cycle(request: web.Request) -> web.Response:
+        """Debug: disconnect HFP, full reconnect, disconnect HFP again."""
+        address = None
+        try:
+            body = await request.json()
+            address = body.get("address")
+            if not address:
+                return web.json_response({"error": "address is required"}, status=400)
+            result = await manager.debug_hfp_reconnect_cycle(address)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("debug_hfp_reconnect_cycle failed for %s: %s", address, e)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
+
+    @routes.post("/api/debug/register-null-hfp")
+    async def debug_register_null_hfp(request: web.Request) -> web.Response:
+        """Debug: register null HFP profile handler to block HFP."""
+        address = None
+        try:
+            body = await request.json()
+            address = body.get("address")
+            if not address:
+                return web.json_response({"error": "address is required"}, status=400)
+            result = await manager.debug_register_null_hfp(address)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("debug_register_null_hfp failed for %s: %s", address, e)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
+
     @routes.get("/api/diagnostics/mpris")
     async def diagnostics_mpris(request: web.Request) -> web.Response:
         """Diagnostic endpoint for MPRIS/AVRCP troubleshooting."""

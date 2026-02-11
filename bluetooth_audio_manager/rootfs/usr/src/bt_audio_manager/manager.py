@@ -1226,6 +1226,199 @@ class BluetoothAudioManager:
         logger.info("[DEBUG] Disconnect HFP for %s — done (success=%s)", address, result)
         return {"action": "disconnect_hfp", "address": address, "success": result}
 
+    async def debug_hfp_reconnect_cycle(self, address: str) -> dict:
+        """Debug: disconnect HFP, then full device disconnect + reconnect.
+
+        The Bose (and similar speakers) cache HFP as the volume path for the
+        current session.  Simply disconnecting HFP mid-session doesn't make
+        the speaker switch to AVRCP — it keeps trying AT+VGS which goes
+        nowhere.  A full reconnect cycle forces a fresh Bluetooth session
+        where the speaker discovers HFP is gone and falls back to AVRCP.
+
+        Steps:
+        1. Disconnect HFP profile
+        2. Full device disconnect
+        3. Wait for Bluetooth session to tear down
+        4. Reconnect via device.connect() (all profiles)
+        5. Wait for services
+        6. Disconnect HFP again (it will reconnect with HFP)
+        7. Wait for AVRCP volume to appear
+        """
+        from .bluez.constants import HFP_UUID, A2DP_SINK_UUID
+
+        logger.info("[DEBUG] HFP Reconnect Cycle for %s — start", address)
+
+        try:
+            device = await self._get_or_create_device(address)
+        except Exception as e:
+            logger.warning("[DEBUG] Cannot access device %s: %s", address, e)
+            return {"action": "hfp_reconnect_cycle", "address": address, "error": str(e)}
+
+        # 1. Disconnect HFP first
+        try:
+            await device.disconnect_profile(HFP_UUID)
+            logger.info("[DEBUG] HFP disconnected (step 1)")
+        except DBusError as e:
+            logger.debug("[DEBUG] HFP disconnect (step 1): %s", e)
+
+        await asyncio.sleep(0.5)
+
+        # 2. Full device disconnect
+        logger.info("[DEBUG] Full device disconnect (step 2)")
+        await device.disconnect()
+        await asyncio.sleep(3)
+
+        # 3. Reconnect
+        logger.info("[DEBUG] Reconnecting device (step 3)")
+        try:
+            await device.connect()
+        except DBusError as e:
+            logger.warning("[DEBUG] Reconnect failed: %s", e)
+            return {"action": "hfp_reconnect_cycle", "address": address, "error": f"Reconnect failed: {e}"}
+
+        # 4. Wait for services to resolve
+        logger.info("[DEBUG] Waiting for services (step 4)")
+        await device.wait_for_services(timeout=10)
+        await asyncio.sleep(2)
+
+        # 5. Disconnect HFP again (it reconnects with all profiles)
+        logger.info("[DEBUG] Disconnecting HFP after reconnect (step 5)")
+        try:
+            await device.disconnect_profile(HFP_UUID)
+            logger.info("[DEBUG] HFP disconnected after reconnect")
+        except DBusError as e:
+            err = str(e)
+            if "Does Not Exist" in err or "NotConnected" in err:
+                logger.info("[DEBUG] HFP not present after reconnect — good!")
+            else:
+                logger.warning("[DEBUG] HFP disconnect after reconnect: %s", e)
+
+        await asyncio.sleep(1)
+
+        # 6. Re-subscribe to AVRCP
+        device.reset_avrcp_watch()
+        try:
+            await device.watch_media_player()
+        except Exception as e:
+            logger.debug("[DEBUG] AVRCP watch after cycle: %s", e)
+
+        await self._log_transport_properties(address)
+        await self._log_media_control_player(address)
+        logger.info("[DEBUG] HFP Reconnect Cycle for %s — done", address)
+        return {"action": "hfp_reconnect_cycle", "address": address}
+
+    async def debug_register_null_hfp(self, address: str) -> dict:
+        """Debug: register a null HFP profile handler via ProfileManager1.
+
+        By registering our process as the handler for the HFP UUID,
+        BlueZ will route HFP connections to us instead of its built-in
+        handler (oFono/hsphfpd).  Since we never accept the connection,
+        HFP effectively becomes disabled and the speaker must use AVRCP
+        for volume control.
+
+        After registering, we disconnect and reconnect the device so it
+        gets a fresh session without HFP.
+        """
+        from .bluez.constants import HFP_UUID, BLUEZ_SERVICE
+
+        logger.info("[DEBUG] Register Null HFP Handler — start")
+
+        # Register a null profile for the HFP AG UUID
+        try:
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/org/bluez")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/org/bluez", intro)
+            profile_mgr = proxy.get_interface("org.bluez.ProfileManager1")
+
+            # Register our process as HFP handler with an empty path
+            # The profile object path must exist — we'll export a minimal one
+            profile_path = "/org/ha/bluetooth_audio/null_hfp"
+
+            # Export a minimal Profile1 interface
+            from dbus_next.service import ServiceInterface, method
+            from dbus_next import Variant
+
+            class NullHFPProfile(ServiceInterface):
+                """Null HFP profile — rejects all connections."""
+
+                def __init__(self):
+                    super().__init__("org.bluez.Profile1")
+
+                @method()
+                def Release(self):
+                    logger.info("[NullHFP] Profile released by BlueZ")
+
+                @method()
+                def NewConnection(self, device: 'o', fd: 'h', fd_properties: 'a{sv}'):
+                    logger.info("[NullHFP] Rejecting HFP connection from %s", device)
+                    # Close the file descriptor to reject
+                    import os
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+                @method()
+                def RequestDisconnection(self, device: 'o'):
+                    logger.info("[NullHFP] HFP disconnect requested for %s", device)
+
+            # Check if already exported
+            if profile_path not in self.bus._path_exports:
+                null_profile = NullHFPProfile()
+                self.bus.export(profile_path, null_profile)
+                logger.info("[DEBUG] Exported NullHFPProfile at %s", profile_path)
+
+            # Register with BlueZ ProfileManager
+            options = {
+                "Name": Variant("s", "Null HFP"),
+                "Role": Variant("s", "client"),
+            }
+            await profile_mgr.call_register_profile(profile_path, HFP_UUID, options)
+            logger.info("[DEBUG] Registered null HFP profile with BlueZ")
+
+        except DBusError as e:
+            err = str(e)
+            if "AlreadyExists" in err:
+                logger.info("[DEBUG] Null HFP profile already registered")
+            else:
+                logger.warning("[DEBUG] Failed to register null HFP profile: %s", e)
+                return {"action": "register_null_hfp", "address": address, "error": str(e)}
+        except Exception as e:
+            logger.warning("[DEBUG] Unexpected error registering null HFP: %s", e)
+            return {"action": "register_null_hfp", "address": address, "error": str(e)}
+
+        # Now disconnect and reconnect the device so it gets a fresh session
+        try:
+            device = await self._get_or_create_device(address)
+
+            logger.info("[DEBUG] Disconnecting device for fresh session...")
+            await device.disconnect()
+            await asyncio.sleep(3)
+
+            logger.info("[DEBUG] Reconnecting device (HFP should be intercepted)...")
+            await device.connect()
+            await device.wait_for_services(timeout=10)
+            await asyncio.sleep(2)
+
+            # Check if HFP is still connected
+            uuids = await device.get_uuids()
+            logger.info("[DEBUG] Device UUIDs after reconnect: %s", uuids)
+
+            device.reset_avrcp_watch()
+            try:
+                await device.watch_media_player()
+            except Exception as e:
+                logger.debug("[DEBUG] AVRCP watch after null HFP: %s", e)
+
+            await self._log_transport_properties(address)
+            await self._log_media_control_player(address)
+        except Exception as e:
+            logger.warning("[DEBUG] Device reconnect after null HFP failed: %s", e)
+            return {"action": "register_null_hfp", "address": address,
+                    "registered": True, "reconnect_error": str(e)}
+
+        logger.info("[DEBUG] Register Null HFP Handler — done")
+        return {"action": "register_null_hfp", "address": address, "registered": True}
+
     async def _disconnect_hfp(self, address: str) -> bool:
         """Disconnect HFP profile so the speaker uses AVRCP for volume control.
 
