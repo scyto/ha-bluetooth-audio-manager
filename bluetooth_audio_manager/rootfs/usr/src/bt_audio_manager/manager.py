@@ -153,6 +153,11 @@ class BluetoothAudioManager:
             logger.warning("AVRCP media player registration failed: %s", e)
             self.media_player = None
 
+        # 3c. Register null HFP handler to prevent HFP from being established
+        #     Speakers like Bose send volume buttons as HFP AT+VGS commands
+        #     instead of AVRCP.  Blocking HFP forces AVRCP volume.
+        await self._register_null_hfp_handler()
+
         # 4. Load persistent device store
         self.store = PersistenceStore()
         await self.store.load()
@@ -297,16 +302,58 @@ class BluetoothAudioManager:
 
     # -- Device lifecycle operations --
 
+    async def _find_device_adapter(self, address: str) -> str | None:
+        """Query BlueZ ObjectManager to find which adapter a device is on.
+
+        Returns the adapter D-Bus path (e.g. '/org/bluez/hci0') or None.
+        Prefers the configured adapter if the device exists on multiple adapters.
+        """
+        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+
+        dev_suffix = f"/dev_{address.replace(':', '_')}"
+        try:
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+            obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+            objects = await obj_mgr.call_get_managed_objects()
+
+            found_adapters = []
+            for path in objects:
+                if path.endswith(dev_suffix):
+                    adapter_path = path[: path.rfind("/")]
+                    found_adapters.append(adapter_path)
+
+            if not found_adapters:
+                return None
+            # Prefer the configured adapter if device exists there
+            if self._adapter_path in found_adapters:
+                return self._adapter_path
+            return found_adapters[0]
+        except Exception as e:
+            logger.debug("_find_device_adapter for %s: %s", address, e)
+            return None
+
     async def _get_or_create_device(self, address: str) -> BluezDevice:
         """Get an existing managed device or create and register a new one.
 
         Ensures only one BluezDevice (and one D-Bus subscription) exists per address.
+        Discovers the actual adapter the device is on via ObjectManager rather
+        than assuming the configured adapter.
         """
         device = self.managed_devices.get(address)
         if device:
             return device
 
-        device = BluezDevice(self.bus, address, self._adapter_path)
+        # Discover actual adapter (device may be paired on a different adapter)
+        actual_adapter = await self._find_device_adapter(address)
+        adapter_path = actual_adapter or self._adapter_path
+        if actual_adapter and actual_adapter != self._adapter_path:
+            logger.info(
+                "Device %s is on %s (configured: %s)",
+                address, actual_adapter, self._adapter_path,
+            )
+
+        device = BluezDevice(self.bus, address, adapter_path)
         await device.initialize()
         device.on_disconnected(self._on_device_disconnected)
         device.on_connected(self._on_device_connected)
@@ -1290,6 +1337,68 @@ class BluetoothAudioManager:
             self._suppress_reconnect.discard(address)
 
         logger.info("HFP reconnect cycle for %s — done", address)
+
+    async def _register_null_hfp_handler(self) -> None:
+        """Register a null HFP profile handler to block HFP connections.
+
+        By registering as the HFP handler via ProfileManager1, BlueZ routes
+        HFP connection attempts to us instead of its built-in handler.  We
+        reject them by closing the fd, so HFP is never established and the
+        speaker must use AVRCP for volume control.
+        """
+        from .bluez.constants import HFP_UUID, BLUEZ_SERVICE
+        from dbus_next.service import ServiceInterface, method
+        from dbus_next import Variant
+
+        profile_path = "/org/ha/bluetooth_audio/null_hfp"
+
+        class NullHFPProfile(ServiceInterface):
+            """Null HFP profile — rejects all connections."""
+
+            def __init__(self):
+                super().__init__("org.bluez.Profile1")
+
+            @method()
+            def Release(self):
+                logger.info("[NullHFP] Profile released by BlueZ")
+
+            @method()
+            def NewConnection(self, device: 'o', fd: 'h', fd_properties: 'a{sv}'):
+                logger.info("[NullHFP] Rejecting HFP connection from %s", device)
+                import os
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+            @method()
+            def RequestDisconnection(self, device: 'o'):
+                logger.info("[NullHFP] Disconnect requested for %s", device)
+
+        try:
+            if profile_path not in self.bus._path_exports:
+                self.bus.export(profile_path, NullHFPProfile())
+
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/org/bluez")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/org/bluez", intro)
+            profile_mgr = proxy.get_interface("org.bluez.ProfileManager1")
+
+            await profile_mgr.call_register_profile(
+                profile_path,
+                HFP_UUID,
+                {
+                    "Name": Variant("s", "Null HFP"),
+                    "Role": Variant("s", "client"),
+                },
+            )
+            logger.info("Null HFP profile handler registered — HFP connections will be rejected")
+        except DBusError as e:
+            if "AlreadyExists" in str(e):
+                logger.info("Null HFP profile already registered")
+            else:
+                logger.warning("Failed to register null HFP handler: %s (HFP may still work)", e)
+        except Exception as e:
+            logger.warning("Unexpected error registering null HFP handler: %s", e)
 
     async def _disconnect_hfp(self, address: str) -> bool:
         """Disconnect HFP profile so the speaker uses AVRCP for volume control.
