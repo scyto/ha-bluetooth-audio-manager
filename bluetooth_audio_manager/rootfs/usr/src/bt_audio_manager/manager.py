@@ -101,17 +101,22 @@ class BluetoothAudioManager:
                             iface_name, prop_names, msg.path,
                         )
 
-                    if iface_name == "org.bluez.MediaTransport1" and "Volume" in changed:
-                        vol_raw = changed["Volume"].value  # 0-127 uint16
-                        vol_pct = round(vol_raw / 127 * 100)
-                        logger.info("AVRCP transport volume: %d%% (raw %d)", vol_pct, vol_raw)
-                        # Extract device address from path like /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX/...
-                        parts = msg.path.split("/")
-                        addr = next((p[4:].replace("_", ":") for p in parts if p.startswith("dev_")), "")
-                        self._last_signaled_volume[addr] = vol_raw
-                        entry = {"address": addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
-                        self.recent_avrcp.append(entry)
-                        self.event_bus.emit("avrcp_event", entry)
+                    if iface_name == "org.bluez.MediaTransport1":
+                        if "Volume" in changed:
+                            vol_raw = changed["Volume"].value  # 0-127 uint16
+                            vol_pct = round(vol_raw / 127 * 100)
+                            logger.info("AVRCP transport volume: %d%% (raw %d)", vol_pct, vol_raw)
+                            parts = msg.path.split("/")
+                            addr = next((p[4:].replace("_", ":") for p in parts if p.startswith("dev_")), "")
+                            self._last_signaled_volume[addr] = vol_raw
+                            entry = {"address": addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
+                            self.recent_avrcp.append(entry)
+                            self.event_bus.emit("avrcp_event", entry)
+                        if "State" in changed:
+                            state = changed["State"].value
+                            # Tell speaker we're Playing so it enables AVRCP volume buttons
+                            if self.media_player and state == "active":
+                                self.media_player.set_playback_status("Playing")
                 else:
                     # Log ALL other BlueZ signals (InterfacesAdded, etc.)
                     logger.info(
@@ -182,12 +187,13 @@ class BluetoothAudioManager:
             try:
                 device = await self._get_or_create_device(addr)
                 if await device.is_connected():
-                    logger.info("Device %s already connected — scheduling HFP reconnect cycle", addr)
+                    logger.info("Device %s already connected at startup", addr)
                     self._renegotiation_count.pop(addr, None)
                     self._last_signaled_volume.pop(addr, None)
                     self._last_polled_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
-                    asyncio.create_task(self._hfp_reconnect_cycle(addr))
+                    # Disconnect any pre-existing HFP (null handler blocks new ones)
+                    await self._disconnect_hfp(addr)
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
 
@@ -217,13 +223,13 @@ class BluetoothAudioManager:
                     continue
 
                 logger.info(
-                    "Found connected device %s not in managed_devices — scheduling HFP reconnect cycle",
+                    "Found connected device %s not in managed_devices — initializing",
                     addr,
                 )
                 try:
                     device = await self._get_or_create_device(addr)
                     self._device_connect_time[addr] = time.time()
-                    asyncio.create_task(self._hfp_reconnect_cycle(addr))
+                    await self._disconnect_hfp(addr)
                 except Exception as e:
                     logger.debug("Could not initialize unmanaged device %s: %s", addr, e)
         except Exception as e:
