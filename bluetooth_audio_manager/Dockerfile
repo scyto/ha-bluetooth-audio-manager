@@ -1,10 +1,13 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 FROM ${BUILD_FROM}
 
+# Pull bluez packages from Alpine edge to match HAOS host (5.85)
 RUN apk add --no-cache \
-    bluez \
-    bluez-btmon \
-    bluez-libs \
+    --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
+    bluez~5.85 \
+    bluez-btmon~5.85 \
+    bluez-libs~5.85 \
+    && apk add --no-cache \
     dbus-libs \
     pulseaudio-utils \
     python3 \

@@ -190,6 +190,8 @@ class BluetoothAudioManager:
                         await device.watch_media_player()
                     except Exception as e:
                         logger.debug("AVRCP on existing connection %s: %s", addr, e)
+                    # Disconnect HFP to force AVRCP volume
+                    await self._disconnect_hfp(addr)
                     await self._ensure_a2dp_transport(addr)
                     if self.pulse:
                         sink_name = await self.pulse.get_sink_for_address(addr)
@@ -387,6 +389,9 @@ class BluetoothAudioManager:
                 await device.watch_media_player()
             except Exception as e:
                 logger.debug("AVRCP watch failed for %s: %s", address, e)
+
+            # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
+            await self._disconnect_hfp(address)
 
             # Verify PulseAudio sink appeared
             if self.pulse:
@@ -961,6 +966,9 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
 
+        # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
+        await self._disconnect_hfp(address)
+
         # Skip A2DP transport setup if a manual connect is already handling it
         if address in self._connecting:
             logger.debug("Skipping auto A2DP setup for %s (manual connect in progress)", address)
@@ -1143,6 +1151,42 @@ class BluetoothAudioManager:
         await self._log_media_control_player(address)
         logger.info("[DEBUG] Full Renegotiate for %s — done", address)
         return {"action": "full_renegotiate", "address": address}
+
+    async def debug_disconnect_hfp(self, address: str) -> dict:
+        """Debug: disconnect HFP profile to force AVRCP volume."""
+        logger.info("[DEBUG] Disconnect HFP for %s — start", address)
+        result = await self._disconnect_hfp(address)
+        logger.info("[DEBUG] Disconnect HFP for %s — done (success=%s)", address, result)
+        return {"action": "disconnect_hfp", "address": address, "success": result}
+
+    async def _disconnect_hfp(self, address: str) -> bool:
+        """Disconnect HFP profile so the speaker uses AVRCP for volume control.
+
+        Many speakers (e.g. Bose) send volume buttons as HFP AT+VGS commands
+        instead of AVRCP absolute volume.  BlueZ doesn't map HFP volume to
+        the A2DP MediaTransport, so the volume buttons appear dead.
+
+        Disconnecting HFP forces the speaker to fall back to AVRCP volume,
+        which BlueZ correctly propagates to MediaTransport1.Volume.
+        """
+        from .bluez.constants import HFP_UUID
+
+        device = self.managed_devices.get(address)
+        if not device:
+            logger.debug("HFP disconnect: device %s not managed", address)
+            return False
+
+        try:
+            await device.disconnect_profile(HFP_UUID)
+            logger.info("HFP disconnected for %s — speaker should use AVRCP volume", address)
+            return True
+        except DBusError as e:
+            err = str(e)
+            if "Does Not Exist" in err or "NotConnected" in err:
+                logger.debug("HFP not connected on %s (OK — already AVRCP-only)", address)
+                return True
+            logger.warning("HFP disconnect failed for %s: %s", address, e)
+            return False
 
     async def _log_media_control_player(self, address: str) -> None:
         """Log whether BlueZ linked our MPRIS player to the device's AVRCP session."""
