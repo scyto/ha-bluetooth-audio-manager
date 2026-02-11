@@ -192,6 +192,52 @@ class BluetoothAudioManager:
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
 
+        # 6a. Clean up stale BlueZ device cache — remove unpaired, disconnected
+        #     device objects that aren't in our persistent store.  These are
+        #     leftover from previous discovery sessions and would otherwise show
+        #     as "DISCOVERED" in the UI even when the device is powered off.
+        try:
+            from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE, AUDIO_UUIDS
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+            obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+            objects = await obj_mgr.call_get_managed_objects()
+            stored_addrs = {d["address"] for d in self.store.devices}
+
+            for path, ifaces in objects.items():
+                if DEVICE_INTERFACE not in ifaces:
+                    continue
+                dev_props = ifaces[DEVICE_INTERFACE]
+                addr_v = dev_props.get("Address")
+                paired_v = dev_props.get("Paired")
+                connected_v = dev_props.get("Connected")
+                uuids_v = dev_props.get("UUIDs")
+                if not addr_v:
+                    continue
+                addr = addr_v.value if hasattr(addr_v, "value") else addr_v
+                paired = (paired_v.value if hasattr(paired_v, "value") else paired_v) if paired_v else False
+                connected = (connected_v.value if hasattr(connected_v, "value") else connected_v) if connected_v else False
+                uuids = set(uuids_v.value) if uuids_v else set()
+
+                # Only clean up audio devices not in our store, not paired, not connected
+                if addr in stored_addrs or paired or connected:
+                    continue
+                if not uuids.intersection(AUDIO_UUIDS):
+                    continue
+
+                adapter_path = path[: path.rfind("/")]
+                try:
+                    a_intr = await self.bus.introspect(BLUEZ_SERVICE, adapter_path)
+                    a_proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, adapter_path, a_intr)
+                    from .bluez.constants import ADAPTER_INTERFACE
+                    a_iface = a_proxy.get_interface(ADAPTER_INTERFACE)
+                    await a_iface.call_remove_device(path)
+                    logger.info("Removed stale cached device %s from %s", addr, adapter_path)
+                except Exception as e:
+                    logger.debug("Could not remove stale device %s: %s", addr, e)
+        except Exception as e:
+            logger.debug("Stale device cleanup failed: %s", e)
+
         # 6b. Detect devices connected at the BlueZ level but NOT in our
         #     store (e.g. store wiped during rebuild, or device paired outside
         #     the add-on).  Create BluezDevice wrappers so UI buttons work.
