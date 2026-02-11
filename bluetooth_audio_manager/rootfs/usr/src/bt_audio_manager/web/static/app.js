@@ -713,6 +713,39 @@ async function saveDeviceSettings() {
 }
 
 // ============================================
+// Section 11c: Add-on Settings Modal
+// ============================================
+
+async function openSettingsModal() {
+  try {
+    const data = await apiGet("/api/settings");
+    $("#setting-auto-reconnect").checked = data.auto_reconnect;
+    $("#setting-reconnect-interval").value = data.reconnect_interval_seconds;
+    $("#setting-reconnect-max-backoff").value = data.reconnect_max_backoff_seconds;
+    $("#setting-scan-duration").value = data.scan_duration_seconds;
+    new bootstrap.Modal("#settingsModal").show();
+  } catch (e) {
+    showToast(`Failed to load settings: ${e.message}`, "error");
+  }
+}
+
+async function saveSettings() {
+  const settings = {
+    auto_reconnect: $("#setting-auto-reconnect").checked,
+    reconnect_interval_seconds: parseInt($("#setting-reconnect-interval").value, 10),
+    reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
+    scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
+  };
+  try {
+    await apiPut("/api/settings", settings);
+    showToast("Settings saved", "success");
+    bootstrap.Modal.getInstance($("#settingsModal"))?.hide();
+  } catch (e) {
+    showToast(`Failed to save settings: ${e.message}`, "error");
+  }
+}
+
+// ============================================
 // Section 12: WebSocket (Real-time Updates)
 // ============================================
 
@@ -754,6 +787,9 @@ function connectWebSocket() {
         break;
       case "log_entry":
         appendLogEntry(msg);
+        break;
+      case "settings_changed":
+        // Runtime settings updated by another client; no action needed
         break;
       case "keepalive_changed":
         // Devices list will be re-sent via devices_changed; toast for feedback

@@ -53,6 +53,9 @@
               <i class="fas fa-cog me-1"></i>Settings
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="#" onclick="openSettingsModal(); return false;">
+                <i class="fas fa-sliders me-2"></i>Add-on Settings
+              </a></li>
               <li><a class="dropdown-item" href="#" onclick="openAdaptersModal(); return false;">
                 <i class="fas fa-microchip me-2"></i>Bluetooth Adapters
               </a></li>
@@ -195,6 +198,65 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== ADD-ON SETTINGS MODAL ========== -->
+  <div class="modal fade" id="settingsModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="fas fa-sliders me-2"></i>Add-on Settings</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <!-- Auto Reconnect -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-auto-reconnect">
+              <label class="form-check-label" for="setting-auto-reconnect">
+                <strong>Auto Reconnect</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              Automatically reconnect to paired devices when they become available.
+            </div>
+          </div>
+
+          <!-- Reconnect Interval -->
+          <div class="mb-3">
+            <label for="setting-reconnect-interval" class="form-label">Reconnect Interval (seconds)</label>
+            <input type="number" class="form-control" id="setting-reconnect-interval" min="5" max="600" step="1">
+            <div class="form-text">
+              Initial delay between reconnection attempts (5&ndash;600).
+            </div>
+          </div>
+
+          <!-- Max Reconnect Backoff -->
+          <div class="mb-3">
+            <label for="setting-reconnect-max-backoff" class="form-label">Max Reconnect Backoff (seconds)</label>
+            <input type="number" class="form-control" id="setting-reconnect-max-backoff" min="60" max="3600" step="1">
+            <div class="form-text">
+              Maximum delay between reconnection attempts with exponential backoff (60&ndash;3600).
+            </div>
+          </div>
+
+          <!-- Scan Duration -->
+          <div class="mb-3">
+            <label for="setting-scan-duration" class="form-label">Scan Duration (seconds)</label>
+            <input type="number" class="form-control" id="setting-scan-duration" min="5" max="60" step="1">
+            <div class="form-text">
+              How long to scan for discoverable Bluetooth audio devices (5&ndash;60).
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="saveSettings()">
+            <i class="fas fa-save me-1"></i>Save
+          </button>
         </div>
       </div>
     </div>
