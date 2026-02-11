@@ -4,9 +4,9 @@
  * Simple vanilla JS interface for device management.
  * Communicates with the add-on's REST API.
  *
- * Uses polling instead of SSE because HA's service worker
- * (StrategyHandler.js) intercepts EventSource connections and
- * breaks SSE streaming through the ingress proxy.
+ * Uses WebSocket for real-time updates.  SSE is broken through
+ * HA ingress due to a compression bug (supervisor#6470).
+ * WebSocket bypasses both the bug and the HA service worker.
  */
 
 // HA ingress serves the page at /api/hassio_ingress/<token>/
@@ -331,42 +331,56 @@ function appendAvrcpEvent(data) {
   );
 }
 
-// -- Polling (replaces SSE which is broken by HA's service worker) --
+// -- WebSocket (real-time updates) --
 
-let pollTimer = null;
-let lastMprisTs = 0;
-let lastAvrcpTs = 0;
+let ws = null;
+let wsReconnectDelay = 1000;
+const WS_MAX_DELAY = 30000;
+const WS_BACKOFF = 1.5;
 
-async function pollState() {
-  try {
-    const params = new URLSearchParams({
-      mpris_after: lastMprisTs,
-      avrcp_after: lastAvrcpTs,
-    });
-    const data = await apiGet(`/api/state?${params}`);
+function connectWebSocket() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${proto}//${location.host}${API_BASE}/api/ws`;
+  console.log("[WS] Connecting to", wsUrl);
 
-    renderDevices(data.devices);
-    renderSinks(data.sinks);
+  ws = new WebSocket(wsUrl);
 
-    // Append only new events
-    for (const ev of data.mpris_events) {
-      appendMprisCommand(ev);
-      if (ev.ts > lastMprisTs) lastMprisTs = ev.ts;
+  ws.onopen = () => {
+    console.log("[WS] Connected");
+    wsReconnectDelay = 1000;
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    switch (msg.type) {
+      case "devices_changed":
+        renderDevices(msg.devices);
+        break;
+      case "sinks_changed":
+        renderSinks(msg.sinks);
+        break;
+      case "mpris_command":
+        appendMprisCommand(msg);
+        break;
+      case "avrcp_event":
+        appendAvrcpEvent(msg);
+        break;
+      default:
+        console.log("[WS] Unknown message type:", msg.type);
     }
-    for (const ev of data.avrcp_events) {
-      appendAvrcpEvent(ev);
-      if (ev.ts > lastAvrcpTs) lastAvrcpTs = ev.ts;
-    }
-  } catch (e) {
-    console.warn("[Poll] Error:", e.message);
-  }
-}
+  };
 
-function startPolling() {
-  if (pollTimer) return;
-  console.log("[Poll] Starting (3s interval)");
-  pollState();
-  pollTimer = setInterval(pollState, 3000);
+  ws.onclose = () => {
+    console.log("[WS] Closed, reconnecting in", wsReconnectDelay, "ms");
+    ws = null;
+    setTimeout(connectWebSocket, wsReconnectDelay);
+    wsReconnectDelay = Math.min(wsReconnectDelay * WS_BACKOFF, WS_MAX_DELAY);
+  };
+
+  ws.onerror = () => {
+    console.warn("[WS] Error");
+    ws.close();
+  };
 }
 
 // -- Adapter rendering --
@@ -449,8 +463,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-scan").addEventListener("click", scanDevices);
   $("#btn-refresh").addEventListener("click", refreshDevices);
 
-  // Poll for state updates every 3 seconds
-  startPolling();
+  // WebSocket provides real-time updates (initial state sent on connect)
+  connectWebSocket();
 
   // Load adapter info (once at startup)
   loadAdapters();

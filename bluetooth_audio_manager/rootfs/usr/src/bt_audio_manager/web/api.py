@@ -1,12 +1,12 @@
 """REST API endpoints for the Bluetooth Audio Manager."""
 
 import asyncio
-import json
 import logging
 import os
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from aiohttp.web import WebSocketResponse
 from dbus_next.errors import DBusError
 
 if TYPE_CHECKING:
@@ -40,23 +40,18 @@ def _friendly_error(e: Exception) -> str:
     return msg
 
 
-async def _send_sse(
-    response: web.StreamResponse, event: str, data: dict
+async def _ws_sender(
+    ws: WebSocketResponse, queue: asyncio.Queue,
 ) -> None:
-    """Write a single SSE frame to the stream.
-
-    Includes a 2 KB padding comment to push the data through the
-    HA ingress proxy buffer (the proxy may hold small writes until
-    enough data accumulates).
-    """
-    payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
-    # Pad to 8 KB to flush through the HA ingress proxy buffer.
-    # The proxy holds small writes until enough data accumulates;
-    # 8 KB exceeds typical proxy buffer thresholds (4 KB / 8 KB).
-    target = 8192
-    pad_len = max(0, target - len(payload) - 6)  # 6 = ": " + "\n\n"
-    padding = ": " + "." * pad_len + "\n\n" if pad_len > 0 else ""
-    await response.write((payload + padding).encode())
+    """Forward EventBus events to a WebSocket client."""
+    try:
+        while not ws.closed:
+            msg = await queue.get()
+            event = msg["event"]
+            data = msg["data"]
+            await ws.send_json({"type": event, **data})
+    except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+        pass
 
 
 def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
@@ -492,60 +487,45 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
 
         return web.json_response(results)
 
-    @routes.get("/api/events")
-    async def sse_events(request: web.Request) -> web.StreamResponse:
-        """Server-Sent Events stream for real-time UI updates."""
-        logger.info("SSE client connected from %s", request.remote)
-        response = web.StreamResponse(
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            }
-        )
-        await response.prepare(request)
+    @routes.get("/api/ws")
+    async def websocket_handler(request: web.Request) -> WebSocketResponse:
+        """WebSocket endpoint for real-time UI updates.
+
+        Replaces SSE which is broken through HA ingress due to a
+        compression bug (supervisor#6470).  WebSocket bypasses both
+        the compression issue and the HA service worker.
+        """
+        ws = WebSocketResponse(heartbeat=30)
+        await ws.prepare(request)
+        logger.info("WS client connected from %s", request.remote)
 
         bus = manager.event_bus
         queue = bus.subscribe()
+        sender = asyncio.create_task(_ws_sender(ws, queue))
         try:
-            # Tell EventSource to reconnect after 3 seconds if disconnected
-            await response.write(b"retry: 3000\n\n")
-
             # Send initial state so UI renders immediately
             devices = await manager.get_all_devices()
             sinks = await manager.get_audio_sinks()
-            await _send_sse(response, "devices_changed", {"devices": devices})
-            await _send_sse(response, "sinks_changed", {"sinks": sinks})
+            await ws.send_json({"type": "devices_changed", "devices": devices})
+            await ws.send_json({"type": "sinks_changed", "sinks": sinks})
 
-            # Replay recent MPRIS/AVRCP events so reconnecting clients
-            # don't lose transient events (HA ingress drops SSE often)
+            # Replay recent MPRIS/AVRCP events
             for entry in manager.recent_mpris:
-                await _send_sse(response, "mpris_command", entry)
+                await ws.send_json({"type": "mpris_command", **entry})
             for entry in manager.recent_avrcp:
-                await _send_sse(response, "avrcp_event", entry)
+                await ws.send_json({"type": "avrcp_event", **entry})
 
-            logger.info("SSE initial state sent, streaming events...")
-
-            # Stream events as they occur, with periodic heartbeat
-            # to keep HA ingress proxy connection alive
-            while True:
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=15)
-                    logger.info("SSE sending: %s", msg["event"])
-                    await _send_sse(response, msg["event"], msg["data"])
-                except asyncio.TimeoutError:
-                    # SSE comment keeps proxy alive — padded to 8 KB
-                    # to flush through the HA ingress proxy buffer
-                    heartbeat = ": heartbeat\n" + ": " + "." * 8172 + "\n\n"
-                    await response.write(heartbeat.encode())
-        except (ConnectionResetError, ConnectionError, asyncio.CancelledError) as e:
-            logger.info("SSE stream closed: %s", type(e).__name__)
+            # Block until client disconnects (reads drain client msgs)
+            async for _msg in ws:
+                pass
+        except (ConnectionResetError, ConnectionError) as e:
+            logger.info("WS stream closed: %s", type(e).__name__)
         except Exception as e:
-            logger.warning("SSE stream unexpected error: %s: %s", type(e).__name__, e)
+            logger.warning("WS unexpected error: %s: %s", type(e).__name__, e)
         finally:
+            sender.cancel()
             bus.unsubscribe(queue)
-            logger.info("SSE client disconnected")
-        return response
+            logger.info("WS client disconnected")
+        return ws
 
     return routes
