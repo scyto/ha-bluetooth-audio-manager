@@ -526,14 +526,15 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("AVRCP watch failed for %s: %s", address, e)
 
-            # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
-            await self._disconnect_hfp(address)
-
             # Verify PulseAudio sink appeared
             if self.pulse:
                 self._broadcast_status(f"Waiting for A2DP sink for {address}...")
                 sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
                 if sink_name:
+                    # Disconnect HFP only AFTER A2DP is up — doing it earlier
+                    # can cause the speaker to drop the entire connection when
+                    # HFP is the only active profile.
+                    await self._disconnect_hfp(address)
                     await self._start_keepalive_if_enabled(address)
                     await self._broadcast_all()
                     return True
