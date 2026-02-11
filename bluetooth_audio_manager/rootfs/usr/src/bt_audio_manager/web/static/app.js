@@ -286,11 +286,11 @@ function renderDevices(devices) {
       }
 
       return `
-        <div class="col-12 col-sm-6 col-md-4 col-lg-3">
+        <div class="col-md-6 col-lg-4">
           <div class="card device-card h-100">
             <div class="card-body">
               <div class="d-flex justify-content-between align-items-start mb-2">
-                <h6 class="card-title mb-0">${escapeHtml(d.name)}</h6>
+                <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
                 <span class="badge ${badgeClass}">${statusText}</span>
               </div>
               ${connDetail ? `<div class="small text-muted mb-1">${escapeHtml(connDetail)}</div>` : ""}

@@ -295,15 +295,22 @@ h1, h2, h3, h4, h5, h6 {
 .device-card .card-title {
   font-size: 1rem;
   font-weight: 600;
+  margin-bottom: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: calc(100% - 90px);
 }
 
 .device-card .card-body {
-  min-height: 160px;
+  min-height: 180px;
   display: flex;
   flex-direction: column;
+}
+
+/* Container minimum height to prevent collapse during loading */
+#devices-grid {
+  min-height: 200px;
 }
 
 .device-card .device-actions {
@@ -315,6 +322,15 @@ h1, h2, h3, h4, h5, h6 {
 .badge-connected { background-color: var(--accent-success) !important; }
 .badge-paired { background-color: var(--accent-warning) !important; }
 .badge-discovered { background-color: var(--bs-secondary) !important; }
+
+.device-card .badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.25rem 0.5rem;
+  min-width: 70px;
+  text-align: center;
+}
 
 /* ============================================
    Events Log
