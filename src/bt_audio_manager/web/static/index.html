@@ -20,15 +20,12 @@
   <div class="app-header text-white py-4 mb-4">
     <div class="container">
       <div class="row align-items-center">
-        <div class="col d-flex align-items-center gap-3">
-          <img src="static/logo.png" alt="Logo" class="header-logo">
-          <div>
-            <h1 class="mb-0">Bluetooth Audio Manager</h1>
-            <p class="mb-0 opacity-75">Manage Bluetooth audio device connections</p>
-            <div class="build-info">
-              <span class="build-label">Build</span>
-              <span id="build-version" class="build-version">loading...</span>
-            </div>
+        <div class="col">
+          <h1 class="mb-0"><i class="fab fa-bluetooth-b me-2"></i>Bluetooth Audio Manager</h1>
+          <p class="mb-0 opacity-75">Manage Bluetooth audio device connections</p>
+          <div class="build-info">
+            <span class="build-label">Build</span>
+            <span id="build-version" class="build-version">loading...</span>
           </div>
         </div>
         <div class="col-auto">
@@ -53,37 +50,24 @@
               <i class="fas fa-cog me-1"></i>Settings
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="#" onclick="openSettingsModal(); return false;">
+                <i class="fas fa-sliders me-2"></i>Add-on Settings
+              </a></li>
               <li><a class="dropdown-item" href="#" onclick="openAdaptersModal(); return false;">
                 <i class="fas fa-microchip me-2"></i>Bluetooth Adapters
               </a></li>
             </ul>
           </div>
-
-          <!-- Add Device button -->
-          <button type="button" class="btn btn-light" id="btn-scan" onclick="scanDevices()">
-            <i class="fas fa-plus me-2"></i>Add Device
-          </button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Reconnect Banner (hidden by default, shown when WS disconnects) -->
-  <div id="reconnect-banner" class="reconnect-banner">
-    <div class="spinner-border text-warning" role="status"></div>
-    <span id="reconnect-banner-text">Server unavailable &mdash; reconnecting...</span>
-    <span class="reconnect-time" id="reconnect-elapsed"></span>
-  </div>
-
-  <!-- Operation Banner (for scan, pair, connect, etc.) -->
-  <div id="operation-banner" class="operation-banner d-none">
-    <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-    <span id="operation-banner-text">Working...</span>
-  </div>
-
   <!-- ========== DEVICES VIEW (default) ========== -->
   <div id="view-devices" class="view-panel">
     <div class="container py-3">
+      <!-- Alert container for status messages (reconnect, operations) -->
+      <div id="alert-container"></div>
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h2 class="mb-0">Devices</h2>
         <div class="d-flex align-items-center gap-2">
@@ -93,9 +77,12 @@
           </button>
         </div>
       </div>
-      <div id="devices-grid" class="row g-3">
-        <div class="col-12 text-center py-5">
-          <p class="text-muted">Click "Scan" to discover nearby Bluetooth audio devices, or "Refresh" to see paired devices.</p>
+      <div class="devices-layout">
+        <div id="add-device-wrapper"></div>
+        <div id="devices-grid" class="row g-3">
+          <div class="col-12 text-center py-5">
+            <p class="text-muted">Click "Add Device" to discover nearby Bluetooth audio devices, or "Refresh" to see paired devices.</p>
+          </div>
         </div>
       </div>
     </div>
@@ -103,16 +90,25 @@
 
   <!-- ========== EVENTS VIEW ========== -->
   <div id="view-events" class="view-panel d-none">
-    <div class="container py-3">
-      <div class="d-flex justify-content-between align-items-center mb-3">
-        <h2 class="mb-0">
-          <i class="fas fa-list me-2"></i>Events
-          <span id="events-count" class="badge bg-secondary ms-2">0</span>
-        </h2>
-        <button type="button" class="btn btn-outline-danger btn-sm" onclick="clearEvents()">
-          <i class="fas fa-trash me-1"></i>Clear
-        </button>
+    <div class="subview-header bg-body-tertiary border-bottom sticky-top">
+      <div class="container py-2">
+        <div class="d-flex align-items-center justify-content-between">
+          <div class="d-flex align-items-center">
+            <button type="button" class="btn btn-outline-secondary btn-sm me-3" onclick="switchView('devices')">
+              <i class="fas fa-arrow-left me-1"></i>Back
+            </button>
+            <h5 class="mb-0">
+              <i class="fas fa-list me-2"></i>Events
+              <span id="events-count" class="badge bg-secondary ms-2">0</span>
+            </h5>
+          </div>
+          <button type="button" class="btn btn-outline-danger btn-sm" onclick="clearEvents()">
+            <i class="fas fa-trash me-1"></i>Clear
+          </button>
+        </div>
       </div>
+    </div>
+    <div class="container py-3">
       <div id="events-log" class="events-log-container font-monospace">
         <div class="text-center py-4 text-muted">
           <i class="fas fa-satellite-dish fa-2x mb-2 d-block opacity-50"></i>
@@ -125,9 +121,17 @@
   <!-- ========== LOGS VIEW ========== -->
   <div id="view-logs" class="view-panel d-none">
     <!-- Logs Toolbar -->
-    <div class="logs-toolbar bg-body border-bottom sticky-top">
+    <div class="logs-toolbar bg-body-tertiary border-bottom sticky-top">
       <div class="container py-2">
         <div class="row g-2 align-items-center">
+          <div class="col-auto">
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="switchView('devices')">
+              <i class="fas fa-arrow-left me-1"></i>Back
+            </button>
+          </div>
+          <div class="col-auto">
+            <h5 class="mb-0"><i class="fas fa-scroll me-2"></i>Logs</h5>
+          </div>
           <div class="col-auto">
             <select class="form-select form-select-sm" id="log-level-filter" aria-label="Filter by log level" onchange="filterLogs()">
               <option value="">All Levels</option>
@@ -181,8 +185,14 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
+          <div class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            <strong>Recommendation:</strong> Use a dedicated Bluetooth adapter that is
+            <strong>not configured in Home Assistant</strong> and is not used for BLE scanning.
+            Leave the adapter unconfigured in HA &mdash; this add-on will manage it directly.
+          </div>
           <p class="text-muted">
-            Select which Bluetooth adapter to use. Changing the adapter requires an add-on restart.
+            Only one adapter can be active at a time. Select which Bluetooth adapter to use. Changing the adapter requires an add-on restart.
           </p>
           <div id="adapters-container">
             <div class="text-center py-4">
@@ -195,6 +205,65 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== ADD-ON SETTINGS MODAL ========== -->
+  <div class="modal fade" id="settingsModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="fas fa-sliders me-2"></i>Add-on Settings</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <!-- Auto Reconnect -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-auto-reconnect">
+              <label class="form-check-label" for="setting-auto-reconnect">
+                <strong>Auto Reconnect</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              Automatically reconnect to paired devices when they become available.
+            </div>
+          </div>
+
+          <!-- Reconnect Interval -->
+          <div class="mb-3">
+            <label for="setting-reconnect-interval" class="form-label">Reconnect Interval (seconds)</label>
+            <input type="number" class="form-control" id="setting-reconnect-interval" min="5" max="600" step="1">
+            <div class="form-text">
+              Initial delay between reconnection attempts (5&ndash;600).
+            </div>
+          </div>
+
+          <!-- Max Reconnect Backoff -->
+          <div class="mb-3">
+            <label for="setting-reconnect-max-backoff" class="form-label">Max Reconnect Backoff (seconds)</label>
+            <input type="number" class="form-control" id="setting-reconnect-max-backoff" min="60" max="3600" step="1">
+            <div class="form-text">
+              Maximum delay between reconnection attempts with exponential backoff (60&ndash;3600).
+            </div>
+          </div>
+
+          <!-- Scan Duration -->
+          <div class="mb-3">
+            <label for="setting-scan-duration" class="form-label">Scan Duration (seconds)</label>
+            <input type="number" class="form-control" id="setting-scan-duration" min="5" max="60" step="1">
+            <div class="form-text">
+              How long to scan for discoverable Bluetooth audio devices (5&ndash;60).
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="saveSettings()">
+            <i class="fas fa-save me-1"></i>Save
+          </button>
         </div>
       </div>
     </div>

@@ -1,9 +1,9 @@
-name: "Bluetooth Audio Manager"
-version: "0.2.5"
-slug: bluetooth_audio_manager
-description: "Manage Bluetooth audio device connections (A2DP) with persistent pairing, auto-reconnect, and AppArmor security."
+name: "Bluetooth Audio Manager (Dev)"
+version: "sha-4f99686"
+slug: bluetooth_audio_manager_dev
+description: "Development build - may be unstable. Bluetooth A2DP audio device management with persistent pairing and auto-reconnect."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
-image: "ghcr.io/scyto/ha-bluetooth-audio-manager/{arch}"
+image: "ghcr.io/scyto/ha-bluetooth-audio-manager-dev/{arch}"
 arch:
   - aarch64
   - amd64
@@ -24,7 +24,7 @@ privileged:
 ingress: true
 ingress_port: 8099
 panel_icon: "mdi:bluetooth-audio"
-panel_title: "BT Audio"
+panel_title: "BT Audio Dev"
 
 # Storage
 map:
@@ -41,5 +41,5 @@ schema:
 apparmor: true
 watchdog: "http://[HOST]:[PORT:8099]/api/health"
 
-# Build stage
-stage: stable
+# Build stage - experimental hides unless enabled in settings
+stage: experimental

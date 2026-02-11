@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
     tags:
       - "v*"
   pull_request:
@@ -13,10 +14,15 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/ha-bluetooth-audio-manager
+  IMAGE_NAME_DEV: ${{ github.repository_owner }}/ha-bluetooth-audio-manager-dev
 
 jobs:
+  # ==========================================================================
+  # Stable build — runs on main branch pushes, tags, and PRs (not dev)
+  # ==========================================================================
   build:
     name: Build (${{ matrix.arch }})
+    if: github.ref != 'refs/heads/dev'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -68,8 +74,8 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: bluetooth_audio_manager
-          file: bluetooth_audio_manager/Dockerfile
+          context: .
+          file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
           push: ${{ github.event_name != 'pull_request' }}
           build-args: |
@@ -81,5 +87,115 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.arch }}:${{ steps.version.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.arch }}:latest
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+          cache-from: type=gha,scope=stable-${{ matrix.arch }}
+          cache-to: type=gha,scope=stable-${{ matrix.arch }},mode=max
+
+  # ==========================================================================
+  # Dev build — runs only on dev branch pushes
+  # ==========================================================================
+  build-dev:
+    name: Build Dev (${{ matrix.arch }})
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - aarch64
+          - armv7
+          - armhf
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+          - arch: armv7
+            platform: linux/arm/v7
+          - arch: armhf
+            platform: linux/arm/v6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get short SHA
+        id: short_sha
+        run: echo "sha=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          build-args: |
+            BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-base:3.20
+            BUILD_ARCH=${{ matrix.arch }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_VERSION=sha-${{ steps.short_sha.outputs.sha }}
+            BUILD_SHA=${{ github.sha }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_DEV }}/${{ matrix.arch }}:sha-${{ steps.short_sha.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_DEV }}/${{ matrix.arch }}:latest
+          cache-from: type=gha,scope=dev-${{ matrix.arch }}
+          cache-to: type=gha,scope=dev-${{ matrix.arch }},mode=max
+
+  # ==========================================================================
+  # Update dev add-on version on main (after successful dev build)
+  # ==========================================================================
+  update-addon-version-dev:
+    name: Update dev add-on version
+    needs: build-dev
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync dev config.yaml from dev branch and set version
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          # Fetch the full dev config.yaml from the dev branch so options/schema
+          # changes propagate to main (HAOS reads config.yaml from main)
+          git fetch origin dev --depth=1
+          git show origin/dev:bluetooth_audio_manager_dev/config.yaml > bluetooth_audio_manager_dev/config.yaml
+          # Override version with the build SHA
+          sed -i "s/^version: .*/version: \"sha-${SHORT_SHA}\"/" bluetooth_audio_manager_dev/config.yaml
+          echo "Synced bluetooth_audio_manager_dev/config.yaml from dev:"
+          cat bluetooth_audio_manager_dev/config.yaml
+
+      - name: Commit and push version update to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bluetooth_audio_manager_dev/config.yaml
+          if git diff --staged --quiet; then
+            echo "No version change needed"
+          else
+            git commit -m "chore: update dev add-on version to sha-$(echo "${{ github.sha }}" | cut -c1-7) [skip ci]"
+            git push origin main
+            echo "Dev add-on version bump committed to main"
+          fi
