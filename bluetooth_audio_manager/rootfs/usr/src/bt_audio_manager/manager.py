@@ -276,8 +276,8 @@ class BluetoothAudioManager:
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
 
-        # 11. Start diagnostic volume poller (detects BlueZ AVRCP volume signal loss)
-        self._volume_poll_task = asyncio.create_task(self._volume_poll_loop())
+        # Volume poll loop disabled — it triggers harmful renegotiations.
+        # HFP disconnect is the real fix for AVRCP volume.
 
         logger.info("Bluetooth Audio Manager started successfully")
 
