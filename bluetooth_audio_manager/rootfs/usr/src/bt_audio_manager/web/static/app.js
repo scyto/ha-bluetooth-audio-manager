@@ -162,19 +162,21 @@ function setScanningState(scanning, duration) {
 function updateAddDeviceTile() {
   const tile = $("#add-device-tile");
   if (!tile) return;
+  const body = tile.querySelector(".card-body");
+  if (!body) return;
   if (isScanning) {
     tile.classList.add("scanning");
     const label = scanSecondsRemaining > 0
-      ? `Scanning... ${scanSecondsRemaining}s`
-      : "Finishing...";
-    tile.innerHTML = `
-      <i class="fas fa-spinner fa-spin fa-2x mb-2"></i>
+      ? `Scanning\u2026 ${scanSecondsRemaining}s`
+      : "Finishing\u2026";
+    body.innerHTML = `
+      <i class="fas fa-spinner fa-spin"></i>
       <span>${label}</span>
     `;
   } else {
     tile.classList.remove("scanning");
-    tile.innerHTML = `
-      <i class="fas fa-plus fa-2x mb-2"></i>
+    body.innerHTML = `
+      <i class="fas fa-plus"></i>
       <span>Add Device</span>
     `;
   }
@@ -257,15 +259,15 @@ let currentSinks = [];
 
 function renderAddDeviceTile() {
   const scanLabel = isScanning
-    ? (scanSecondsRemaining > 0 ? `Scanning... ${scanSecondsRemaining}s` : "Finishing...")
+    ? (scanSecondsRemaining > 0 ? `Scanning\u2026 ${scanSecondsRemaining}s` : "Finishing\u2026")
     : "Add Device";
   const scanIcon = isScanning
-    ? '<i class="fas fa-spinner fa-spin fa-2x mb-2"></i>'
-    : '<i class="fas fa-plus fa-2x mb-2"></i>';
+    ? '<i class="fas fa-spinner fa-spin"></i>'
+    : '<i class="fas fa-plus"></i>';
   const scanClass = isScanning ? " scanning" : "";
   return `
-    <div class="col-md-6 col-lg-4">
-      <div class="card add-device-tile h-100${scanClass}" id="add-device-tile"
+    <div class="col-12 col-md-auto add-device-col">
+      <div class="card add-device-tile${scanClass}" id="add-device-tile"
            onclick="scanDevices()" role="button" tabindex="0"
            title="Scan for nearby Bluetooth audio devices">
         <div class="card-body">
