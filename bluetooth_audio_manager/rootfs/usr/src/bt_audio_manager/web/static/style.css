@@ -163,12 +163,6 @@ h1, h2, h3, h4, h5, h6 {
   transition: background var(--transition-fast);
 }
 
-.header-logo {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-md);
-}
-
 /* Build info pill */
 .build-info {
   display: inline-flex;
@@ -256,7 +250,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ============================================
-   Operation Banner
+   Operation Banner (translucent alert style)
    ============================================ */
 
 .operation-banner {
@@ -264,9 +258,9 @@ h1, h2, h3, h4, h5, h6 {
   justify-content: center;
   gap: 0.5rem;
   padding: 0.75rem 1rem;
-  background: var(--bs-info-bg-subtle);
-  border-bottom: 2px solid var(--accent-primary);
-  color: var(--bs-info-text-emphasis);
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--bs-body-color);
+  font-size: 0.9375rem;
 }
 
 .operation-banner:not(.d-none) {
@@ -277,6 +271,36 @@ h1, h2, h3, h4, h5, h6 {
   width: 1rem;
   height: 1rem;
   border-width: 0.15em;
+}
+
+/* ============================================
+   Alert overrides (borderless, translucent)
+   ============================================ */
+
+.alert {
+  border-radius: var(--radius-md);
+  border: none;
+  font-size: 0.9375rem;
+}
+
+.alert-info {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-success {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-warning {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--bs-body-color);
 }
 
 /* ============================================
@@ -747,11 +771,6 @@ h1, h2, h3, h4, h5, h6 {
   .app-header .btn {
     padding: 0.5rem 0.75rem;
     font-size: 0.8125rem;
-  }
-
-  .header-logo {
-    width: 32px;
-    height: 32px;
   }
 
   .logs-container {

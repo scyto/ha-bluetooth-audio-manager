@@ -20,15 +20,12 @@
   <div class="app-header text-white py-4 mb-4">
     <div class="container">
       <div class="row align-items-center">
-        <div class="col d-flex align-items-center gap-3">
-          <img src="static/logo.png" alt="Logo" class="header-logo">
-          <div>
-            <h1 class="mb-0">Bluetooth Audio Manager</h1>
-            <p class="mb-0 opacity-75">Manage Bluetooth audio device connections</p>
-            <div class="build-info">
-              <span class="build-label">Build</span>
-              <span id="build-version" class="build-version">loading...</span>
-            </div>
+        <div class="col">
+          <h1 class="mb-0"><i class="fab fa-bluetooth-b me-2"></i>Bluetooth Audio Manager</h1>
+          <p class="mb-0 opacity-75">Manage Bluetooth audio device connections</p>
+          <div class="build-info">
+            <span class="build-label">Build</span>
+            <span id="build-version" class="build-version">loading...</span>
           </div>
         </div>
         <div class="col-auto">
@@ -182,6 +179,12 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
+          <div class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            <strong>Recommendation:</strong> Use a dedicated Bluetooth adapter that is
+            <strong>not configured in Home Assistant</strong> and is not used for BLE scanning.
+            Leave the adapter unconfigured in HA &mdash; this add-on will manage it directly.
+          </div>
           <p class="text-muted">
             Select which Bluetooth adapter to use. Changing the adapter requires an add-on restart.
           </p>
