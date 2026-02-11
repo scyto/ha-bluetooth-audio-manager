@@ -22,8 +22,6 @@ class AppConfig:
     auto_reconnect: bool = True
     reconnect_interval_seconds: int = 30
     reconnect_max_backoff_seconds: int = 300
-    keep_alive_enabled: bool = False
-    keep_alive_method: str = "infrasound"
     scan_duration_seconds: int = 15
     bt_adapter: str = "auto"
 
@@ -56,8 +54,6 @@ class AppConfig:
                 auto_reconnect=data.get("auto_reconnect", True),
                 reconnect_interval_seconds=data.get("reconnect_interval_seconds", 30),
                 reconnect_max_backoff_seconds=data.get("reconnect_max_backoff_seconds", 300),
-                keep_alive_enabled=data.get("keep_alive_enabled", False),
-                keep_alive_method=data.get("keep_alive_method", "infrasound"),
                 scan_duration_seconds=data.get("scan_duration_seconds", 15),
                 bt_adapter=data.get("bt_adapter", "auto"),
             )

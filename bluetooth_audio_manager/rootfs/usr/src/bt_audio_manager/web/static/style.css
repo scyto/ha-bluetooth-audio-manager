@@ -299,7 +299,49 @@ h1, h2, h3, h4, h5, h6 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: calc(100% - 90px);
+  max-width: calc(100% - 130px);
+}
+
+/* Kebab dropdown on device cards */
+.device-card .dropdown .btn-link {
+  opacity: 0.4;
+  transition: opacity var(--transition-fast);
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.device-card:hover .dropdown .btn-link {
+  opacity: 0.7;
+}
+
+.device-card .dropdown .btn-link:hover {
+  opacity: 1;
+}
+
+.device-card .dropdown-menu {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.5rem;
+  min-width: 160px;
+}
+
+.device-card .dropdown-item {
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  transition: background var(--transition-fast);
+}
+
+/* Keep-alive heartbeat indicator */
+.keep-alive-indicator {
+  font-size: 0.75rem;
+  animation: heartbeat 1.5s ease-in-out infinite;
+}
+
+@keyframes heartbeat {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 
 .device-card .card-body {

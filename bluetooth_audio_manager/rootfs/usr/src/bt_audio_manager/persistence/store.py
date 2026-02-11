@@ -13,6 +13,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STORE_PATH = "/data/paired_devices.json"
 
+# Per-device settings with their default values.
+# Existing device records without these keys get defaults automatically.
+DEFAULT_DEVICE_SETTINGS = {
+    "keep_alive_enabled": False,
+    "keep_alive_method": "infrasound",
+}
+
 
 class PersistenceStore:
     """Manages persistent storage of paired Bluetooth audio devices."""
@@ -77,6 +84,26 @@ class PersistenceStore:
             if d["address"] == address:
                 return d
         return None
+
+    async def update_device_settings(self, address: str, settings: dict) -> dict | None:
+        """Update settings fields on a device record. Returns updated device or None."""
+        device = self._find_device(address)
+        if device is None:
+            return None
+        for key in DEFAULT_DEVICE_SETTINGS:
+            if key in settings:
+                device[key] = settings[key]
+        await self.save()
+        logger.info("Updated settings for %s: %s", address,
+                     {k: device.get(k) for k in DEFAULT_DEVICE_SETTINGS})
+        return device
+
+    def get_device_settings(self, address: str) -> dict:
+        """Get settings for a device, filling in defaults for missing keys."""
+        device = self._find_device(address)
+        if device is None:
+            return dict(DEFAULT_DEVICE_SETTINGS)
+        return {k: device.get(k, v) for k, v in DEFAULT_DEVICE_SETTINGS.items()}
 
     @property
     def devices(self) -> list[dict]:

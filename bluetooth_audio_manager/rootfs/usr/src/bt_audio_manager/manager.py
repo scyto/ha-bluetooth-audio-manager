@@ -44,7 +44,7 @@ class BluetoothAudioManager:
         self.pulse: PulseAudioManager | None = None
         self.store: PersistenceStore | None = None
         self.reconnect_service: ReconnectService | None = None
-        self.keepalive: KeepAliveService | None = None
+        self._keepalives: dict[str, KeepAliveService] = {}  # per-device keep-alive
         self.media_player: AVRCPMediaPlayer | None = None
         self.managed_devices: dict[str, BluezDevice] = {}
         self._web_server = None
@@ -261,10 +261,14 @@ class BluetoothAudioManager:
         # 8. Reconnect stored devices that aren't already connected
         await self.reconnect_service.reconnect_all()
 
-        # 9. Start keep-alive if enabled
-        if self.config.keep_alive_enabled:
-            self.keepalive = KeepAliveService(method=self.config.keep_alive_method)
-            await self.keepalive.start()
+        # 9. Migrate global keep-alive → per-device (one-time for upgrading users)
+        await self._migrate_global_keepalive()
+
+        # 9b. Start keep-alive for any connected devices that have it enabled
+        for device_info in self.store.devices:
+            addr = device_info["address"]
+            if addr in self._device_connect_time:
+                await self._start_keepalive_if_enabled(addr)
 
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
@@ -283,9 +287,9 @@ class BluetoothAudioManager:
             except asyncio.CancelledError:
                 pass
 
-        # Stop keep-alive
-        if self.keepalive:
-            await self.keepalive.stop()
+        # Stop all per-device keep-alive instances
+        for addr in list(self._keepalives):
+            await self._stop_keepalive(addr)
 
         # Stop reconnection service
         if self.reconnect_service:
@@ -484,8 +488,7 @@ class BluetoothAudioManager:
                 self._broadcast_status(f"Waiting for A2DP sink for {address}...")
                 sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
                 if sink_name:
-                    if self.keepalive:
-                        self.keepalive.set_target_sink(sink_name)
+                    await self._start_keepalive_if_enabled(address)
                     await self._broadcast_all()
                     return True
                 logger.warning("A2DP sink for %s did not appear in PulseAudio", address)
@@ -561,15 +564,23 @@ class BluetoothAudioManager:
         # Merge with persistent store info
         stored_addresses = {d["address"] for d in self.store.devices}
         for device in discovered:
-            device["stored"] = device["address"] in stored_addresses
+            addr = device["address"]
+            device["stored"] = addr in stored_addresses
+            if device["stored"]:
+                s = self.store.get_device_settings(addr)
+                device["keep_alive_enabled"] = s["keep_alive_enabled"]
+                device["keep_alive_method"] = s["keep_alive_method"]
+                device["keep_alive_active"] = addr in self._keepalives
 
         # Add stored devices not currently visible
         discovered_addresses = {d["address"] for d in discovered}
         for stored in self.store.devices:
-            if stored["address"] not in discovered_addresses:
+            addr = stored["address"]
+            if addr not in discovered_addresses:
+                s = self.store.get_device_settings(addr)
                 discovered.append(
                     {
-                        "address": stored["address"],
+                        "address": addr,
                         "name": stored["name"],
                         "paired": True,
                         "connected": False,
@@ -579,6 +590,9 @@ class BluetoothAudioManager:
                         "bearers": [],
                         "has_transport": False,
                         "adapter": "",
+                        "keep_alive_enabled": s["keep_alive_enabled"],
+                        "keep_alive_method": s["keep_alive_method"],
+                        "keep_alive_active": addr in self._keepalives,
                     }
                 )
 
@@ -786,6 +800,7 @@ class BluetoothAudioManager:
         """Handle device disconnection event."""
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
+        asyncio.ensure_future(self._stop_keepalive(address))
 
         if address in self._suppress_reconnect:
             # User-initiated disconnect — don't auto-reconnect
@@ -1088,8 +1103,7 @@ class BluetoothAudioManager:
                 sink_name = await self.pulse.get_sink_for_address(address)
                 if sink_name:
                     logger.info("HFP cycle: PA sink for %s: %s", address, sink_name)
-                    if self.keepalive:
-                        self.keepalive.set_target_sink(sink_name)
+                    await self._start_keepalive_if_enabled(address)
 
         except DBusError as e:
             logger.warning("HFP cycle: failed for %s: %s", address, e)
@@ -1334,3 +1348,83 @@ class BluetoothAudioManager:
         entry = {"address": address, "property": prop_name, "value": safe_val, "ts": time.time()}
         self.recent_avrcp.append(entry)
         self.event_bus.emit("avrcp_event", entry)
+
+    # -- Per-device keep-alive management --
+
+    async def _migrate_global_keepalive(self) -> None:
+        """One-time migration: if old global keep_alive_enabled was true,
+        enable keep-alive on all stored devices."""
+        from pathlib import Path
+
+        marker = Path("/data/.keepalive_migrated")
+        if marker.exists():
+            return
+        try:
+            opts_path = Path("/data/options.json")
+            if opts_path.exists():
+                data = json.loads(opts_path.read_text())
+                if data.get("keep_alive_enabled", False):
+                    method = data.get("keep_alive_method", "infrasound")
+                    logger.info(
+                        "Migrating global keep-alive (method=%s) to per-device settings",
+                        method,
+                    )
+                    for device_info in self.store.devices:
+                        await self.store.update_device_settings(
+                            device_info["address"],
+                            {"keep_alive_enabled": True, "keep_alive_method": method},
+                        )
+            marker.write_text("migrated")
+        except Exception as e:
+            logger.warning("Keep-alive migration failed (non-fatal): %s", e)
+
+    async def _start_keepalive_if_enabled(self, address: str) -> None:
+        """Start keep-alive for a device if enabled in its settings and connected."""
+        settings = self.store.get_device_settings(address)
+        if not settings["keep_alive_enabled"]:
+            return
+        if address in self._keepalives:
+            return  # already running
+
+        if not self.pulse:
+            return
+        sink_name = await self.pulse.get_sink_for_address(address)
+        if not sink_name:
+            logger.debug("Cannot start keep-alive for %s: no PA sink yet", address)
+            return
+
+        ka = KeepAliveService(method=settings["keep_alive_method"])
+        ka.set_target_sink(sink_name)
+        await ka.start()
+        self._keepalives[address] = ka
+        logger.info("Keep-alive started for %s (method=%s)", address, settings["keep_alive_method"])
+        self.event_bus.emit("keepalive_changed", {
+            "address": address, "enabled": True, "method": settings["keep_alive_method"],
+        })
+
+    async def _stop_keepalive(self, address: str) -> None:
+        """Stop keep-alive for a device if running."""
+        ka = self._keepalives.pop(address, None)
+        if ka:
+            await ka.stop()
+            logger.info("Keep-alive stopped for %s", address)
+            self.event_bus.emit("keepalive_changed", {"address": address, "enabled": False})
+
+    async def update_device_settings(self, address: str, settings: dict) -> dict | None:
+        """Update per-device settings and react to changes immediately."""
+        device_info = await self.store.update_device_settings(address, settings)
+        if device_info is None:
+            return None
+
+        # React to keep-alive changes if device is connected
+        if address in self._device_connect_time:
+            if "keep_alive_enabled" in settings:
+                if device_info.get("keep_alive_enabled", False):
+                    # Method may have changed — stop old instance and restart
+                    await self._stop_keepalive(address)
+                    await self._start_keepalive_if_enabled(address)
+                else:
+                    await self._stop_keepalive(address)
+
+        await self._broadcast_devices()
+        return device_info

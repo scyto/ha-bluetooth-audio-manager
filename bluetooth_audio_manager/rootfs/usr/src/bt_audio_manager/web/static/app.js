@@ -32,6 +32,19 @@ async function apiPost(path, body = {}) {
   return resp.json();
 }
 
+async function apiPut(path, body = {}) {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => null);
+    throw new Error(data?.error || `API error: ${resp.status}`);
+  }
+  return resp.json();
+}
+
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text || "";
@@ -221,15 +234,12 @@ function renderDevices(devices) {
           ? "Paired"
           : "Discovered";
 
-      // Action buttons
+      // Action buttons (primary actions only — Forget is in kebab menu)
       let actions = "";
       if (d.connected) {
         actions = `
           <button type="button" class="btn btn-sm btn-outline-danger" onclick="disconnectDevice('${d.address}')">
             <i class="fas fa-unlink me-1"></i>Disconnect
-          </button>
-          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="forgetDevice('${d.address}')">
-            <i class="fas fa-trash me-1"></i>Forget
           </button>
         `;
       } else if (d.paired || d.stored) {
@@ -237,15 +247,38 @@ function renderDevices(devices) {
           <button type="button" class="btn btn-sm btn-success" onclick="connectDevice('${d.address}')">
             <i class="fas fa-link me-1"></i>Connect
           </button>
-          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="forgetDevice('${d.address}')">
-            <i class="fas fa-trash me-1"></i>Forget
-          </button>
         `;
       } else {
         actions = `
           <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${d.address}')">
             <i class="fas fa-handshake me-1"></i>Pair
           </button>
+        `;
+      }
+
+      // Kebab dropdown for paired/stored devices (Settings + Forget)
+      const keepAliveActive = (d.stored || d.paired) && d.keep_alive_active;
+      let kebab = "";
+      if (d.stored || d.paired) {
+        const kaEnabled = d.keep_alive_enabled || false;
+        const kaMethod = d.keep_alive_method || "infrasound";
+        const safeName = escapeHtml(d.name).replace(/'/g, "\\'");
+        kebab = `
+          <div class="dropdown">
+            <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
+                    data-bs-toggle="dropdown" title="Device options">
+              <i class="fas fa-ellipsis-v"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}'); return false;">
+                <i class="fas fa-cog me-2"></i>Settings
+              </a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item text-danger" href="#" onclick="forgetDevice('${d.address}'); return false;">
+                <i class="fas fa-trash me-2"></i>Forget Device
+              </a></li>
+            </ul>
+          </div>
         `;
       }
 
@@ -291,7 +324,11 @@ function renderDevices(devices) {
             <div class="card-body">
               <div class="d-flex justify-content-between align-items-start mb-2">
                 <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
-                <span class="badge ${badgeClass}">${statusText}</span>
+                <div class="d-flex align-items-center gap-1">
+                  ${keepAliveActive ? '<i class="fas fa-heartbeat text-danger keep-alive-indicator" title="Keep-alive active"></i>' : ""}
+                  <span class="badge ${badgeClass}">${statusText}</span>
+                  ${kebab}
+                </div>
               </div>
               ${connDetail ? `<div class="small text-muted mb-1">${escapeHtml(connDetail)}</div>` : ""}
               <div class="font-monospace small text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
@@ -640,6 +677,42 @@ async function selectAdapter(adapterName) {
 }
 
 // ============================================
+// Section 11b: Device Settings Modal
+// ============================================
+
+let _settingsAddress = null;
+
+function openDeviceSettings(address, name, kaEnabled, kaMethod) {
+  _settingsAddress = address;
+  $("#device-settings-name").textContent = name;
+  $("#device-settings-address").textContent = address;
+  $("#setting-keep-alive-enabled").checked = kaEnabled;
+  $("#setting-keep-alive-method").value = kaMethod || "infrasound";
+  toggleKeepAliveMethodVisibility();
+  new bootstrap.Modal("#deviceSettingsModal").show();
+}
+
+function toggleKeepAliveMethodVisibility() {
+  const enabled = $("#setting-keep-alive-enabled").checked;
+  $("#keep-alive-method-group").style.display = enabled ? "" : "none";
+}
+
+async function saveDeviceSettings() {
+  if (!_settingsAddress) return;
+  const settings = {
+    keep_alive_enabled: $("#setting-keep-alive-enabled").checked,
+    keep_alive_method: $("#setting-keep-alive-method").value,
+  };
+  try {
+    await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
+    showToast("Device settings saved", "success");
+    bootstrap.Modal.getInstance($("#deviceSettingsModal"))?.hide();
+  } catch (e) {
+    showToast(`Failed to save settings: ${e.message}`, "error");
+  }
+}
+
+// ============================================
 // Section 12: WebSocket (Real-time Updates)
 // ============================================
 
@@ -681,6 +754,14 @@ function connectWebSocket() {
         break;
       case "log_entry":
         appendLogEntry(msg);
+        break;
+      case "keepalive_changed":
+        // Devices list will be re-sent via devices_changed; toast for feedback
+        if (msg.enabled) {
+          showToast(`Keep-alive started for ${msg.address}`, "info");
+        } else {
+          showToast(`Keep-alive stopped for ${msg.address}`, "info");
+        }
         break;
       case "status":
         if (msg.message) {
@@ -738,6 +819,10 @@ const _origRenderDevices = renderDevices;
 document.addEventListener("DOMContentLoaded", () => {
   // Set initial connection state
   setConnectionStatus("connecting");
+
+  // Wire up keep-alive toggle in device settings modal
+  const kaToggle = $("#setting-keep-alive-enabled");
+  if (kaToggle) kaToggle.addEventListener("change", toggleKeepAliveMethodVisibility);
 
   // WebSocket provides real-time updates (initial state sent on connect)
   connectWebSocket();
