@@ -176,6 +176,18 @@ class MPRISPlayerInterface(ServiceInterface):
     def CanControl(self) -> "b":
         return True
 
+    def set_status(self, status: str) -> None:
+        """Programmatically set PlaybackStatus and notify the speaker.
+
+        Called by the manager when the A2DP transport becomes active so the
+        speaker knows playback is in progress and enables AVRCP volume buttons.
+        """
+        if status == self._playback_status:
+            return
+        self._playback_status = status
+        self.emit_properties_changed({"PlaybackStatus": status})
+        logger.info("MPRIS PlaybackStatus set to %s (programmatic)", status)
+
     @signal()
     def Seeked(self) -> "x":
         return 0
@@ -253,6 +265,14 @@ class AVRCPMediaPlayer:
             )
         except Exception as e:
             logger.debug("MPRIS player export check failed: %s", e)
+
+    def set_playback_status(self, status: str) -> None:
+        """Update the MPRIS PlaybackStatus and notify the speaker via AVRCP.
+
+        Call with 'Playing' when A2DP transport becomes active so the speaker
+        enables AVRCP volume buttons.  Call with 'Stopped' on disconnect.
+        """
+        self._player.set_status(status)
 
     async def unregister(self) -> None:
         """Unregister the player from BlueZ."""
