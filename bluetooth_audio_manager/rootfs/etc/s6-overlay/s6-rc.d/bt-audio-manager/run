@@ -7,16 +7,4 @@
 bashio::log.info "Starting Bluetooth Audio Manager v${BUILD_VERSION:-unknown} (${BUILD_SHA:-no-sha})..."
 bashio::log.info "PYTHONPATH=${PYTHONPATH} | PULSE_SERVER=${PULSE_SERVER:-<unset>}"
 
-# Start btmon capture for AVRCP diagnostics (90s).
-# Must run here (not cont-init.d) because s6-overlay v3 kills
-# backgrounded processes when the oneshot init phase completes.
-BTMON_LOG="/data/btmon_startup.log"
-if command -v btmon >/dev/null 2>&1; then
-    [ -f "${BTMON_LOG}" ] && mv "${BTMON_LOG}" "${BTMON_LOG}.prev"
-    bashio::log.info "btmon: starting 90s capture to ${BTMON_LOG}"
-    ( timeout 90 btmon > "${BTMON_LOG}" 2>&1; bashio::log.info "btmon: capture finished" ) &
-else
-    bashio::log.warning "btmon: not found — install bluez-btmon for AVRCP diagnostics"
-fi
-
 exec python3 -m bt_audio_manager

@@ -355,21 +355,6 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
             logger.error("debug_mpris_avrcp_cycle failed for %s: %s", address, e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
 
-    @routes.post("/api/debug/full-renegotiate")
-    async def debug_full_renegotiate(request: web.Request) -> web.Response:
-        """Debug: full disconnect + ConnectProfile(A2DP) renegotiation."""
-        address = None
-        try:
-            body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response({"error": "address is required"}, status=400)
-            result = await manager.debug_full_renegotiate(address)
-            return web.json_response(result)
-        except Exception as e:
-            logger.error("debug_full_renegotiate failed for %s: %s", address, e)
-            return web.json_response({"error": _friendly_error(e)}, status=500)
-
     @routes.post("/api/debug/disconnect-hfp")
     async def debug_disconnect_hfp(request: web.Request) -> web.Response:
         """Debug: disconnect HFP profile to force AVRCP volume."""

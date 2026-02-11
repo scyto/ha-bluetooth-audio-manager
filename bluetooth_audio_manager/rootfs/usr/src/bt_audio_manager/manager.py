@@ -50,13 +50,9 @@ class BluetoothAudioManager:
         self._web_server = None
         self.event_bus = EventBus()
         self._sink_poll_task: asyncio.Task | None = None
-        self._volume_poll_task: asyncio.Task | None = None
         self._last_sink_snapshot: str = ""
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
-        self._last_polled_volume: dict[str, int] = {}    # addr → raw 0-127
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
-        self._renegotiation_count: dict[str, int] = {}  # addr → number of attempts
-        self.MAX_RENEGOTIATION_ATTEMPTS = 1  # stop after this many tries per session
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
         # Ring buffers so SSE clients get recent events on reconnect
@@ -188,9 +184,7 @@ class BluetoothAudioManager:
                 device = await self._get_or_create_device(addr)
                 if await device.is_connected():
                     logger.info("Device %s already connected at startup", addr)
-                    self._renegotiation_count.pop(addr, None)
                     self._last_signaled_volume.pop(addr, None)
-                    self._last_polled_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
                     # Disconnect any pre-existing HFP (null handler blocks new ones)
                     await self._disconnect_hfp(addr)
@@ -274,9 +268,6 @@ class BluetoothAudioManager:
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
 
-        # Volume poll loop disabled — it triggers harmful renegotiations.
-        # HFP disconnect is the real fix for AVRCP volume.
-
         logger.info("Bluetooth Audio Manager started successfully")
 
     async def shutdown(self) -> None:
@@ -288,14 +279,6 @@ class BluetoothAudioManager:
             self._sink_poll_task.cancel()
             try:
                 await self._sink_poll_task
-            except asyncio.CancelledError:
-                pass
-
-        # Stop volume diagnostic polling
-        if self._volume_poll_task and not self._volume_poll_task.done():
-            self._volume_poll_task.cancel()
-            try:
-                await self._volume_poll_task
             except asyncio.CancelledError:
                 pass
 
@@ -426,12 +409,6 @@ class BluetoothAudioManager:
 
     async def connect_device(self, address: str) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
-        # Do NOT reset _renegotiation_count here.  If renegotiation already
-        # ran (or timed out) and the user manually reconnects, resetting the
-        # counter would let Check B fire again after 15 s and disconnect the
-        # device the user just connected.  The counter is only cleared at
-        # add-on startup for devices that are already connected.
-
         # If another connection attempt is already in progress, wait for it
         if address in self._connecting:
             logger.info("Connection already in progress for %s, waiting...", address)
@@ -757,250 +734,6 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("Sink poll error: %s", e)
 
-    VOLUME_POLL_INTERVAL = 5  # seconds between MediaTransport1 volume polls
-
-    async def _volume_poll_loop(self) -> None:
-        """Diagnostic: periodically read MediaTransport1 Volume via GetManagedObjects.
-
-        Compares polled value with last PropertiesChanged signal to detect
-        whether BlueZ has the volume but isn't signaling changes.
-        """
-        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
-
-        while True:
-            try:
-                await asyncio.sleep(self.VOLUME_POLL_INTERVAL)
-                if not self.bus or not self.managed_devices:
-                    continue
-
-                intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
-                proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
-                obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
-                objects = await obj_mgr.call_get_managed_objects()
-
-                # Check each managed device for a MediaTransport1
-                for addr in list(self.managed_devices):
-                    dev_fragment = addr.replace(":", "_").upper()
-                    found_transport = False
-
-                    for path, ifaces in objects.items():
-                        if dev_fragment not in path:
-                            continue
-                        if "org.bluez.MediaTransport1" not in ifaces:
-                            continue
-                        found_transport = True
-                        tp = ifaces["org.bluez.MediaTransport1"]
-                        if "Volume" not in tp:
-                            logger.debug("DIAG: MediaTransport1 for %s has no Volume property", addr)
-                            break
-
-                        vol_raw = tp["Volume"].value if hasattr(tp["Volume"], "value") else tp["Volume"]
-                        vol_pct = round(vol_raw / 127 * 100)
-                        prev_polled = self._last_polled_volume.get(addr)
-                        last_sig = self._last_signaled_volume.get(addr)
-
-                        if prev_polled is not None and vol_raw != prev_polled:
-                            # Volume changed since last poll
-                            if last_sig is None or last_sig != vol_raw:
-                                logger.info(
-                                    "DIAG: Volume changed to %d%% (raw %d) for %s via poll "
-                                    "— no PropertiesChanged signal received (last signal raw=%s)",
-                                    vol_pct, vol_raw, addr, last_sig,
-                                )
-                                # Emit as AVRCP event so UI shows it
-                                entry = {"address": addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
-                                self.recent_avrcp.append(entry)
-                                self.event_bus.emit("avrcp_event", entry)
-                            else:
-                                logger.debug(
-                                    "DIAG: Volume poll %d%% for %s matches signal", vol_pct, addr,
-                                )
-                        elif prev_polled is not None:
-                            logger.debug(
-                                "DIAG: Volume poll unchanged %d%% for %s (signal raw=%s)",
-                                vol_pct, addr, last_sig,
-                            )
-
-                        self._last_polled_volume[addr] = vol_raw
-
-                        # -- AVRCP volume renegotiation checks --
-                        attempts = self._renegotiation_count.get(addr, 0)
-                        if attempts < self.MAX_RENEGOTIATION_ATTEMPTS:
-                            needs_renegotiation = False
-                            connect_time = self._device_connect_time.get(addr)
-
-                            # Check A: transport missing Endpoint (stale/degraded)
-                            if "Endpoint" not in tp:
-                                logger.info(
-                                    "DIAG: Transport for %s has no Endpoint — stale transport, "
-                                    "triggering AVRCP renegotiation (attempt %d)",
-                                    addr, attempts + 1,
-                                )
-                                needs_renegotiation = True
-
-                            # Check B: no Volume signal within 15s of connection
-                            elif (connect_time
-                                  and time.time() - connect_time > 15
-                                  and addr not in self._last_signaled_volume):
-                                logger.info(
-                                    "DIAG: No AVRCP volume signal for %s after %.0fs "
-                                    "— triggering renegotiation (attempt %d)",
-                                    addr, time.time() - connect_time, attempts + 1,
-                                )
-                                needs_renegotiation = True
-
-                            if needs_renegotiation:
-                                self._renegotiation_count[addr] = attempts + 1
-                                asyncio.ensure_future(self._renegotiate_a2dp(addr))
-
-                        break
-
-                    if not found_transport:
-                        logger.debug("DIAG: No MediaTransport1 for %s", addr)
-
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.debug("DIAG: Volume poll error: %s", e)
-
-    async def _renegotiate_a2dp(self, address: str) -> None:
-        """Force full AVRCP re-negotiation to restore Absolute Volume.
-
-        Temporarily untrusts the device so BlueZ won't auto-accept a BLE
-        reconnection during the disconnect gap (dual-mode speakers like
-        Bose reconnect via LE before we can issue ConnectProfile for BREDR).
-
-        If ConnectProfile lands on LE anyway (no transport), escalates
-        through retry ConnectProfile → full disconnect/reconnect, mirroring
-        the fallback logic in _ensure_a2dp_transport.
-
-        Guards with _connecting + _suppress_reconnect to prevent
-        _on_device_connected_async and the reconnect service from racing.
-        """
-        from .bluez.constants import A2DP_SINK_UUID
-
-        try:
-            device = await self._get_or_create_device(address)
-        except Exception as e:
-            logger.warning("AVRCP renegotiation: cannot access device %s: %s", address, e)
-            return
-        self._broadcast_status(f"Fixing volume control for {address}...")
-        self._connecting.add(address)
-        self._suppress_reconnect.add(address)
-        try:
-            # Temporarily untrust so BlueZ won't auto-accept BLE reconnection
-            # during the disconnect gap (dual-mode speakers reconnect via LE
-            # before we can issue ConnectProfile for BREDR)
-            logger.info("AVRCP renegotiation: untrusting %s to prevent BLE auto-reconnect", address)
-            try:
-                await device.set_trusted(False)
-            except Exception as e:
-                logger.debug("Failed to untrust %s: %s", address, e)
-
-            # Full device disconnect — tears down AVRCP + A2DP completely
-            logger.info("AVRCP renegotiation: full disconnect %s...", address)
-            await device.disconnect()
-            await asyncio.sleep(2)
-
-            # Reconnect via A2DP profile (ensures BREDR, full AVRCP negotiation)
-            logger.info("AVRCP renegotiation: ConnectProfile(A2DP) for %s...", address)
-            self._broadcast_status(f"Re-establishing audio for {address}...")
-            await device.connect_profile(A2DP_SINK_UUID)
-
-            # Restore trust immediately so normal operation continues
-            try:
-                await device.set_trusted(True)
-            except Exception as e:
-                logger.debug("Failed to re-trust %s: %s", address, e)
-
-            # Give BlueZ time to set up transport + AVRCP
-            await asyncio.sleep(3)
-
-            has_transport = await self._log_transport_properties(address)
-
-            # If no transport, ConnectProfile may have landed on LE —
-            # try switching to A2DP (mirrors _ensure_a2dp_transport logic)
-            if not has_transport:
-                logger.info(
-                    "AVRCP renegotiation: no transport after ConnectProfile for %s, "
-                    "trying to switch from LE to A2DP...", address,
-                )
-                self._broadcast_status(f"Switching {address} to audio profile...")
-
-                # Retry ConnectProfile (may activate A2DP on top of LE connection)
-                try:
-                    await device.connect_profile(A2DP_SINK_UUID)
-                    await asyncio.sleep(3)
-                    has_transport = await self._log_transport_properties(address)
-                except Exception as e:
-                    logger.debug("Retry ConnectProfile failed for %s: %s", address, e)
-
-            if not has_transport:
-                # Last resort: full disconnect/reconnect cycle to reset bearers
-                logger.info(
-                    "AVRCP renegotiation: A2DP still missing for %s, "
-                    "trying full disconnect/reconnect cycle...", address,
-                )
-                self._broadcast_status(f"Full reconnect for {address}...")
-                try:
-                    await device.disconnect()
-                    await asyncio.sleep(2)
-                    await device.connect()
-                    await device.wait_for_services(timeout=10)
-                    await asyncio.sleep(3)
-                    has_transport = await self._log_transport_properties(address)
-                except Exception as e:
-                    logger.warning("Full reconnect cycle failed for %s: %s", address, e)
-
-            if not has_transport:
-                logger.warning("AVRCP renegotiation: no transport after all attempts for %s", address)
-                self._broadcast_status(f"Volume fix incomplete for {address} — try manual reconnect")
-                await asyncio.sleep(3)
-                return
-
-            logger.info("AVRCP renegotiation transport OK for %s, waiting for PA sink...", address)
-            self._broadcast_status(f"Waiting for audio sink for {address}...")
-
-            sink_name = None
-            if self.pulse:
-                # First try: wait for PA to notice naturally
-                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=10)
-
-                if not sink_name:
-                    # PA missed the transport — activate per-device card profile
-                    logger.info("PA sink not found, activating card profile for %s...", address)
-                    self._broadcast_status(f"Activating audio profile for {address}...")
-                    if await self.pulse.activate_bt_card_profile(address):
-                        sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
-
-            # Verify MediaControl1 player link — confirms BlueZ wired our
-            # MPRIS player into the fresh AVRCP session during ConnectProfile.
-            await self._log_media_control_player(address)
-
-            if sink_name:
-                logger.info("AVRCP renegotiation succeeded for %s — sink %s", address, sink_name)
-                self._broadcast_status(f"Volume control restored for {address}")
-                if self.keepalive:
-                    self.keepalive.set_target_sink(sink_name)
-            else:
-                logger.warning("AVRCP renegotiation: transport OK but no PA sink for %s", address)
-                self._broadcast_status(f"Audio transport restored but no sink — try manual reconnect")
-            await asyncio.sleep(3)
-        except Exception as e:
-            logger.warning("AVRCP renegotiation failed for %s: %s", address, e)
-            self._broadcast_status(f"Volume fix failed for {address} — try manual reconnect")
-            await asyncio.sleep(3)
-        finally:
-            # Always restore trust (safety net in case of early exception)
-            try:
-                await device.set_trusted(True)
-            except Exception:
-                pass
-            self._connecting.discard(address)
-            self._suppress_reconnect.discard(address)
-            self.event_bus.emit("status", {"message": ""})
-            await self._broadcast_all()
-
     # -- SSE broadcast helpers --
 
     async def _broadcast_devices(self) -> None:
@@ -1031,11 +764,7 @@ class BluetoothAudioManager:
 
     def _on_device_disconnected(self, address: str) -> None:
         """Handle device disconnection event."""
-        # Clean up volume tracking state (but NOT _volume_renegotiated —
-        # that is only cleared by explicit user actions or startup init,
-        # to prevent infinite renegotiation loops).
         self._device_connect_time.pop(address, None)
-        self._last_polled_volume.pop(address, None)
         self._last_signaled_volume.pop(address, None)
 
         if address in self._suppress_reconnect:
@@ -1048,13 +777,8 @@ class BluetoothAudioManager:
 
     def _on_device_connected(self, address: str) -> None:
         """Handle device connection event (D-Bus signal)."""
-        # Track connection time for AVRCP volume renegotiation checks
         self._device_connect_time[address] = time.time()
-        # Do NOT clear _volume_renegotiated here — organic reconnects after
-        # a failed renegotiation would reset the flag and trigger another loop.
-        # Only explicit user actions (connect_device) clear it.
         self._last_signaled_volume.pop(address, None)
-        self._last_polled_volume.pop(address, None)
         asyncio.ensure_future(self._on_device_connected_async(address))
 
     async def _on_device_connected_async(self, address: str) -> None:
@@ -1248,17 +972,6 @@ class BluetoothAudioManager:
         await self._log_media_control_player(address)
         logger.info("[DEBUG] MPRIS + AVRCP Cycle for %s — done", address)
         return {"action": "mpris_avrcp_cycle", "address": address}
-
-    async def debug_full_renegotiate(self, address: str) -> dict:
-        """Debug: full disconnect + ConnectProfile(A2DP) renegotiation."""
-        logger.info("[DEBUG] Full Renegotiate for %s — start", address)
-        await self._log_transport_properties(address)
-        await self._log_media_control_player(address)
-        await self._renegotiate_a2dp(address)
-        await self._log_transport_properties(address)
-        await self._log_media_control_player(address)
-        logger.info("[DEBUG] Full Renegotiate for %s — done", address)
-        return {"action": "full_renegotiate", "address": address}
 
     async def debug_disconnect_hfp(self, address: str) -> dict:
         """Debug: disconnect HFP profile to force AVRCP volume."""
