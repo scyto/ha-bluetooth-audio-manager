@@ -633,14 +633,15 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("AVRCP watch failed for %s: %s", address, e)
 
-            # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
-            await self._disconnect_hfp(address)
-
             # Verify PulseAudio sink appeared
             if self.pulse:
                 self._broadcast_status(f"Waiting for A2DP sink for {address}...")
                 sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
                 if sink_name:
+                    # Disconnect HFP only AFTER A2DP is up — doing it earlier
+                    # can cause the speaker to drop the entire connection when
+                    # HFP is the only active profile.
+                    await self._disconnect_hfp(address)
                     await self._start_keepalive_if_enabled(address)
                     await self._broadcast_all()
                     return True
@@ -672,6 +673,23 @@ class BluetoothAudioManager:
             logger.warning("Disconnect failed for %s: %s", address, e)
         self.event_bus.emit("status", {"message": ""})
         await self._broadcast_all()
+
+    async def force_reconnect_device(self, address: str) -> bool:
+        """Force disconnect + reconnect cycle (recovery for zombie connections)."""
+        self._broadcast_status(f"Force reconnecting {address}...")
+        try:
+            await self.disconnect_device(address)
+        except Exception as e:
+            logger.warning(
+                "Force reconnect: disconnect failed for %s: %s (continuing)",
+                address, e,
+            )
+
+        self._broadcast_status(f"Waiting for {address} to reset...")
+        await asyncio.sleep(10)
+
+        self._broadcast_status(f"Reconnecting to {address}...")
+        return await self.connect_device(address)
 
     async def forget_device(self, address: str) -> None:
         """Unpair, remove from BlueZ, and delete from persistent store."""
