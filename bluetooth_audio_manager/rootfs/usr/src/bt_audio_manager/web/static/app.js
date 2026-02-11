@@ -321,6 +321,17 @@ async function debugFullRenegotiate(address) {
   }
 }
 
+async function debugDisconnectHfp(address) {
+  try {
+    showStatus(`Disconnecting HFP on ${address}...`);
+    await apiPost("/api/debug/disconnect-hfp", { address });
+  } catch (e) {
+    showError(`Disconnect HFP failed: ${e.message}`);
+  } finally {
+    hideStatus();
+  }
+}
+
 function renderDebugActions(devices) {
   const container = $("#debug-actions");
   const placeholder = $("#debug-placeholder");
@@ -347,6 +358,7 @@ function renderDebugActions(devices) {
           <button class="btn btn-small btn-warning" onclick="debugMprisReregister('${d.address}')">MPRIS Re-register</button>
           <button class="btn btn-small btn-warning" onclick="debugMprisAvrcpCycle('${d.address}')">MPRIS+AVRCP Cycle</button>
           <button class="btn btn-small btn-danger" onclick="debugFullRenegotiate('${d.address}')">Full Renegotiate</button>
+          <button class="btn btn-small btn-primary" onclick="debugDisconnectHfp('${d.address}')">Disconnect HFP</button>
         </div>
       </div>
     `)
