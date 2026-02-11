@@ -275,108 +275,6 @@ async function forgetDevice(address) {
   }
 }
 
-// -- AVRCP Debug actions --
-
-async function debugAvrcpCycle(address) {
-  try {
-    showStatus(`AVRCP Cycle on ${address}...`);
-    await apiPost("/api/debug/avrcp-cycle", { address });
-  } catch (e) {
-    showError(`AVRCP Cycle failed: ${e.message}`);
-  } finally {
-    hideStatus();
-  }
-}
-
-async function debugMprisReregister(address) {
-  try {
-    showStatus(`MPRIS Re-register on ${address}...`);
-    await apiPost("/api/debug/mpris-reregister", { address });
-  } catch (e) {
-    showError(`MPRIS Re-register failed: ${e.message}`);
-  } finally {
-    hideStatus();
-  }
-}
-
-async function debugMprisAvrcpCycle(address) {
-  try {
-    showStatus(`MPRIS + AVRCP Cycle on ${address}...`);
-    await apiPost("/api/debug/mpris-avrcp-cycle", { address });
-  } catch (e) {
-    showError(`MPRIS + AVRCP Cycle failed: ${e.message}`);
-  } finally {
-    hideStatus();
-  }
-}
-
-async function debugFullRenegotiate(address) {
-  try {
-    showStatus(`Full Renegotiate on ${address} (audio will drop)...`);
-    await apiPost("/api/debug/full-renegotiate", { address });
-  } catch (e) {
-    showError(`Full Renegotiate failed: ${e.message}`);
-  } finally {
-    hideStatus();
-  }
-}
-
-async function debugDisconnectHfp(address) {
-  try {
-    showStatus(`Disconnecting HFP on ${address}...`);
-    await apiPost("/api/debug/disconnect-hfp", { address });
-  } catch (e) {
-    showError(`Disconnect HFP failed: ${e.message}`);
-  } finally {
-    hideStatus();
-  }
-}
-
-async function debugHfpReconnectCycle(address) {
-  try {
-    showStatus(`HFP Reconnect Cycle on ${address} (audio will drop)...`);
-    await apiPost("/api/debug/hfp-reconnect-cycle", { address });
-  } catch (e) {
-    showError(`HFP Reconnect Cycle failed: ${e.message}`);
-  } finally {
-    hideStatus();
-  }
-}
-
-function renderDebugActions(devices) {
-  const container = $("#debug-actions");
-  const placeholder = $("#debug-placeholder");
-  const connected = (devices || []).filter((d) => d.connected);
-
-  if (connected.length === 0) {
-    container.classList.add("hidden");
-    placeholder.classList.remove("hidden");
-    return;
-  }
-
-  placeholder.classList.add("hidden");
-  container.classList.remove("hidden");
-
-  container.innerHTML = connected
-    .map((d) => `
-      <div class="device-card">
-        <div class="device-info">
-          <span class="device-name">${escapeHtml(d.name)}</span>
-          <div class="device-address">${escapeHtml(d.address)}</div>
-        </div>
-        <div class="device-actions" style="flex-wrap: wrap;">
-          <button class="btn btn-small btn-warning" onclick="debugAvrcpCycle('${d.address}')">AVRCP Cycle</button>
-          <button class="btn btn-small btn-warning" onclick="debugMprisReregister('${d.address}')">MPRIS Re-register</button>
-          <button class="btn btn-small btn-warning" onclick="debugMprisAvrcpCycle('${d.address}')">MPRIS+AVRCP Cycle</button>
-          <button class="btn btn-small btn-danger" onclick="debugFullRenegotiate('${d.address}')">Full Renegotiate</button>
-          <button class="btn btn-small btn-primary" onclick="debugDisconnectHfp('${d.address}')">Disconnect HFP</button>
-          <button class="btn btn-small btn-danger" onclick="debugHfpReconnectCycle('${d.address}')">HFP + Reconnect</button>
-        </div>
-      </div>
-    `)
-    .join("");
-}
-
 // -- Event log helpers --
 
 const MAX_LOG_ENTRIES = 50;
@@ -449,7 +347,6 @@ async function pollState() {
 
     renderDevices(data.devices);
     renderSinks(data.sinks);
-    renderDebugActions(data.devices);
 
     // Append only new events
     for (const ev of data.mpris_events) {
