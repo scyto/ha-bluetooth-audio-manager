@@ -479,6 +479,7 @@ h1, h2, h3, h4, h5, h6 {
    Logs Viewer
    ============================================ */
 
+.subview-header,
 .logs-toolbar {
   z-index: 9;
   -webkit-backdrop-filter: blur(8px);

@@ -546,18 +546,53 @@ function eventTime(data) {
   return d.toLocaleTimeString();
 }
 
+function deviceNameByAddress(address) {
+  if (!address || !lastDevices) return "";
+  const dev = lastDevices.find((d) => d.address === address);
+  return dev ? dev.name : "";
+}
+
+function deviceNameTag(address) {
+  const name = deviceNameByAddress(address);
+  if (!name) return "";
+  return ` <span class="text-muted">[${escapeHtml(name)}]</span>`;
+}
+
 function appendMprisCommand(data) {
+  // MPRIS player is global — show connected device name if exactly one
+  let nameHtml = "";
+  if (lastDevices) {
+    const connected = lastDevices.filter((d) => d.connected);
+    if (connected.length === 1) {
+      nameHtml = ` <span class="text-muted">[${escapeHtml(connected[0].name)}]</span>`;
+    }
+  }
   appendEventEntry(
     "mpris",
     `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
     + `<span class="event-type mpris">MPRIS</span>`
     + `<span class="event-content"><strong>${escapeHtml(data.command)}</strong>`
     + (data.detail ? ` <span class="text-muted">${escapeHtml(data.detail)}</span>` : "")
+    + nameHtml
     + `</span>`,
   );
 }
 
+// Volume event deduplication — suppress duplicates within 1.5s window
+const _lastVolumeEvent = {};  // address → {value, ts}
+const VOLUME_DEDUP_MS = 1500;
+
 function appendAvrcpEvent(data) {
+  // Deduplicate volume events (D-Bus, PulseAudio, and AVRCP can all fire)
+  if (data.property === "Volume" && data.address) {
+    const now = Date.now();
+    const prev = _lastVolumeEvent[data.address];
+    if (prev && prev.value === String(data.value) && (now - prev.ts) < VOLUME_DEDUP_MS) {
+      return; // suppress duplicate
+    }
+    _lastVolumeEvent[data.address] = { value: String(data.value), ts: now };
+  }
+
   const valueStr = typeof data.value === "object"
     ? JSON.stringify(data.value)
     : String(data.value);
@@ -567,7 +602,9 @@ function appendAvrcpEvent(data) {
     `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
     + `<span class="event-type avrcp">AVRCP</span>`
     + `<span class="event-content"><strong>${escapeHtml(data.property)}</strong> = `
-    + `<span class="text-success">${escapeHtml(valueStr)}</span></span>`,
+    + `<span class="text-success">${escapeHtml(valueStr)}</span>`
+    + deviceNameTag(data.address)
+    + `</span>`,
   );
 }
 

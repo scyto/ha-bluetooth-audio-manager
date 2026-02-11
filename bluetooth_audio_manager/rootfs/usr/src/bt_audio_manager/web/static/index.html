@@ -90,16 +90,25 @@
 
   <!-- ========== EVENTS VIEW ========== -->
   <div id="view-events" class="view-panel d-none">
-    <div class="container py-3">
-      <div class="d-flex justify-content-between align-items-center mb-3">
-        <h2 class="mb-0">
-          <i class="fas fa-list me-2"></i>Events
-          <span id="events-count" class="badge bg-secondary ms-2">0</span>
-        </h2>
-        <button type="button" class="btn btn-outline-danger btn-sm" onclick="clearEvents()">
-          <i class="fas fa-trash me-1"></i>Clear
-        </button>
+    <div class="subview-header bg-body-tertiary border-bottom sticky-top">
+      <div class="container py-2">
+        <div class="d-flex align-items-center justify-content-between">
+          <div class="d-flex align-items-center">
+            <button type="button" class="btn btn-outline-secondary btn-sm me-3" onclick="switchView('devices')">
+              <i class="fas fa-arrow-left me-1"></i>Back
+            </button>
+            <h5 class="mb-0">
+              <i class="fas fa-list me-2"></i>Events
+              <span id="events-count" class="badge bg-secondary ms-2">0</span>
+            </h5>
+          </div>
+          <button type="button" class="btn btn-outline-danger btn-sm" onclick="clearEvents()">
+            <i class="fas fa-trash me-1"></i>Clear
+          </button>
+        </div>
       </div>
+    </div>
+    <div class="container py-3">
       <div id="events-log" class="events-log-container font-monospace">
         <div class="text-center py-4 text-muted">
           <i class="fas fa-satellite-dish fa-2x mb-2 d-block opacity-50"></i>
@@ -112,9 +121,17 @@
   <!-- ========== LOGS VIEW ========== -->
   <div id="view-logs" class="view-panel d-none">
     <!-- Logs Toolbar -->
-    <div class="logs-toolbar bg-body border-bottom sticky-top">
+    <div class="logs-toolbar bg-body-tertiary border-bottom sticky-top">
       <div class="container py-2">
         <div class="row g-2 align-items-center">
+          <div class="col-auto">
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="switchView('devices')">
+              <i class="fas fa-arrow-left me-1"></i>Back
+            </button>
+          </div>
+          <div class="col-auto">
+            <h5 class="mb-0"><i class="fas fa-scroll me-2"></i>Logs</h5>
+          </div>
           <div class="col-auto">
             <select class="form-select form-select-sm" id="log-level-filter" aria-label="Filter by log level" onchange="filterLogs()">
               <option value="">All Levels</option>

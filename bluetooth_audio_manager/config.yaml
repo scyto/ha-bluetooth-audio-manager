@@ -1,5 +1,5 @@
 name: "Bluetooth Audio Manager"
-version: "0.2.3"
+version: "0.2.4"
 slug: bluetooth_audio_manager
 description: "Manage Bluetooth audio device connections (A2DP) with persistent pairing, auto-reconnect, and AppArmor security."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
