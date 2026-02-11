@@ -39,15 +39,38 @@ async function apiPost(path, body = {}) {
 
 // -- UI state --
 
+let errorDismissTimer = null;
+
 function showStatus(text) {
+  clearTimeout(errorDismissTimer);
   const bar = $("#scan-status");
   const label = $("#scan-status-text");
+  const spinner = bar.querySelector(".spinner");
   label.textContent = text;
-  bar.classList.remove("hidden");
+  spinner.classList.remove("hidden");
+  bar.classList.remove("hidden", "error");
+  setButtonsEnabled(false);
 }
 
 function hideStatus() {
-  $("#scan-status").classList.add("hidden");
+  clearTimeout(errorDismissTimer);
+  const bar = $("#scan-status");
+  bar.classList.add("hidden");
+  bar.classList.remove("error");
+  setButtonsEnabled(true);
+}
+
+function showError(message) {
+  clearTimeout(errorDismissTimer);
+  const bar = $("#scan-status");
+  const label = $("#scan-status-text");
+  const spinner = bar.querySelector(".spinner");
+  label.textContent = message;
+  spinner.classList.add("hidden");
+  bar.classList.remove("hidden");
+  bar.classList.add("error");
+  setButtonsEnabled(true);
+  errorDismissTimer = setTimeout(hideStatus, 5000);
 }
 
 function setButtonsEnabled(enabled) {
@@ -186,11 +209,6 @@ function renderSinks(sinks) {
     .join("");
 }
 
-function showError(message) {
-  const list = $("#devices-list");
-  list.innerHTML = `<div class="error-message">${escapeHtml(message)}</div>`;
-}
-
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text || "";
@@ -201,8 +219,6 @@ function escapeHtml(text) {
 
 async function refreshDevices() {
   try {
-    setButtonsEnabled(false);
-    showStatus("Refreshing...");
     const [devResult, sinkResult] = await Promise.all([
       apiGet("/api/devices"),
       apiGet("/api/audio/sinks"),
@@ -211,67 +227,48 @@ async function refreshDevices() {
     renderSinks(sinkResult.sinks);
   } catch (e) {
     showError(`Refresh failed: ${e.message}`);
-  } finally {
-    hideStatus();
-    setButtonsEnabled(true);
   }
 }
 
 async function scanDevices() {
+  // Server broadcasts status via WebSocket ("Scanning...")
   try {
-    setButtonsEnabled(false);
-    showStatus("Scanning for Bluetooth audio devices...");
     await apiPost("/api/scan");
   } catch (e) {
     showError(`Scan failed: ${e.message}`);
-  } finally {
-    hideStatus();
-    setButtonsEnabled(true);
   }
 }
 
 async function pairDevice(address) {
   try {
-    showStatus(`Pairing with ${address}...`);
     await apiPost("/api/pair", { address });
   } catch (e) {
     showError(`Pairing failed: ${e.message}`);
-  } finally {
-    hideStatus();
   }
 }
 
 async function connectDevice(address) {
   try {
-    showStatus(`Connecting to ${address}...`);
     await apiPost("/api/connect", { address });
   } catch (e) {
     showError(`Connection failed: ${e.message}`);
-  } finally {
-    hideStatus();
   }
 }
 
 async function disconnectDevice(address) {
   try {
-    showStatus(`Disconnecting ${address}...`);
     await apiPost("/api/disconnect", { address });
   } catch (e) {
     showError(`Disconnect failed: ${e.message}`);
-  } finally {
-    hideStatus();
   }
 }
 
 async function forgetDevice(address) {
   if (!confirm(`Forget device ${address}? This will unpair it.`)) return;
   try {
-    showStatus(`Forgetting ${address}...`);
     await apiPost("/api/forget", { address });
   } catch (e) {
     showError(`Forget failed: ${e.message}`);
-  } finally {
-    hideStatus();
   }
 }
 
@@ -365,6 +362,13 @@ function connectWebSocket() {
       case "avrcp_event":
         appendAvrcpEvent(msg);
         break;
+      case "status":
+        if (msg.message) {
+          showStatus(msg.message);
+        } else {
+          hideStatus();
+        }
+        break;
       default:
         console.log("[WS] Unknown message type:", msg.type);
     }
@@ -444,7 +448,6 @@ async function selectAdapter(adapterName) {
     }
   } catch (e) {
     showError(`Adapter switch failed: ${e.message}`);
-    hideStatus();
   }
 }
 

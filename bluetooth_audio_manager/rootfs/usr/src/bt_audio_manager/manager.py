@@ -55,7 +55,7 @@ class BluetoothAudioManager:
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
-        # Ring buffers so SSE clients get recent events on reconnect
+        # Ring buffers so WebSocket clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
 
@@ -378,7 +378,11 @@ class BluetoothAudioManager:
         """Run a time-limited discovery scan for A2DP audio devices."""
         duration = duration or self.config.scan_duration_seconds
         self._broadcast_status(f"Scanning for Bluetooth audio devices ({duration}s)...")
-        devices = await self.adapter.discover_for_duration(duration)
+        try:
+            devices = await self.adapter.discover_for_duration(duration)
+        except Exception:
+            self.event_bus.emit("status", {"message": ""})
+            raise
         self.event_bus.emit("status", {"message": ""})
         await self._broadcast_devices()
         return devices
@@ -759,7 +763,7 @@ class BluetoothAudioManager:
         await self._broadcast_sinks()
 
     def _broadcast_status(self, message: str) -> None:
-        """Push a status message to SSE clients."""
+        """Push a status message to WebSocket clients."""
         self.event_bus.emit("status", {"message": message})
 
     def _on_device_disconnected(self, address: str) -> None:
@@ -1283,7 +1287,7 @@ class BluetoothAudioManager:
         self.event_bus.emit("mpris_command", entry)
 
     def _on_avrcp_event(self, address: str, prop_name: str, value: object) -> None:
-        """Handle AVRCP MediaPlayer1 property change — push to SSE."""
+        """Handle AVRCP MediaPlayer1 property change — push to WebSocket."""
         # Convert value to JSON-safe representation
         if isinstance(value, dict):
             safe_val = {k: str(v) for k, v in value.items()}
