@@ -184,11 +184,11 @@ class BluezAdapter:
 
     @staticmethod
     async def remove_device_any_adapter(bus: MessageBus, address: str) -> bool:
-        """Find and remove a device from whichever adapter owns it.
+        """Find and remove a device from ALL adapters that have it.
 
         Searches all adapters via ObjectManager for a device with the given
-        MAC address and calls RemoveDevice on the owning adapter.
-        Returns True if the device was found and removed.
+        MAC address and calls RemoveDevice on every owning adapter.
+        Returns True if the device was removed from at least one adapter.
         """
         dev_suffix = f"/dev_{address.replace(':', '_')}"
         introspection = await bus.introspect(BLUEZ_SERVICE, "/")
@@ -196,7 +196,8 @@ class BluezAdapter:
         obj_manager = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
         objects = await obj_manager.call_get_managed_objects()
 
-        for path in objects:
+        removed_any = False
+        for path in list(objects):
             if not path.endswith(dev_suffix):
                 continue
             # Found the device — extract adapter path (e.g. /org/bluez/hci0)
@@ -207,12 +208,12 @@ class BluezAdapter:
                 adapter_iface = adapter_proxy.get_interface(ADAPTER_INTERFACE)
                 await adapter_iface.call_remove_device(path)
                 logger.info("Removed device %s from adapter %s", path, adapter_path)
-                return True
+                removed_any = True
             except DBusError as e:
                 logger.warning("Failed to remove %s from %s: %s", path, adapter_path, e)
-                return False
-        logger.warning("Device %s not found on any adapter", address)
-        return False
+        if not removed_any:
+            logger.warning("Device %s not found on any adapter", address)
+        return removed_any
 
     async def discover_for_duration(self, seconds: int) -> list[dict]:
         """Run discovery for a fixed duration and return found audio devices."""

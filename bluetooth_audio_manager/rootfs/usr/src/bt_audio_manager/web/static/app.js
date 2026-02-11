@@ -343,17 +343,6 @@ async function debugHfpReconnectCycle(address) {
   }
 }
 
-async function debugRegisterNullHfp(address) {
-  try {
-    showStatus(`Registering Null HFP Handler + reconnect on ${address} (audio will drop)...`);
-    await apiPost("/api/debug/register-null-hfp", { address });
-  } catch (e) {
-    showError(`Register Null HFP failed: ${e.message}`);
-  } finally {
-    hideStatus();
-  }
-}
-
 function renderDebugActions(devices) {
   const container = $("#debug-actions");
   const placeholder = $("#debug-placeholder");
@@ -382,7 +371,6 @@ function renderDebugActions(devices) {
           <button class="btn btn-small btn-danger" onclick="debugFullRenegotiate('${d.address}')">Full Renegotiate</button>
           <button class="btn btn-small btn-primary" onclick="debugDisconnectHfp('${d.address}')">Disconnect HFP</button>
           <button class="btn btn-small btn-danger" onclick="debugHfpReconnectCycle('${d.address}')">HFP + Reconnect</button>
-          <button class="btn btn-small btn-warning" onclick="debugRegisterNullHfp('${d.address}')">Null HFP Handler</button>
         </div>
       </div>
     `)
