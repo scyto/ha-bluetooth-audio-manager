@@ -67,6 +67,12 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /proc/*/status r,
   /sys/class/bluetooth/** r,
   /sys/devices/**/bluetooth/** r,
+  # Parent USB device attributes (idVendor, idProduct, manufacturer, product)
+  # needed to identify which USB Bluetooth adapter is which
+  /sys/devices/**/idVendor r,
+  /sys/devices/**/idProduct r,
+  /sys/devices/**/manufacturer r,
+  /sys/devices/**/product r,
 
   # Network (ingress web UI, PulseAudio, D-Bus)
   network inet stream,
