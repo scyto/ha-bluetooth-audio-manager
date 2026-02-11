@@ -208,6 +208,59 @@ class BluetoothAudioManager:
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
 
+        # 6b. Detect devices connected at the BlueZ level but NOT in our
+        #     store (e.g. store wiped during rebuild, or device paired outside
+        #     the add-on).  Create BluezDevice wrappers so UI buttons work.
+        try:
+            from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+            obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+            objects = await obj_mgr.call_get_managed_objects()
+
+            for path, ifaces in objects.items():
+                if DEVICE_INTERFACE not in ifaces:
+                    continue
+                if not path.startswith(self._adapter_path + "/"):
+                    continue
+                dev_props = ifaces[DEVICE_INTERFACE]
+                addr_v = dev_props.get("Address")
+                connected_v = dev_props.get("Connected")
+                if not addr_v or not connected_v:
+                    continue
+                addr = addr_v.value if hasattr(addr_v, "value") else addr_v
+                connected = connected_v.value if hasattr(connected_v, "value") else connected_v
+                if not connected or addr in self.managed_devices:
+                    continue
+
+                logger.info(
+                    "Found connected device %s not in managed_devices — creating wrapper",
+                    addr,
+                )
+                try:
+                    device = await self._get_or_create_device(addr)
+                    self._device_connect_time[addr] = time.time()
+                    try:
+                        await device.wait_for_services(timeout=5)
+                    except Exception as e:
+                        logger.debug("wait_for_services for %s: %s", addr, e)
+                    try:
+                        await device.watch_media_player()
+                    except Exception as e:
+                        logger.debug("AVRCP on existing connection %s: %s", addr, e)
+                    await self._disconnect_hfp(addr)
+                    await self._ensure_a2dp_transport(addr)
+                    if self.pulse:
+                        sink_name = await self.pulse.get_sink_for_address(addr)
+                        if sink_name:
+                            logger.info("PA sink for %s: %s", addr, sink_name)
+                            if self.keepalive:
+                                self.keepalive.set_target_sink(sink_name)
+                except Exception as e:
+                    logger.debug("Could not initialize unmanaged device %s: %s", addr, e)
+        except Exception as e:
+            logger.debug("Failed to enumerate connected BlueZ devices: %s", e)
+
         # 7. Start reconnection service
         self.reconnect_service = ReconnectService(self)
         await self.reconnect_service.start()
@@ -422,11 +475,11 @@ class BluetoothAudioManager:
         # Suppress auto-reconnect for this user-initiated disconnect
         self._suppress_reconnect.add(address)
 
-        device = self.managed_devices.get(address)
-        if device:
+        try:
+            device = await self._get_or_create_device(address)
             await device.disconnect()
-        else:
-            logger.warning("Disconnect: device %s not in managed_devices", address)
+        except Exception as e:
+            logger.warning("Disconnect failed for %s: %s", address, e)
         self.event_bus.emit("status", {"message": ""})
         await self._broadcast_all()
 
@@ -438,6 +491,13 @@ class BluetoothAudioManager:
 
         # Disconnect and clean up D-Bus subscriptions
         device = self.managed_devices.pop(address, None)
+        if not device:
+            # Device not in managed_devices — try to create a temporary wrapper
+            try:
+                device = await self._get_or_create_device(address)
+                self.managed_devices.pop(address, None)  # don't keep it
+            except Exception:
+                pass
         if device:
             try:
                 await device.disconnect()
@@ -779,8 +839,10 @@ class BluetoothAudioManager:
         """
         from .bluez.constants import A2DP_SINK_UUID
 
-        device = self.managed_devices.get(address)
-        if not device:
+        try:
+            device = await self._get_or_create_device(address)
+        except Exception as e:
+            logger.warning("AVRCP renegotiation: cannot access device %s: %s", address, e)
             return
         self._broadcast_status(f"Fixing volume control for {address}...")
         self._connecting.add(address)
@@ -959,12 +1021,14 @@ class BluetoothAudioManager:
         """Async handler for device connection — broadcasts state and starts AVRCP."""
         await self._broadcast_all()
         # Try to subscribe to AVRCP after reconnection
-        device = self.managed_devices.get(address)
-        if device:
+        try:
+            device = await self._get_or_create_device(address)
             try:
                 await device.watch_media_player()
             except Exception as e:
                 logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
+        except Exception as e:
+            logger.debug("Cannot access reconnected device %s: %s", address, e)
 
         # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
         await self._disconnect_hfp(address)
@@ -1028,8 +1092,10 @@ class BluetoothAudioManager:
         """
         from .bluez.constants import AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID
 
-        device = self.managed_devices.get(address)
-        if not device:
+        try:
+            device = await self._get_or_create_device(address)
+        except Exception as e:
+            logger.warning("AVRCP refresh: cannot access device %s: %s", address, e)
             return
 
         logger.info("AVRCP refresh: cycling AVRCP profiles for %s...", address)
@@ -1097,9 +1163,10 @@ class BluetoothAudioManager:
         await self._log_transport_properties(address)
         await self._log_media_control_player(address)
 
-        device = self.managed_devices.get(address)
-        if not device:
-            return {"action": "mpris_avrcp_cycle", "address": address, "error": "device not found"}
+        try:
+            device = await self._get_or_create_device(address)
+        except Exception as e:
+            return {"action": "mpris_avrcp_cycle", "address": address, "error": str(e)}
 
         # 1. Unregister MPRIS player
         if self.media_player:
@@ -1171,9 +1238,10 @@ class BluetoothAudioManager:
         """
         from .bluez.constants import HFP_UUID
 
-        device = self.managed_devices.get(address)
-        if not device:
-            logger.debug("HFP disconnect: device %s not managed", address)
+        try:
+            device = await self._get_or_create_device(address)
+        except Exception as e:
+            logger.warning("HFP disconnect: cannot access device %s: %s", address, e)
             return False
 
         try:
@@ -1235,8 +1303,10 @@ class BluetoothAudioManager:
             return True
 
         # Log device UUIDs to confirm A2DP is advertised
-        device = self.managed_devices.get(address)
-        if not device:
+        try:
+            device = await self._get_or_create_device(address)
+        except Exception as e:
+            logger.warning("Cannot access device %s for A2DP check: %s", address, e)
             return False
 
         uuids = await device.get_uuids()
