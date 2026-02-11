@@ -109,19 +109,28 @@ function showToast(message, level = "info") {
 }
 
 // ============================================
-// Section 5: Operation Banner
+// Section 5: Operation Banner (contained alert)
 // ============================================
 
 function showBanner(text) {
-  const banner = $("#operation-banner");
-  $("#operation-banner-text").textContent = text;
-  banner.classList.remove("d-none");
+  hideBanner(); // Remove any existing operation alert
+  const container = $("#alert-container");
+  if (!container) return;
+  const el = document.createElement("div");
+  el.id = "operation-alert";
+  el.className = "alert alert-info d-flex align-items-center gap-2 mb-3";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `
+    <div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div>
+    <span>${escapeHtml(text)}</span>
+  `;
+  container.prepend(el);
   setButtonsEnabled(false);
 }
 
 function hideBanner() {
-  const banner = $("#operation-banner");
-  banner.classList.add("d-none");
+  const existing = $("#operation-alert");
+  if (existing) existing.remove();
   setButtonsEnabled(true);
 }
 
@@ -190,10 +199,22 @@ let reconnectTimerId = null;
 let reconnectStartTime = null;
 
 function showReconnectBanner() {
-  const banner = $("#reconnect-banner");
-  banner.classList.add("visible");
+  if ($("#reconnect-alert")) return; // Already showing
+  const container = $("#alert-container");
+  if (!container) return;
   document.body.classList.add("server-unavailable");
   reconnectStartTime = Date.now();
+
+  const el = document.createElement("div");
+  el.id = "reconnect-alert";
+  el.className = "alert alert-warning d-flex align-items-center gap-2 mb-3";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `
+    <div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Reconnecting...</span></div>
+    <span>Reconnecting to server\u2026</span>
+    <span id="reconnect-elapsed" class="text-muted small"></span>
+  `;
+  container.prepend(el);
 
   // Update elapsed time every second
   clearInterval(reconnectTimerId);
@@ -202,18 +223,18 @@ function showReconnectBanner() {
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
     const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-    $("#reconnect-elapsed").textContent = `(${timeStr})`;
+    const elapsedEl = $("#reconnect-elapsed");
+    if (elapsedEl) elapsedEl.textContent = `(${timeStr})`;
   }, 1000);
 }
 
 function hideReconnectBanner() {
-  const banner = $("#reconnect-banner");
-  banner.classList.remove("visible");
+  const existing = $("#reconnect-alert");
+  if (existing) existing.remove();
   document.body.classList.remove("server-unavailable");
   clearInterval(reconnectTimerId);
   reconnectTimerId = null;
   reconnectStartTime = null;
-  $("#reconnect-elapsed").textContent = "";
 }
 
 function setConnectionStatus(state) {
@@ -445,9 +466,16 @@ function renderAdaptersModal(adapters) {
         ? '<span class="badge bg-success">Powered</span>'
         : '<span class="badge bg-secondary">Off</span>';
 
-      const displayName = a.hw_model
-        ? `${escapeHtml(a.name)} &mdash; ${escapeHtml(a.hw_model)}`
-        : escapeHtml(a.name);
+      // Friendly name: prefer resolved hw_model (not raw modalias), else alias
+      const hwResolved = a.hw_model && a.hw_model !== a.modalias;
+      const friendlyName = hwResolved
+        ? a.hw_model
+        : (a.alias && a.alias !== a.name ? a.alias : "");
+
+      // Technical line: hci name + modalias
+      const techParts = [a.name];
+      if (a.modalias) techParts.push(a.modalias);
+      const techLine = techParts.join(" \u2014 ");
 
       const selectBtn =
         !a.selected && a.powered
@@ -460,7 +488,8 @@ function renderAdaptersModal(adapters) {
         <div class="card adapter-card mb-2">
           <div class="card-body d-flex justify-content-between align-items-center py-2">
             <div>
-              <div class="fw-semibold">${displayName}</div>
+              ${friendlyName ? `<div class="fw-semibold">${escapeHtml(friendlyName)}</div>` : ""}
+              <div class="${friendlyName ? "small text-muted" : "fw-semibold"}">${escapeHtml(techLine)}</div>
               <div class="font-monospace small text-muted">${escapeHtml(a.address)}</div>
             </div>
             <div class="d-flex align-items-center gap-2">
@@ -525,18 +554,53 @@ function eventTime(data) {
   return d.toLocaleTimeString();
 }
 
+function deviceNameByAddress(address) {
+  if (!address || !lastDevices) return "";
+  const dev = lastDevices.find((d) => d.address === address);
+  return dev ? dev.name : "";
+}
+
+function deviceNameTag(address) {
+  const name = deviceNameByAddress(address);
+  if (!name) return "";
+  return ` <span class="text-muted">[${escapeHtml(name)}]</span>`;
+}
+
 function appendMprisCommand(data) {
+  // MPRIS player is global — show connected device name if exactly one
+  let nameHtml = "";
+  if (lastDevices) {
+    const connected = lastDevices.filter((d) => d.connected);
+    if (connected.length === 1) {
+      nameHtml = ` <span class="text-muted">[${escapeHtml(connected[0].name)}]</span>`;
+    }
+  }
   appendEventEntry(
     "mpris",
     `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
     + `<span class="event-type mpris">MPRIS</span>`
     + `<span class="event-content"><strong>${escapeHtml(data.command)}</strong>`
     + (data.detail ? ` <span class="text-muted">${escapeHtml(data.detail)}</span>` : "")
+    + nameHtml
     + `</span>`,
   );
 }
 
+// Volume event deduplication — suppress duplicates within 1.5s window
+const _lastVolumeEvent = {};  // address → {value, ts}
+const VOLUME_DEDUP_MS = 1500;
+
 function appendAvrcpEvent(data) {
+  // Deduplicate volume events (D-Bus, PulseAudio, and AVRCP can all fire)
+  if (data.property === "Volume" && data.address) {
+    const now = Date.now();
+    const prev = _lastVolumeEvent[data.address];
+    if (prev && prev.value === String(data.value) && (now - prev.ts) < VOLUME_DEDUP_MS) {
+      return; // suppress duplicate
+    }
+    _lastVolumeEvent[data.address] = { value: String(data.value), ts: now };
+  }
+
   const valueStr = typeof data.value === "object"
     ? JSON.stringify(data.value)
     : String(data.value);
@@ -546,7 +610,9 @@ function appendAvrcpEvent(data) {
     `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
     + `<span class="event-type avrcp">AVRCP</span>`
     + `<span class="event-content"><strong>${escapeHtml(data.property)}</strong> = `
-    + `<span class="text-success">${escapeHtml(valueStr)}</span></span>`,
+    + `<span class="text-success">${escapeHtml(valueStr)}</span>`
+    + deviceNameTag(data.address)
+    + `</span>`,
   );
 }
 
