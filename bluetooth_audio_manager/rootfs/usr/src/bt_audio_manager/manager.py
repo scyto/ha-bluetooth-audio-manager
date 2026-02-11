@@ -193,6 +193,15 @@ class BluetoothAudioManager:
                         await device.watch_media_player()
                     except Exception as e:
                         logger.debug("AVRCP on existing connection %s: %s", addr, e)
+
+                    # Device stayed connected while add-on restarted: refresh
+                    # AVRCP control profiles so remote buttons re-bind to this
+                    # process's newly registered MPRIS player.
+                    if self.media_player:
+                        try:
+                            await self._refresh_avrcp_session(addr)
+                        except Exception as e:
+                            logger.debug("AVRCP refresh on existing connection %s: %s", addr, e)
                     # Check/activate A2DP transport
                     await self._ensure_a2dp_transport(addr)
                     # Check for existing PA sink
@@ -968,6 +977,79 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.warning("Disconnect/reconnect cycle failed for %s: %s", address, e)
             return False
+
+    async def _refresh_avrcp_session(self, address: str) -> None:
+        """Re-negotiate AVRCP for a device connected across an add-on restart.
+
+        Fast path: bounce AVRCP target/controller profiles.
+        Fallback: full device disconnect/reconnect (same recovery users see when
+        power-cycling a speaker) if profile toggles fail to land.
+        """
+        from .bluez.constants import AVRCP_CONTROLLER_UUID, AVRCP_TARGET_UUID
+
+        device = self.managed_devices.get(address)
+        if not device:
+            return
+
+        try:
+            if not await device.is_connected():
+                return
+        except Exception:
+            return
+
+        logger.info("Refreshing AVRCP session for %s after add-on restart", address)
+
+        disconnect_ok = False
+        connect_ok = False
+
+        # Tear down stale AVRCP profile state that may still reference the
+        # previous add-on process/bus-name.
+        for uuid in (AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID):
+            try:
+                await device.disconnect_profile(uuid)
+                disconnect_ok = True
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.debug("AVRCP disconnect_profile(%s) on %s: %s", uuid, address, e)
+
+        # Reconnect profiles so remote controls discover the newly registered
+        # MPRIS player in this process.
+        for uuid in (AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID):
+            try:
+                await device.connect_profile(uuid)
+                connect_ok = True
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.debug("AVRCP connect_profile(%s) on %s: %s", uuid, address, e)
+
+        # If profile-level toggling was ineffective, force a complete
+        # reconnect: this mirrors the known-good manual workaround
+        # (power-cycle/connect) and reliably rebuilds AVRCP control channels.
+        if not (disconnect_ok and connect_ok):
+            logger.info(
+                "AVRCP profile refresh incomplete for %s; performing full reconnect fallback",
+                address,
+            )
+            self._connecting.add(address)
+            self._suppress_reconnect.add(address)
+            try:
+                await device.disconnect()
+                await asyncio.sleep(2)
+                await device.connect()
+                await device.wait_for_services(timeout=10)
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.warning("AVRCP reconnect fallback failed for %s: %s", address, e)
+            finally:
+                self._connecting.discard(address)
+                self._suppress_reconnect.discard(address)
+
+        # Give BlueZ a moment to emit fresh player/transport objects.
+        await asyncio.sleep(1.0)
+        try:
+            await device.watch_media_player(retries=2, delay=1.0)
+        except Exception as e:
+            logger.debug("AVRCP watch after refresh failed for %s: %s", address, e)
 
     def _on_pa_volume_change(self, sink_name: str, volume: int, mute: bool) -> None:
         """Handle PulseAudio Bluetooth sink volume change (AVRCP Absolute Volume)."""
