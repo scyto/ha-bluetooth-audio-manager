@@ -163,12 +163,6 @@ h1, h2, h3, h4, h5, h6 {
   transition: background var(--transition-fast);
 }
 
-.header-logo {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-md);
-}
-
 /* Build info pill */
 .build-info {
   display: inline-flex;
@@ -216,37 +210,6 @@ h1, h2, h3, h4, h5, h6 {
   text-align: center;
 }
 
-/* ============================================
-   Reconnect Banner
-   ============================================ */
-
-.reconnect-banner {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  padding: 0.75rem 1rem;
-  background: var(--bs-warning-bg-subtle, #332701);
-  border: 1px solid var(--bs-warning-border-subtle, #664d03);
-  color: var(--bs-warning-text-emphasis, #ffda6a);
-  margin: 0;
-}
-
-.reconnect-banner.visible {
-  display: flex;
-}
-
-.reconnect-banner .spinner-border {
-  width: 1rem;
-  height: 1rem;
-  border-width: 0.15em;
-}
-
-.reconnect-banner .reconnect-time {
-  color: var(--bs-secondary-color);
-  font-size: 0.85em;
-}
-
 /* Server unavailable — dims device cards and disables interaction */
 .server-unavailable .device-card {
   opacity: 0.45;
@@ -256,27 +219,109 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ============================================
-   Operation Banner
+   Alert overrides (borderless, translucent)
    ============================================ */
 
-.operation-banner {
+.alert {
+  border-radius: var(--radius-md);
+  border: none;
+  font-size: 0.9375rem;
+}
+
+.alert-info {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-success {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-warning {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--bs-body-color);
+}
+
+/* ============================================
+   Devices Layout (Add-Device in left margin)
+   ============================================ */
+
+.devices-layout {
+  position: relative;
+}
+
+/* Default: horizontal pill above the grid */
+#add-device-wrapper {
+  margin-bottom: 0.75rem;
+}
+
+.add-device-tile {
+  border: 2px dashed var(--bs-border-color);
+  cursor: pointer;
+  display: inline-block;
+  transition: transform var(--transition-base), border-color var(--transition-base);
+}
+
+.add-device-tile .card-body {
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.75rem 1rem;
-  background: var(--bs-info-bg-subtle);
-  border-bottom: 2px solid var(--accent-primary);
-  color: var(--bs-info-text-emphasis);
+  padding: 0.5rem 1rem;
+  color: var(--bs-secondary-color);
+  font-weight: 500;
+  font-size: 0.875rem;
+  white-space: nowrap;
 }
 
-.operation-banner:not(.d-none) {
-  display: flex;
+.add-device-tile .card-body i {
+  font-size: 1rem;
 }
 
-.operation-banner .spinner-border {
-  width: 1rem;
-  height: 1rem;
-  border-width: 0.15em;
+.add-device-tile:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent-primary);
+}
+
+.add-device-tile:hover .card-body {
+  color: var(--accent-primary);
+}
+
+.add-device-tile.scanning {
+  border-color: var(--accent-primary);
+  animation: scan-pulse 2s ease-in-out infinite;
+}
+
+.add-device-tile.scanning .card-body {
+  color: var(--accent-primary);
+}
+
+@keyframes scan-pulse {
+  0%, 100% { border-color: var(--accent-primary); opacity: 1; }
+  50% { border-color: var(--bs-border-color); opacity: 0.7; }
+}
+
+/* Wide screens: vertical button in the left margin */
+@media (min-width: 1440px) {
+  #add-device-wrapper {
+    position: absolute;
+    right: calc(100% + 0.75rem);
+    top: 0;
+    margin-bottom: 0;
+  }
+
+  .add-device-tile .card-body {
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.75rem 0.5rem;
+    font-size: 0.75rem;
+  }
 }
 
 /* ============================================
@@ -434,6 +479,7 @@ h1, h2, h3, h4, h5, h6 {
    Logs Viewer
    ============================================ */
 
+.subview-header,
 .logs-toolbar {
   z-index: 9;
   -webkit-backdrop-filter: blur(8px);
@@ -671,11 +717,6 @@ h1, h2, h3, h4, h5, h6 {
   .app-header .btn {
     padding: 0.5rem 0.75rem;
     font-size: 0.8125rem;
-  }
-
-  .header-logo {
-    width: 32px;
-    height: 32px;
   }
 
   .logs-container {

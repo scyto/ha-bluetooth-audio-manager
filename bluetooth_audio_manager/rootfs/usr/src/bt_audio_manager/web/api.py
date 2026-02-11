@@ -90,12 +90,10 @@ def create_api_routes(
 
     @routes.post("/api/set-adapter")
     async def set_adapter(request: web.Request) -> web.Response:
-        """Set the Bluetooth adapter for this add-on via the HA Supervisor API.
+        """Set the Bluetooth adapter. Persists to settings.json.
 
-        Accepts {"adapter": "hci1"} and updates the add-on options.
-        Requires a restart to take effect.
+        Accepts {"adapter": "hci1"}. Requires a restart to take effect.
         """
-        import aiohttp
         try:
             body = await request.json()
             adapter_name = body.get("adapter")
@@ -104,43 +102,8 @@ def create_api_routes(
                     {"error": "adapter is required"}, status=400
                 )
 
-            supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
-            if not supervisor_token:
-                return web.json_response(
-                    {"error": "Supervisor API not available (not running in HAOS?)"}, status=500
-                )
-
-            # Read current options from Supervisor
-            async with aiohttp.ClientSession() as session:
-                headers = {"Authorization": f"Bearer {supervisor_token}"}
-
-                # Get current options
-                async with session.get(
-                    "http://supervisor/addons/self/options",
-                    headers=headers,
-                ) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        return web.json_response(
-                            {"error": f"Failed to read current options: {text}"}, status=500
-                        )
-                    result = await resp.json()
-                    current_options = result.get("data", {}).get("options", {})
-
-                # Update bt_adapter
-                current_options["bt_adapter"] = adapter_name
-
-                # Write back via Supervisor
-                async with session.post(
-                    "http://supervisor/addons/self/options",
-                    headers=headers,
-                    json={"options": current_options},
-                ) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        return web.json_response(
-                            {"error": f"Failed to save options: {text}"}, status=500
-                        )
+            manager.config.bt_adapter = adapter_name
+            manager.config.save_settings()
 
             logger.info("Adapter selection changed to %s (restart required)", adapter_name)
             return web.json_response({
@@ -191,18 +154,26 @@ def create_api_routes(
 
     @routes.post("/api/scan")
     async def scan(request: web.Request) -> web.Response:
-        """Start a discovery scan for Bluetooth audio devices."""
+        """Start a background discovery scan for Bluetooth audio devices.
+
+        Returns immediately. Devices appear incrementally via WebSocket
+        'devices_changed' events.
+        """
         try:
             body = await request.json() if request.body_exists else {}
             duration = body.get("duration", manager.config.scan_duration_seconds)
-            devices = await manager.scan_devices(duration)
-            return web.json_response({"devices": devices})
+            await manager.scan_devices(duration)
+            return web.json_response({"scanning": True, "duration": duration})
         except Exception as e:
             if "In Progress" in str(e):
-                # Scan already running — not an error
                 return web.json_response({"scanning": True})
             logger.error("Scan failed: %s", e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
+
+    @routes.get("/api/scan/status")
+    async def scan_status(request: web.Request) -> web.Response:
+        """Check if a scan is currently in progress."""
+        return web.json_response({"scanning": manager.is_scanning})
 
     @routes.post("/api/pair")
     async def pair(request: web.Request) -> web.Response:
@@ -255,6 +226,23 @@ def create_api_routes(
             logger.error("Disconnect failed for %s: %s", address, e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
 
+    @routes.post("/api/force-reconnect")
+    async def force_reconnect(request: web.Request) -> web.Response:
+        """Force disconnect + reconnect cycle for zombie connections."""
+        address = None
+        try:
+            body = await request.json()
+            address = body.get("address")
+            if not address:
+                return web.json_response(
+                    {"error": "address is required"}, status=400
+                )
+            success = await manager.force_reconnect_device(address)
+            return web.json_response({"reconnected": success, "address": address})
+        except Exception as e:
+            logger.error("Force reconnect failed for %s: %s", address, e)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
+
     @routes.post("/api/forget")
     async def forget(request: web.Request) -> web.Response:
         """Unpair and remove a device completely."""
@@ -304,6 +292,56 @@ def create_api_routes(
         except Exception as e:
             logger.error("Failed to update settings for %s: %s", address, e)
             return web.json_response({"error": str(e)}, status=500)
+
+    @routes.get("/api/settings")
+    async def get_settings(request: web.Request) -> web.Response:
+        """Return current runtime settings (auto_reconnect, intervals, etc.)."""
+        return web.json_response(manager.config.runtime_settings)
+
+    @routes.put("/api/settings")
+    async def update_settings(request: web.Request) -> web.Response:
+        """Update runtime settings (hot-reload, no restart needed)."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        # Validate and apply each setting
+        errors = []
+        if "auto_reconnect" in body:
+            if not isinstance(body["auto_reconnect"], bool):
+                errors.append("auto_reconnect must be a boolean")
+        if "reconnect_interval_seconds" in body:
+            v = body["reconnect_interval_seconds"]
+            if not isinstance(v, int) or v < 5 or v > 600:
+                errors.append("reconnect_interval_seconds must be an integer between 5 and 600")
+        if "reconnect_max_backoff_seconds" in body:
+            v = body["reconnect_max_backoff_seconds"]
+            if not isinstance(v, int) or v < 60 or v > 3600:
+                errors.append("reconnect_max_backoff_seconds must be an integer between 60 and 3600")
+        if "scan_duration_seconds" in body:
+            v = body["scan_duration_seconds"]
+            if not isinstance(v, int) or v < 5 or v > 60:
+                errors.append("scan_duration_seconds must be an integer between 5 and 60")
+
+        if errors:
+            return web.json_response({"error": "; ".join(errors)}, status=400)
+
+        # Apply to live config
+        allowed = {"auto_reconnect", "reconnect_interval_seconds",
+                    "reconnect_max_backoff_seconds", "scan_duration_seconds"}
+        for key in allowed:
+            if key in body:
+                setattr(manager.config, key, body[key])
+
+        # Persist
+        manager.config.save_settings()
+
+        # Broadcast change to all WS clients
+        manager.event_bus.emit("settings_changed", manager.config.runtime_settings)
+
+        logger.info("Runtime settings updated: %s", manager.config.runtime_settings)
+        return web.json_response(manager.config.runtime_settings)
 
     @routes.get("/api/audio/sinks")
     async def audio_sinks(request: web.Request) -> web.Response:
@@ -555,6 +593,10 @@ def create_api_routes(
             sinks = await manager.get_audio_sinks()
             await ws.send_json({"type": "devices_changed", "devices": devices})
             await ws.send_json({"type": "sinks_changed", "sinks": sinks})
+            await ws.send_json({
+                "type": "scan_state",
+                "scanning": manager.is_scanning,
+            })
 
             # Replay recent MPRIS/AVRCP events
             for entry in manager.recent_mpris:

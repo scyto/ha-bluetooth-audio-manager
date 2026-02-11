@@ -1,5 +1,5 @@
 name: "Bluetooth Audio Manager"
-version: "0.1.95"
+version: "0.2.5"
 slug: bluetooth_audio_manager
 description: "Manage Bluetooth audio device connections (A2DP) with persistent pairing, auto-reconnect, and AppArmor security."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
@@ -31,22 +31,12 @@ map:
   - type: data
     read_only: false
 
-# User options
+# User options (runtime settings are managed in the add-on UI)
 options:
   log_level: "info"
-  auto_reconnect: true
-  reconnect_interval_seconds: 30
-  reconnect_max_backoff_seconds: 300
-  scan_duration_seconds: 30
-  bt_adapter: "auto"
 
 schema:
   log_level: "list(debug|info|warning|error)"
-  auto_reconnect: bool
-  reconnect_interval_seconds: "int(5,600)"
-  reconnect_max_backoff_seconds: "int(60,3600)"
-  scan_duration_seconds: "int(5,60)"
-  bt_adapter: "str"
 
 apparmor: true
 watchdog: "http://[HOST]:[PORT:8099]/api/health"

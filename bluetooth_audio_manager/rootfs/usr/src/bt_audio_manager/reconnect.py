@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 class ReconnectService:
     """Manages automatic reconnection of disconnected Bluetooth audio devices."""
 
+    QUICK_RETRY_DELAY = 10  # seconds — fast first attempt for transient glitches
+
     def __init__(self, manager: "BluetoothAudioManager"):
         self._manager = manager
         self._tasks: dict[str, asyncio.Task] = {}
@@ -93,6 +95,31 @@ class ReconnectService:
                     return
             except Exception:
                 pass
+
+        # Quick first attempt — handles transient glitches (e.g. AVRCP bugs)
+        logger.info(
+            "Quick reconnect to %s in %ds...", address, self.QUICK_RETRY_DELAY
+        )
+        self._manager._broadcast_status(
+            f"Quick reconnect to {address} in {self.QUICK_RETRY_DELAY}s..."
+        )
+        await asyncio.sleep(self.QUICK_RETRY_DELAY)
+
+        if not self._running:
+            return
+
+        try:
+            success = await self._manager.connect_device(address)
+            if success:
+                logger.info("Quick reconnect to %s succeeded", address)
+                self._manager._broadcast_status(f"Reconnected to {address}")
+                self._tasks.pop(address, None)
+                return
+        except (DBusError, asyncio.TimeoutError, OSError) as e:
+            logger.info(
+                "Quick reconnect to %s failed: %s — falling back to backoff",
+                address, e,
+            )
 
         interval = self._manager.config.reconnect_interval_seconds
         max_backoff = self._manager.config.reconnect_max_backoff_seconds
