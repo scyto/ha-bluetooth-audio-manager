@@ -1,0 +1,87 @@
+name: Device Issue Report
+description: Report a device-specific issue or oddity
+title: "Device: "
+labels: ["device-issue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a device issue. Please fill in the details below.
+        Check the [Device Issues Megathread](https://github.com/scyto/ha-bluetooth-audio-manager/issues/39) first to see if your device is already listed.
+
+  - type: input
+    id: device-name
+    attributes:
+      label: Device name & model
+      placeholder: e.g. JBL Flip 6, Sony WH-1000XM5
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device-type
+    attributes:
+      label: Device type
+      options:
+        - Speaker
+        - Headphones
+        - Soundbar
+        - Car audio
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: bt-adapter
+    attributes:
+      label: Bluetooth adapter
+      placeholder: e.g. built-in / TP-Link UB500
+    validations:
+      required: true
+
+  - type: input
+    id: haos-version
+    attributes:
+      label: HAOS version
+      placeholder: e.g. 14.1
+    validations:
+      required: true
+
+  - type: input
+    id: addon-version
+    attributes:
+      label: Add-on version
+      placeholder: e.g. 0.3.5
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      placeholder: e.g. RPi 4, Home Assistant Green, Yellow, x86 NUC
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      options:
+        - label: Pairing succeeds
+        - label: Audio plays
+        - label: Disconnects frequently
+        - label: Reconnect works
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: Issue
+      description: Brief description of the problem
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+      description: Any workaround found, or "None known"

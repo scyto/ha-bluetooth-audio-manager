@@ -109,25 +109,86 @@ function showToast(message, level = "info") {
 }
 
 // ============================================
-// Section 5: Operation Banner
+// Section 5: Operation Banner (contained alert)
 // ============================================
 
 function showBanner(text) {
-  const banner = $("#operation-banner");
-  $("#operation-banner-text").textContent = text;
-  banner.classList.remove("d-none");
+  hideBanner(); // Remove any existing operation alert
+  const container = $("#alert-container");
+  if (!container) return;
+  const el = document.createElement("div");
+  el.id = "operation-alert";
+  el.className = "alert alert-info d-flex align-items-center gap-2 mb-3";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `
+    <div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div>
+    <span>${escapeHtml(text)}</span>
+  `;
+  container.prepend(el);
   setButtonsEnabled(false);
 }
 
 function hideBanner() {
-  const banner = $("#operation-banner");
-  banner.classList.add("d-none");
+  const existing = $("#operation-alert");
+  if (existing) existing.remove();
   setButtonsEnabled(true);
 }
 
 function setButtonsEnabled(enabled) {
-  const btns = [$("#btn-scan"), $("#btn-refresh")];
-  btns.forEach((btn) => { if (btn) btn.disabled = !enabled; });
+  const btn = $("#btn-refresh");
+  if (btn) btn.disabled = !enabled;
+}
+
+// ============================================
+// Section 5a: Scanning State
+// ============================================
+
+let isScanning = false;
+let scanTimerId = null;
+let scanSecondsRemaining = 0;
+
+function setScanningState(scanning, duration) {
+  isScanning = scanning;
+  if (scanning && duration) {
+    scanSecondsRemaining = duration;
+    clearInterval(scanTimerId);
+    scanTimerId = setInterval(() => {
+      scanSecondsRemaining--;
+      if (scanSecondsRemaining <= 0) {
+        clearInterval(scanTimerId);
+        scanTimerId = null;
+      }
+      updateAddDeviceTile();
+    }, 1000);
+  } else {
+    clearInterval(scanTimerId);
+    scanTimerId = null;
+    scanSecondsRemaining = 0;
+  }
+  updateAddDeviceTile();
+}
+
+function updateAddDeviceTile() {
+  const tile = $("#add-device-tile");
+  if (!tile) return;
+  const body = tile.querySelector(".card-body");
+  if (!body) return;
+  if (isScanning) {
+    tile.classList.add("scanning");
+    const label = scanSecondsRemaining > 0
+      ? `Scanning\u2026 ${scanSecondsRemaining}s`
+      : "Finishing\u2026";
+    body.innerHTML = `
+      <i class="fas fa-spinner fa-spin"></i>
+      <span>${label}</span>
+    `;
+  } else {
+    tile.classList.remove("scanning");
+    body.innerHTML = `
+      <i class="fas fa-plus"></i>
+      <span>Add Device</span>
+    `;
+  }
 }
 
 // ============================================
@@ -138,10 +199,22 @@ let reconnectTimerId = null;
 let reconnectStartTime = null;
 
 function showReconnectBanner() {
-  const banner = $("#reconnect-banner");
-  banner.classList.add("visible");
+  if ($("#reconnect-alert")) return; // Already showing
+  const container = $("#alert-container");
+  if (!container) return;
   document.body.classList.add("server-unavailable");
   reconnectStartTime = Date.now();
+
+  const el = document.createElement("div");
+  el.id = "reconnect-alert";
+  el.className = "alert alert-warning d-flex align-items-center gap-2 mb-3";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `
+    <div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Reconnecting...</span></div>
+    <span>Reconnecting to server\u2026</span>
+    <span id="reconnect-elapsed" class="text-muted small"></span>
+  `;
+  container.prepend(el);
 
   // Update elapsed time every second
   clearInterval(reconnectTimerId);
@@ -150,18 +223,18 @@ function showReconnectBanner() {
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
     const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-    $("#reconnect-elapsed").textContent = `(${timeStr})`;
+    const elapsedEl = $("#reconnect-elapsed");
+    if (elapsedEl) elapsedEl.textContent = `(${timeStr})`;
   }, 1000);
 }
 
 function hideReconnectBanner() {
-  const banner = $("#reconnect-banner");
-  banner.classList.remove("visible");
+  const existing = $("#reconnect-alert");
+  if (existing) existing.remove();
   document.body.classList.remove("server-unavailable");
   clearInterval(reconnectTimerId);
   reconnectTimerId = null;
   reconnectStartTime = null;
-  $("#reconnect-elapsed").textContent = "";
 }
 
 function setConnectionStatus(state) {
@@ -205,19 +278,35 @@ function profileLabels(uuids) {
 // Cached sinks for merging into device cards
 let currentSinks = [];
 
-function renderDevices(devices) {
-  const grid = $("#devices-grid");
-
-  if (!devices || devices.length === 0) {
-    grid.innerHTML = `
-      <div class="col-12">
-        <div class="empty-state">
-          <i class="fas fa-bluetooth"></i>
-          <h5>No Bluetooth audio devices found</h5>
-          <p>Put your speaker in pairing mode and click Scan.</p>
+function renderAddDeviceTile() {
+  const scanLabel = isScanning
+    ? (scanSecondsRemaining > 0 ? `Scanning\u2026 ${scanSecondsRemaining}s` : "Finishing\u2026")
+    : "Add Device";
+  const scanIcon = isScanning
+    ? '<i class="fas fa-spinner fa-spin"></i>'
+    : '<i class="fas fa-plus"></i>';
+  const scanClass = isScanning ? " scanning" : "";
+  const wrapper = $("#add-device-wrapper");
+  if (wrapper) {
+    wrapper.innerHTML = `
+      <div class="card add-device-tile${scanClass}" id="add-device-tile"
+           onclick="scanDevices()" role="button" tabindex="0"
+           title="Scan for nearby Bluetooth audio devices">
+        <div class="card-body">
+          ${scanIcon}
+          <span>${scanLabel}</span>
         </div>
       </div>
     `;
+  }
+}
+
+function renderDevices(devices) {
+  const grid = $("#devices-grid");
+  renderAddDeviceTile();
+
+  if (!devices || devices.length === 0) {
+    grid.innerHTML = "";
     return;
   }
 
@@ -275,6 +364,9 @@ function renderDevices(devices) {
               <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
+              ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
+                <i class="fas fa-sync me-2"></i>Force Reconnect
+              </a></li>` : ""}
               <li><hr class="dropdown-divider"></li>
               <li><a class="dropdown-item text-danger" href="#" onclick="forgetDevice('${d.address}'); return false;">
                 <i class="fas fa-trash me-2"></i>Forget Device
@@ -377,9 +469,16 @@ function renderAdaptersModal(adapters) {
         ? '<span class="badge bg-success">Powered</span>'
         : '<span class="badge bg-secondary">Off</span>';
 
-      const displayName = a.hw_model
-        ? `${escapeHtml(a.name)} &mdash; ${escapeHtml(a.hw_model)}`
-        : escapeHtml(a.name);
+      // Friendly name: prefer resolved hw_model (not raw modalias), else alias
+      const hwResolved = a.hw_model && a.hw_model !== a.modalias;
+      const friendlyName = hwResolved
+        ? a.hw_model
+        : (a.alias && a.alias !== a.name ? a.alias : "");
+
+      // Technical line: hci name + modalias
+      const techParts = [a.name];
+      if (a.modalias) techParts.push(a.modalias);
+      const techLine = techParts.join(" \u2014 ");
 
       const selectBtn =
         !a.selected && a.powered
@@ -392,7 +491,8 @@ function renderAdaptersModal(adapters) {
         <div class="card adapter-card mb-2">
           <div class="card-body d-flex justify-content-between align-items-center py-2">
             <div>
-              <div class="fw-semibold">${displayName}</div>
+              ${friendlyName ? `<div class="fw-semibold">${escapeHtml(friendlyName)}</div>` : ""}
+              <div class="${friendlyName ? "small text-muted" : "fw-semibold"}">${escapeHtml(techLine)}</div>
               <div class="font-monospace small text-muted">${escapeHtml(a.address)}</div>
             </div>
             <div class="d-flex align-items-center gap-2">
@@ -457,18 +557,53 @@ function eventTime(data) {
   return d.toLocaleTimeString();
 }
 
+function deviceNameByAddress(address) {
+  if (!address || !lastDevices) return "";
+  const dev = lastDevices.find((d) => d.address === address);
+  return dev ? dev.name : "";
+}
+
+function deviceNameTag(address) {
+  const name = deviceNameByAddress(address);
+  if (!name) return "";
+  return ` <span class="text-muted">[${escapeHtml(name)}]</span>`;
+}
+
 function appendMprisCommand(data) {
+  // MPRIS player is global — show connected device name if exactly one
+  let nameHtml = "";
+  if (lastDevices) {
+    const connected = lastDevices.filter((d) => d.connected);
+    if (connected.length === 1) {
+      nameHtml = ` <span class="text-muted">[${escapeHtml(connected[0].name)}]</span>`;
+    }
+  }
   appendEventEntry(
     "mpris",
     `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
     + `<span class="event-type mpris">MPRIS</span>`
     + `<span class="event-content"><strong>${escapeHtml(data.command)}</strong>`
     + (data.detail ? ` <span class="text-muted">${escapeHtml(data.detail)}</span>` : "")
+    + nameHtml
     + `</span>`,
   );
 }
 
+// Volume event deduplication — suppress duplicates within 1.5s window
+const _lastVolumeEvent = {};  // address → {value, ts}
+const VOLUME_DEDUP_MS = 1500;
+
 function appendAvrcpEvent(data) {
+  // Deduplicate volume events (D-Bus, PulseAudio, and AVRCP can all fire)
+  if (data.property === "Volume" && data.address) {
+    const now = Date.now();
+    const prev = _lastVolumeEvent[data.address];
+    if (prev && prev.value === String(data.value) && (now - prev.ts) < VOLUME_DEDUP_MS) {
+      return; // suppress duplicate
+    }
+    _lastVolumeEvent[data.address] = { value: String(data.value), ts: now };
+  }
+
   const valueStr = typeof data.value === "object"
     ? JSON.stringify(data.value)
     : String(data.value);
@@ -478,7 +613,9 @@ function appendAvrcpEvent(data) {
     `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
     + `<span class="event-type avrcp">AVRCP</span>`
     + `<span class="event-content"><strong>${escapeHtml(data.property)}</strong> = `
-    + `<span class="text-success">${escapeHtml(valueStr)}</span></span>`,
+    + `<span class="text-success">${escapeHtml(valueStr)}</span>`
+    + deviceNameTag(data.address)
+    + `</span>`,
   );
 }
 
@@ -624,8 +761,12 @@ async function refreshDevices() {
 }
 
 async function scanDevices() {
+  if (isScanning) return;
   try {
-    await apiPost("/api/scan");
+    const result = await apiPost("/api/scan");
+    if (result.scanning) {
+      setScanningState(true, result.duration);
+    }
   } catch (e) {
     showToast(`Scan failed: ${e.message}`, "error");
   }
@@ -652,6 +793,14 @@ async function disconnectDevice(address) {
     await apiPost("/api/disconnect", { address });
   } catch (e) {
     showToast(`Disconnect failed: ${e.message}`, "error");
+  }
+}
+
+async function forceReconnectDevice(address) {
+  try {
+    await apiPost("/api/force-reconnect", { address });
+  } catch (e) {
+    showToast(`Force reconnect failed: ${e.message}`, "error");
   }
 }
 
@@ -751,6 +900,39 @@ async function saveDeviceSettings() {
 }
 
 // ============================================
+// Section 11c: Add-on Settings Modal
+// ============================================
+
+async function openSettingsModal() {
+  try {
+    const data = await apiGet("/api/settings");
+    $("#setting-auto-reconnect").checked = data.auto_reconnect;
+    $("#setting-reconnect-interval").value = data.reconnect_interval_seconds;
+    $("#setting-reconnect-max-backoff").value = data.reconnect_max_backoff_seconds;
+    $("#setting-scan-duration").value = data.scan_duration_seconds;
+    new bootstrap.Modal("#settingsModal").show();
+  } catch (e) {
+    showToast(`Failed to load settings: ${e.message}`, "error");
+  }
+}
+
+async function saveSettings() {
+  const settings = {
+    auto_reconnect: $("#setting-auto-reconnect").checked,
+    reconnect_interval_seconds: parseInt($("#setting-reconnect-interval").value, 10),
+    reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
+    scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
+  };
+  try {
+    await apiPut("/api/settings", settings);
+    showToast("Settings saved", "success");
+    bootstrap.Modal.getInstance($("#settingsModal"))?.hide();
+  } catch (e) {
+    showToast(`Failed to save settings: ${e.message}`, "error");
+  }
+}
+
+// ============================================
 // Section 12: WebSocket (Real-time Updates)
 // ============================================
 
@@ -796,12 +978,32 @@ function connectWebSocket() {
       case "log_entry":
         appendLogEntry(msg);
         break;
+      case "settings_changed":
+        // Runtime settings updated by another client; no action needed
+        break;
       case "keepalive_changed":
         // Devices list will be re-sent via devices_changed; toast for feedback
         if (msg.enabled) {
           showToast(`Keep-alive started for ${msg.address}`, "info");
         } else {
           showToast(`Keep-alive stopped for ${msg.address}`, "info");
+        }
+        break;
+      case "scan_started":
+        setScanningState(true, msg.duration);
+        break;
+      case "scan_finished":
+        setScanningState(false);
+        if (msg.error) {
+          showToast(`Scan failed: ${msg.error}`, "error");
+        }
+        break;
+      case "scan_state":
+        // Sent on WS connect — sync scanning state
+        if (msg.scanning && !isScanning) {
+          setScanningState(true);
+        } else if (!msg.scanning && isScanning) {
+          setScanningState(false);
         }
         break;
       case "status":
@@ -874,7 +1076,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Show version in header pill and footer
   apiGet("/api/info")
     .then((data) => {
-      const ver = `v${data.version}`;
+      const ver = data.version;
       $("#build-version").textContent = ver;
       $("#version-label").textContent = `${ver} (${data.adapter})`;
     })
