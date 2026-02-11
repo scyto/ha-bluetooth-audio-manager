@@ -273,6 +273,9 @@ function renderDevices(devices) {
               <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}'); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
+              ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
+                <i class="fas fa-sync me-2"></i>Force Reconnect
+              </a></li>` : ""}
               <li><hr class="dropdown-divider"></li>
               <li><a class="dropdown-item text-danger" href="#" onclick="forgetDevice('${d.address}'); return false;">
                 <i class="fas fa-trash me-2"></i>Forget Device
@@ -649,6 +652,14 @@ async function disconnectDevice(address) {
     await apiPost("/api/disconnect", { address });
   } catch (e) {
     showToast(`Disconnect failed: ${e.message}`, "error");
+  }
+}
+
+async function forceReconnectDevice(address) {
+  try {
+    await apiPost("/api/force-reconnect", { address });
+  } catch (e) {
+    showToast(`Force reconnect failed: ${e.message}`, "error");
   }
 }
 

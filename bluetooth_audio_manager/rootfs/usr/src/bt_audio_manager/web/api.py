@@ -218,6 +218,23 @@ def create_api_routes(
             logger.error("Disconnect failed for %s: %s", address, e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
 
+    @routes.post("/api/force-reconnect")
+    async def force_reconnect(request: web.Request) -> web.Response:
+        """Force disconnect + reconnect cycle for zombie connections."""
+        address = None
+        try:
+            body = await request.json()
+            address = body.get("address")
+            if not address:
+                return web.json_response(
+                    {"error": "address is required"}, status=400
+                )
+            success = await manager.force_reconnect_device(address)
+            return web.json_response({"reconnected": success, "address": address})
+        except Exception as e:
+            logger.error("Force reconnect failed for %s: %s", address, e)
+            return web.json_response({"error": _friendly_error(e)}, status=500)
+
     @routes.post("/api/forget")
     async def forget(request: web.Request) -> web.Response:
         """Unpair and remove a device completely."""
