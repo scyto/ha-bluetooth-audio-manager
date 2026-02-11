@@ -1,22 +1,17 @@
 /**
  * Bluetooth Audio Manager — Ingress UI
  *
- * Simple vanilla JS interface for device management.
- * Communicates with the add-on's REST API.
- *
- * Uses WebSocket for real-time updates.  SSE is broken through
- * HA ingress due to a compression bug (supervisor#6470).
- * WebSocket bypasses both the bug and the HA service worker.
+ * Vanilla JS interface with Bootstrap 5.3 components.
+ * Communicates with the add-on's REST API via WebSocket for real-time updates.
  */
 
-// HA ingress serves the page at /api/hassio_ingress/<token>/
-// Use the current page path as the base so API calls route through ingress
-const API_BASE = document.location.pathname.replace(/\/$/, "");
+// ============================================
+// Section 1: Constants & Helpers
+// ============================================
 
+const API_BASE = document.location.pathname.replace(/\/$/, "");
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
-
-// -- API helpers --
 
 async function apiGet(path) {
   const resp = await fetch(`${API_BASE}${path}`);
@@ -37,40 +32,89 @@ async function apiPost(path, body = {}) {
   return resp.json();
 }
 
-// -- UI state --
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text || "";
+  return div.innerHTML;
+}
 
-let errorDismissTimer = null;
+// ============================================
+// Section 2: Theme Detection
+// ============================================
 
-function showStatus(text) {
-  clearTimeout(errorDismissTimer);
-  const bar = $("#scan-status");
-  const label = $("#scan-status-text");
-  const spinner = bar.querySelector(".spinner");
-  label.textContent = text;
-  spinner.classList.remove("hidden");
-  bar.classList.remove("hidden", "error");
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+  document.documentElement.setAttribute("data-bs-theme", e.matches ? "dark" : "light");
+});
+
+// ============================================
+// Section 3: View Switching
+// ============================================
+
+function switchView(viewName) {
+  // Hide all view panels
+  $$(".view-panel").forEach((el) => el.classList.add("d-none"));
+  // Show selected view
+  const target = $(`#view-${viewName}`);
+  if (target) target.classList.remove("d-none");
+
+  // Update nav button active state
+  $$(".nav-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.view === viewName);
+  });
+}
+
+// ============================================
+// Section 4: Toast Notifications
+// ============================================
+
+function showToast(message, level = "info") {
+  const container = $("#toast-container");
+  const icons = {
+    info: "fas fa-info-circle text-primary",
+    success: "fas fa-check-circle text-success",
+    warning: "fas fa-exclamation-triangle text-warning",
+    error: "fas fa-times-circle text-danger",
+  };
+  const titles = {
+    info: "Info",
+    success: "Success",
+    warning: "Warning",
+    error: "Error",
+  };
+
+  const toastEl = document.createElement("div");
+  toastEl.className = "toast";
+  toastEl.setAttribute("role", "alert");
+  toastEl.innerHTML = `
+    <div class="toast-header">
+      <i class="${icons[level] || icons.info} me-2"></i>
+      <strong class="me-auto">${titles[level] || "Notice"}</strong>
+      <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+    </div>
+    <div class="toast-body">${escapeHtml(message)}</div>
+  `;
+
+  container.appendChild(toastEl);
+  const toast = new bootstrap.Toast(toastEl, { delay: 5000 });
+  toastEl.addEventListener("hidden.bs.toast", () => toastEl.remove());
+  toast.show();
+}
+
+// ============================================
+// Section 5: Operation Banner
+// ============================================
+
+function showBanner(text) {
+  const banner = $("#operation-banner");
+  $("#operation-banner-text").textContent = text;
+  banner.classList.remove("d-none");
   setButtonsEnabled(false);
 }
 
-function hideStatus() {
-  clearTimeout(errorDismissTimer);
-  const bar = $("#scan-status");
-  bar.classList.add("hidden");
-  bar.classList.remove("error");
+function hideBanner() {
+  const banner = $("#operation-banner");
+  banner.classList.add("d-none");
   setButtonsEnabled(true);
-}
-
-function showError(message) {
-  clearTimeout(errorDismissTimer);
-  const bar = $("#scan-status");
-  const label = $("#scan-status-text");
-  const spinner = bar.querySelector(".spinner");
-  label.textContent = message;
-  spinner.classList.add("hidden");
-  bar.classList.remove("hidden");
-  bar.classList.add("error");
-  setButtonsEnabled(true);
-  errorDismissTimer = setTimeout(hideStatus, 5000);
 }
 
 function setButtonsEnabled(enabled) {
@@ -79,7 +123,9 @@ function setButtonsEnabled(enabled) {
   });
 }
 
-// -- Bluetooth UUID to profile label mapping --
+// ============================================
+// Section 6: BT Profile UUID Labels
+// ============================================
 
 const BT_PROFILES = {
   "0000110b-0000-1000-8000-00805f9b34fb": "A2DP Sink",
@@ -97,74 +143,121 @@ function profileLabels(uuids) {
   return labels.length > 0 ? labels.join(", ") : "";
 }
 
-// -- Rendering --
+// ============================================
+// Section 7: Device Rendering (Responsive Grid)
+// ============================================
+
+// Cached sinks for merging into device cards
+let currentSinks = [];
 
 function renderDevices(devices) {
-  const list = $("#devices-list");
+  const grid = $("#devices-grid");
 
   if (!devices || devices.length === 0) {
-    list.innerHTML =
-      '<p class="placeholder">No Bluetooth audio devices found. Put your speaker in pairing mode and scan again.</p>';
+    grid.innerHTML = `
+      <div class="col-12 text-center py-5">
+        <i class="fas fa-bluetooth fa-3x mb-3 text-muted opacity-50"></i>
+        <h5 class="text-muted">No Bluetooth audio devices found</h5>
+        <p class="text-muted">Put your speaker in pairing mode and click Scan.</p>
+      </div>
+    `;
     return;
   }
 
-  list.innerHTML = devices
+  grid.innerHTML = devices
     .map((d) => {
-      const statusClass = d.connected
-        ? "status-connected"
+      const badgeClass = d.connected
+        ? "badge-connected"
         : d.paired
-          ? "status-paired"
-          : "status-discovered";
+          ? "badge-paired"
+          : "badge-discovered";
       const statusText = d.connected
         ? "Connected"
         : d.paired
           ? "Paired"
           : "Discovered";
 
+      // Action buttons
       let actions = "";
       if (d.connected) {
         actions = `
-          <button class="btn btn-small btn-danger" onclick="disconnectDevice('${d.address}')">Disconnect</button>
-          <button class="btn btn-small btn-danger" onclick="forgetDevice('${d.address}')">Forget</button>
+          <button type="button" class="btn btn-sm btn-outline-danger" onclick="disconnectDevice('${d.address}')">
+            <i class="fas fa-unlink me-1"></i>Disconnect
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="forgetDevice('${d.address}')">
+            <i class="fas fa-trash me-1"></i>Forget
+          </button>
         `;
       } else if (d.paired || d.stored) {
         actions = `
-          <button class="btn btn-small btn-success" onclick="connectDevice('${d.address}')">Connect</button>
-          <button class="btn btn-small btn-danger" onclick="forgetDevice('${d.address}')">Forget</button>
+          <button type="button" class="btn btn-sm btn-success" onclick="connectDevice('${d.address}')">
+            <i class="fas fa-link me-1"></i>Connect
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="forgetDevice('${d.address}')">
+            <i class="fas fa-trash me-1"></i>Forget
+          </button>
         `;
       } else {
         actions = `
-          <button class="btn btn-small btn-primary" onclick="pairDevice('${d.address}')">Pair</button>
+          <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${d.address}')">
+            <i class="fas fa-handshake me-1"></i>Pair
+          </button>
         `;
       }
 
       const rssiDisplay = d.rssi ? ` (${d.rssi} dBm)` : "";
       const profiles = profileLabels(d.uuids);
 
-      // Connection detail: bearer type + transport status
+      // Connection detail: bearer type + transport
       let connDetail = "";
       if (d.connected) {
         const parts = [];
-        if (d.bearers && d.bearers.length > 0) {
-          parts.push(d.bearers.join(" + "));
-        }
-        if (d.has_transport) {
-          parts.push("A2DP");
-        }
-        if (parts.length > 0) {
-          connDetail = ` (${parts.join(" / ")})`;
+        if (d.bearers && d.bearers.length > 0) parts.push(d.bearers.join(" + "));
+        if (d.has_transport) parts.push("A2DP");
+        if (parts.length > 0) connDetail = parts.join(" / ");
+      }
+
+      // Merge sink info for connected devices
+      let sinkInfo = "";
+      if (d.connected) {
+        const macNorm = d.address.replace(/:/g, "_").toLowerCase();
+        const matchedSink = currentSinks.find(
+          (s) => s.name && s.name.toLowerCase().includes(macNorm),
+        );
+        if (matchedSink) {
+          const audioParts = [
+            matchedSink.sample_rate ? `${(matchedSink.sample_rate / 1000).toFixed(1)} kHz` : null,
+            matchedSink.channels ? `${matchedSink.channels}ch` : null,
+            matchedSink.format || null,
+          ].filter(Boolean);
+          const vol = matchedSink.mute ? "Muted" : `${matchedSink.volume}%`;
+          const stateLabel = matchedSink.state === "running" ? "Streaming" : matchedSink.state;
+          sinkInfo = `
+            <div class="mt-2 small text-muted">
+              <i class="fas fa-music me-1"></i>${audioParts.length ? escapeHtml(audioParts.join(" / ")) + " &middot; " : ""}${escapeHtml(vol)}
+              <span class="badge bg-secondary ms-1">${escapeHtml(stateLabel)}</span>
+            </div>
+          `;
         }
       }
 
       return `
-        <div class="device-card">
-          <div class="device-info">
-            <span class="device-name">${escapeHtml(d.name)}</span>
-            <span class="device-status ${statusClass}">${statusText}${connDetail}</span>
-            <div class="device-address">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
-            ${profiles ? `<div class="device-profiles">${escapeHtml(profiles)}</div>` : ""}
+        <div class="col-12 col-sm-6 col-md-4 col-lg-3">
+          <div class="card device-card h-100">
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-start mb-2">
+                <h6 class="card-title mb-0">${escapeHtml(d.name)}</h6>
+                <span class="badge ${badgeClass}">${statusText}</span>
+              </div>
+              ${connDetail ? `<div class="small text-muted mb-1">${escapeHtml(connDetail)}</div>` : ""}
+              <div class="font-monospace small text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
+              ${profiles ? `<div class="small mt-1" style="color: var(--accent-primary)">${escapeHtml(profiles)}</div>` : ""}
+              ${sinkInfo}
+              <div class="device-actions d-flex gap-2 flex-wrap">
+                ${actions}
+              </div>
+            </div>
           </div>
-          <div class="device-actions">${actions}</div>
         </div>
       `;
     })
@@ -172,145 +265,122 @@ function renderDevices(devices) {
 }
 
 function renderSinks(sinks) {
-  const list = $("#sinks-list");
+  // Store sinks for device card merging; re-render devices to update sink info
+  currentSinks = sinks || [];
+}
 
-  if (!sinks || sinks.length === 0) {
-    list.innerHTML =
-      '<p class="placeholder">No Bluetooth audio sinks available. Connect a device first.</p>';
+// ============================================
+// Section 8: Adapter Modal Rendering
+// ============================================
+
+function renderAdaptersModal(adapters) {
+  const container = $("#adapters-container");
+
+  if (!adapters || adapters.length === 0) {
+    container.innerHTML = '<p class="text-center text-muted py-3">No Bluetooth adapters found.</p>';
     return;
   }
 
-  list.innerHTML = sinks
-    .map(
-      (s) => {
-        const stateClass = s.state === "running" ? "status-connected" : "status-paired";
-        const stateLabel = s.state.charAt(0).toUpperCase() + s.state.slice(1);
-        const vol = s.mute ? "Muted" : `${s.volume}%`;
-        const audioInfo = [
-          s.sample_rate ? `${(s.sample_rate / 1000).toFixed(1)} kHz` : null,
-          s.channels ? `${s.channels}ch` : null,
-          s.format || null,
-        ].filter(Boolean).join(" / ");
+  container.innerHTML = adapters
+    .map((a) => {
+      const selectedBadge = a.selected
+        ? '<span class="badge bg-success ms-2">In Use</span>'
+        : "";
+      const bleBadge = a.ble_scanning
+        ? '<span class="badge bg-warning ms-2">HA BLE Scanning</span>'
+        : "";
+      const poweredBadge = a.powered
+        ? '<span class="badge bg-success">Powered</span>'
+        : '<span class="badge bg-secondary">Off</span>';
 
-        return `
-      <div class="sink-card">
-        <div>
-          <div class="sink-name">${escapeHtml(s.description || s.name)}</div>
-          <div class="sink-description">${escapeHtml(s.name)}</div>
-          <div class="sink-details">${audioInfo ? escapeHtml(audioInfo) : ""} ${escapeHtml(vol)}</div>
+      const displayName = a.hw_model
+        ? `${escapeHtml(a.name)} &mdash; ${escapeHtml(a.hw_model)}`
+        : escapeHtml(a.name);
+
+      const selectBtn =
+        !a.selected && a.powered
+          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.name}')">
+               <i class="fas fa-check me-1"></i>Select
+             </button>`
+          : "";
+
+      return `
+        <div class="card adapter-card mb-2">
+          <div class="card-body d-flex justify-content-between align-items-center py-2">
+            <div>
+              <div class="fw-semibold">${displayName}</div>
+              <div class="font-monospace small text-muted">${escapeHtml(a.address)}</div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              ${poweredBadge}${selectedBadge}${bleBadge}
+              ${selectBtn}
+            </div>
+          </div>
         </div>
-        <div>
-          <span class="device-status ${stateClass}">${escapeHtml(stateLabel)}</span>
-        </div>
-      </div>
-    `;
-      }
-    )
+      `;
+    })
     .join("");
 }
 
-function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text || "";
-  return div.innerHTML;
+function openAdaptersModal() {
+  const modal = new bootstrap.Modal("#adaptersModal");
+  modal.show();
+  loadAdapters();
 }
 
-// -- Actions --
-
-async function refreshDevices() {
+async function loadAdapters() {
   try {
-    const [devResult, sinkResult] = await Promise.all([
-      apiGet("/api/devices"),
-      apiGet("/api/audio/sinks"),
-    ]);
-    renderDevices(devResult.devices);
-    renderSinks(sinkResult.sinks);
+    const data = await apiGet("/api/adapters");
+    renderAdaptersModal(data.adapters);
   } catch (e) {
-    showError(`Refresh failed: ${e.message}`);
+    console.warn("Failed to load adapters:", e.message);
   }
 }
 
-async function scanDevices() {
-  // Server broadcasts status via WebSocket ("Scanning...")
-  try {
-    await apiPost("/api/scan");
-  } catch (e) {
-    showError(`Scan failed: ${e.message}`);
-  }
-}
+// ============================================
+// Section 9: Events Log (Combined MPRIS + AVRCP)
+// ============================================
 
-async function pairDevice(address) {
-  try {
-    await apiPost("/api/pair", { address });
-  } catch (e) {
-    showError(`Pairing failed: ${e.message}`);
-  }
-}
+const MAX_EVENT_ENTRIES = 100;
+let eventCount = 0;
 
-async function connectDevice(address) {
-  try {
-    await apiPost("/api/connect", { address });
-  } catch (e) {
-    showError(`Connection failed: ${e.message}`);
-  }
-}
-
-async function disconnectDevice(address) {
-  try {
-    await apiPost("/api/disconnect", { address });
-  } catch (e) {
-    showError(`Disconnect failed: ${e.message}`);
-  }
-}
-
-async function forgetDevice(address) {
-  if (!confirm(`Forget device ${address}? This will unpair it.`)) return;
-  try {
-    await apiPost("/api/forget", { address });
-  } catch (e) {
-    showError(`Forget failed: ${e.message}`);
-  }
-}
-
-// -- Event log helpers --
-
-const MAX_LOG_ENTRIES = 50;
-
-function appendLogEntry(logSelector, cssClass, html) {
-  const log = $(logSelector);
+function appendEventEntry(type, html) {
+  const log = $("#events-log");
 
   // Remove placeholder if present
-  const placeholder = log.querySelector(".placeholder");
+  const placeholder = log.querySelector(".text-center");
   if (placeholder) placeholder.remove();
 
   const entry = document.createElement("div");
-  entry.className = cssClass;
+  entry.className = "event-entry";
   entry.innerHTML = html;
-
   log.appendChild(entry);
 
   // Trim old entries
-  while (log.children.length > MAX_LOG_ENTRIES) {
+  while (log.children.length > MAX_EVENT_ENTRIES) {
     log.removeChild(log.firstChild);
   }
 
-  // Auto-scroll to bottom
+  eventCount = log.children.length;
+  $("#events-count").textContent = eventCount;
+
+  // Auto-scroll
   log.scrollTop = log.scrollHeight;
 }
 
 function eventTime(data) {
-  // Use server timestamp if available, otherwise current time
   const d = data.ts ? new Date(data.ts * 1000) : new Date();
   return d.toLocaleTimeString();
 }
 
 function appendMprisCommand(data) {
-  appendLogEntry(
-    "#mpris-log",
-    "log-entry",
-    `<span class="log-time">${escapeHtml(eventTime(data))}</span>`
-    + `<span class="log-command">${escapeHtml(data.command)}</span>`
-    + (data.detail ? ` <span class="log-detail">${escapeHtml(data.detail)}</span>` : ""),
+  appendEventEntry(
+    "mpris",
+    `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
+    + `<span class="event-type mpris">MPRIS</span>`
+    + `<span class="event-content"><strong>${escapeHtml(data.command)}</strong>`
+    + (data.detail ? ` <span class="text-muted">${escapeHtml(data.detail)}</span>` : "")
+    + `</span>`,
   );
 }
 
@@ -319,16 +389,215 @@ function appendAvrcpEvent(data) {
     ? JSON.stringify(data.value)
     : String(data.value);
 
-  appendLogEntry(
-    "#avrcp-log",
-    "log-entry",
-    `<span class="log-time">${escapeHtml(eventTime(data))}</span>`
-    + `<span class="log-prop">${escapeHtml(data.property)}</span> = `
-    + `<span class="log-value">${escapeHtml(valueStr)}</span>`,
+  appendEventEntry(
+    "avrcp",
+    `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
+    + `<span class="event-type avrcp">AVRCP</span>`
+    + `<span class="event-content"><strong>${escapeHtml(data.property)}</strong> = `
+    + `<span class="text-success">${escapeHtml(valueStr)}</span></span>`,
   );
 }
 
-// -- WebSocket (real-time updates) --
+function clearEvents() {
+  const log = $("#events-log");
+  log.innerHTML = `
+    <div class="text-center py-4 text-muted">
+      <i class="fas fa-satellite-dish fa-2x mb-2 d-block opacity-50"></i>
+      No events yet. Connect a device and press buttons on it.
+    </div>
+  `;
+  eventCount = 0;
+  $("#events-count").textContent = "0";
+}
+
+// ============================================
+// Section 10: App Log Viewer
+// ============================================
+
+const MAX_LOG_ENTRIES = 1000;
+let allLogEntries = [];
+let logSearchTimer = null;
+
+function appendLogEntry(data) {
+  allLogEntries.push(data);
+
+  // Trim buffer
+  if (allLogEntries.length > MAX_LOG_ENTRIES) {
+    allLogEntries = allLogEntries.slice(-MAX_LOG_ENTRIES);
+  }
+
+  // If live is off, don't render
+  const liveToggle = $("#log-live");
+  if (liveToggle && !liveToggle.checked) return;
+
+  // If filters are active, check before rendering
+  if (!matchesLogFilter(data)) return;
+
+  renderSingleLogEntry(data, true);
+  updateLogsCount();
+}
+
+function matchesLogFilter(entry) {
+  const levelFilter = $("#log-level-filter").value;
+  if (levelFilter && entry.level !== levelFilter) return false;
+
+  const searchInput = $("#log-search-input").value.toLowerCase();
+  if (searchInput && !entry.message.toLowerCase().includes(searchInput)
+      && !(entry.logger || "").toLowerCase().includes(searchInput)) {
+    return false;
+  }
+
+  return true;
+}
+
+function renderSingleLogEntry(entry, isNew) {
+  const container = $("#logs-container");
+
+  // Remove placeholder if present
+  const placeholder = container.querySelector(".text-center");
+  if (placeholder) placeholder.remove();
+
+  const el = document.createElement("div");
+  el.className = `log-entry${isNew ? " new" : ""}`;
+
+  const ts = new Date(entry.ts * 1000).toLocaleTimeString();
+  const levelClass = entry.level.toLowerCase();
+  const logger = (entry.logger || "").split(".").pop();
+
+  el.innerHTML =
+    `<span class="log-timestamp">${escapeHtml(ts)}</span>`
+    + `<span class="log-level ${levelClass}">${escapeHtml(entry.level)}</span>`
+    + `<span class="log-logger">${escapeHtml(logger)}</span>`
+    + `<span class="log-message">${escapeHtml(entry.message)}</span>`;
+
+  container.appendChild(el);
+
+  // Trim displayed entries
+  while (container.children.length > MAX_LOG_ENTRIES) {
+    container.removeChild(container.firstChild);
+  }
+
+  // Auto-scroll
+  const autoScroll = $("#log-auto-scroll");
+  if (autoScroll && autoScroll.checked) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+function filterLogs() {
+  renderAllFilteredLogs();
+}
+
+function debouncedLogSearch() {
+  clearTimeout(logSearchTimer);
+  logSearchTimer = setTimeout(renderAllFilteredLogs, 300);
+}
+
+function renderAllFilteredLogs() {
+  const container = $("#logs-container");
+  container.innerHTML = "";
+
+  const filtered = allLogEntries.filter(matchesLogFilter);
+  filtered.forEach((entry) => renderSingleLogEntry(entry, false));
+
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div class="text-center py-5 text-muted">
+        <p>No matching log entries.</p>
+      </div>
+    `;
+  }
+
+  updateLogsCount();
+
+  // Scroll to bottom
+  const autoScroll = $("#log-auto-scroll");
+  if (autoScroll && autoScroll.checked) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+function updateLogsCount() {
+  const count = $("#logs-container").querySelectorAll(".log-entry").length;
+  $("#logs-count").textContent = count;
+}
+
+// ============================================
+// Section 11: Actions
+// ============================================
+
+async function refreshDevices() {
+  try {
+    const [devResult, sinkResult] = await Promise.all([
+      apiGet("/api/devices"),
+      apiGet("/api/audio/sinks"),
+    ]);
+    currentSinks = sinkResult.sinks || [];
+    renderDevices(devResult.devices);
+  } catch (e) {
+    showToast(`Refresh failed: ${e.message}`, "error");
+  }
+}
+
+async function scanDevices() {
+  try {
+    await apiPost("/api/scan");
+  } catch (e) {
+    showToast(`Scan failed: ${e.message}`, "error");
+  }
+}
+
+async function pairDevice(address) {
+  try {
+    await apiPost("/api/pair", { address });
+  } catch (e) {
+    showToast(`Pairing failed: ${e.message}`, "error");
+  }
+}
+
+async function connectDevice(address) {
+  try {
+    await apiPost("/api/connect", { address });
+  } catch (e) {
+    showToast(`Connection failed: ${e.message}`, "error");
+  }
+}
+
+async function disconnectDevice(address) {
+  try {
+    await apiPost("/api/disconnect", { address });
+  } catch (e) {
+    showToast(`Disconnect failed: ${e.message}`, "error");
+  }
+}
+
+async function forgetDevice(address) {
+  if (!confirm(`Forget device ${address}? This will unpair it.`)) return;
+  try {
+    await apiPost("/api/forget", { address });
+  } catch (e) {
+    showToast(`Forget failed: ${e.message}`, "error");
+  }
+}
+
+async function selectAdapter(adapterName) {
+  if (!confirm(`Switch to adapter ${adapterName}? The add-on will restart.`)) return;
+  try {
+    showBanner(`Switching to adapter ${adapterName}...`);
+    const result = await apiPost("/api/set-adapter", { adapter: adapterName });
+    if (result.restart_required) {
+      showBanner("Restarting add-on with new adapter...");
+      await apiPost("/api/restart");
+    }
+  } catch (e) {
+    hideBanner();
+    showToast(`Adapter switch failed: ${e.message}`, "error");
+  }
+}
+
+// ============================================
+// Section 12: WebSocket (Real-time Updates)
+// ============================================
 
 let ws = null;
 let wsReconnectDelay = 1000;
@@ -355,6 +624,8 @@ function connectWebSocket() {
         break;
       case "sinks_changed":
         renderSinks(msg.sinks);
+        // Re-render devices to update merged sink info
+        refreshDevicesFromCache();
         break;
       case "mpris_command":
         appendMprisCommand(msg);
@@ -362,11 +633,14 @@ function connectWebSocket() {
       case "avrcp_event":
         appendAvrcpEvent(msg);
         break;
+      case "log_entry":
+        appendLogEntry(msg);
+        break;
       case "status":
         if (msg.message) {
-          showStatus(msg.message);
+          showBanner(msg.message);
         } else {
-          hideStatus();
+          hideBanner();
         }
         break;
       default:
@@ -387,85 +661,33 @@ function connectWebSocket() {
   };
 }
 
-// -- Adapter rendering --
+// Cache last known devices for re-rendering when sinks change
+let lastDevices = null;
 
-function renderAdapters(adapters) {
-  const list = $("#adapters-list");
-
-  if (!adapters || adapters.length === 0) {
-    list.innerHTML =
-      '<p class="placeholder">No Bluetooth adapters found.</p>';
-    return;
-  }
-
-  list.innerHTML = adapters
-    .map((a) => {
-      const selectedBadge = a.selected
-        ? '<span class="device-status status-connected">In Use</span>'
-        : "";
-      const bleBadge = a.ble_scanning
-        ? '<span class="device-status status-paired">HA BLE Scanning</span>'
-        : "";
-      const poweredLabel = a.powered ? "Powered" : "Off";
-      const poweredClass = a.powered ? "status-connected" : "status-discovered";
-
-      // Show model name if available, otherwise just the hci name
-      const displayName = a.hw_model
-        ? `${escapeHtml(a.name)} — ${escapeHtml(a.hw_model)}`
-        : escapeHtml(a.name);
-
-      // Select button for non-selected, powered adapters
-      const selectBtn = !a.selected && a.powered
-        ? `<button class="btn btn-small btn-primary" onclick="selectAdapter('${a.name}')">Select</button>`
-        : "";
-
-      return `
-        <div class="sink-card">
-          <div>
-            <div class="sink-name">${displayName}</div>
-            <div class="sink-description">${escapeHtml(a.address)}</div>
-          </div>
-          <div>
-            <span class="device-status ${poweredClass}">${poweredLabel}</span>
-            ${selectedBadge}
-            ${bleBadge}
-            ${selectBtn}
-          </div>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-async function selectAdapter(adapterName) {
-  if (!confirm(`Switch to adapter ${adapterName}? The add-on will restart.`)) return;
-  try {
-    showStatus(`Switching to adapter ${adapterName}...`);
-    const result = await apiPost("/api/set-adapter", { adapter: adapterName });
-    if (result.restart_required) {
-      showStatus("Restarting add-on with new adapter...");
-      await apiPost("/api/restart");
-    }
-  } catch (e) {
-    showError(`Adapter switch failed: ${e.message}`);
+function refreshDevicesFromCache() {
+  if (lastDevices) {
+    renderDevices(lastDevices);
   }
 }
 
-async function loadAdapters() {
-  try {
-    const data = await apiGet("/api/adapters");
-    renderAdapters(data.adapters);
-  } catch (e) {
-    console.warn("Failed to load adapters:", e.message);
-  }
-}
+// Wrap renderDevices to cache
+const _origRenderDevices = renderDevices;
+// We need to intercept — override via reassignment pattern
+(function () {
+  const grid = null; // Will be resolved at call time
+  const origFn = renderDevices;
 
-// -- Init --
+  window.renderDevices = function (devices) {
+    lastDevices = devices;
+    origFn(devices);
+  };
+})();
+
+// ============================================
+// Section 13: Init
+// ============================================
 
 document.addEventListener("DOMContentLoaded", () => {
-  $("#btn-scan").addEventListener("click", scanDevices);
-  $("#btn-refresh").addEventListener("click", refreshDevices);
-
   // WebSocket provides real-time updates (initial state sent on connect)
   connectWebSocket();
 

@@ -11,6 +11,7 @@ from dbus_next.errors import DBusError
 
 if TYPE_CHECKING:
     from ..manager import BluetoothAudioManager
+    from .log_handler import WebSocketLogHandler
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,10 @@ async def _ws_sender(
         pass
 
 
-def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
+def create_api_routes(
+    manager: "BluetoothAudioManager",
+    log_handler: "WebSocketLogHandler | None" = None,
+) -> list[web.RouteDef]:
     """Create all API route definitions."""
     routes = web.RouteTableDef()
 
@@ -490,6 +494,13 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
 
         return web.json_response(results)
 
+    @routes.get("/api/logs")
+    async def get_logs(request: web.Request) -> web.Response:
+        """Return recent application log entries."""
+        if log_handler is None:
+            return web.json_response({"logs": []})
+        return web.json_response({"logs": list(log_handler.recent_logs)})
+
     @routes.get("/api/ws")
     async def websocket_handler(request: web.Request) -> WebSocketResponse:
         """WebSocket endpoint for real-time UI updates.
@@ -517,6 +528,11 @@ def create_api_routes(manager: "BluetoothAudioManager") -> list[web.RouteDef]:
                 await ws.send_json({"type": "mpris_command", **entry})
             for entry in manager.recent_avrcp:
                 await ws.send_json({"type": "avrcp_event", **entry})
+
+            # Replay recent log entries
+            if log_handler:
+                for entry in log_handler.recent_logs:
+                    await ws.send_json({"type": "log_entry", **entry})
 
             # Block until client disconnects (reads drain client msgs)
             async for _msg in ws:
