@@ -1,4 +1,4 @@
-"""aiohttp web server for the add-on's ingress UI and REST API.
+"""aiohttp web server for the app's ingress UI and REST API.
 
 NOTE: Static assets are served from /res/ (not /static/) to avoid
 HA's frontend service worker, which applies a CacheFirst strategy

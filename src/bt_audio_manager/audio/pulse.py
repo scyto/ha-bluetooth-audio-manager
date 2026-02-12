@@ -8,6 +8,7 @@ When BlueZ connects an A2DP device, PulseAudio's module-bluez5-discover
 import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 
 from pulsectl_asyncio import PulseAsync
 
@@ -225,12 +226,18 @@ class PulseAudioManager:
         return bt_sinks
 
     async def wait_for_bt_sink(
-        self, address: str, timeout: float = 15.0
+        self,
+        address: str,
+        timeout: float = 15.0,
+        connected_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> str | None:
         """Wait for PulseAudio to register the A2DP sink for a given address.
 
         PulseAudio sink names use the MAC with underscores:
             bluez_sink.XX_XX_XX_XX_XX_XX.a2dp_sink
+
+        If *connected_check* is provided, it is awaited each iteration to
+        bail out early when the device disconnects mid-wait.
         """
         addr_underscored = address.replace(":", "_")
         expected_pattern = f"bluez_sink.{addr_underscored}"
@@ -242,6 +249,11 @@ class PulseAudioManager:
                 if expected_pattern in sink.name:
                     logger.info("A2DP sink ready: %s", sink.name)
                     return sink.name
+            if connected_check and not await connected_check():
+                logger.warning(
+                    "Device %s disconnected while waiting for A2DP sink", address
+                )
+                return None
             await asyncio.sleep(1.0)
 
         logger.warning(

@@ -1,7 +1,7 @@
 configuration:
   log_level:
     name: Log Level
-    description: Logging verbosity for the add-on.
+    description: Logging verbosity for the app.
   auto_reconnect:
     name: Auto Reconnect
     description: Automatically reconnect to paired devices when they become available.

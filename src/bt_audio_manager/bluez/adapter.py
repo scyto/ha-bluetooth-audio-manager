@@ -59,7 +59,7 @@ class BluezAdapter:
         if not powered.value:
             raise AdapterNotPoweredError(
                 "Bluetooth adapter is not powered. "
-                "Enable Bluetooth in HAOS settings — this add-on does not "
+                "Enable Bluetooth in HAOS settings — this app does not "
                 "modify adapter power state."
             )
 
@@ -248,13 +248,43 @@ class BluezAdapter:
             for path in [device_path, os.path.dirname(device_path)]:
                 mfr_file = os.path.join(path, "manufacturer")
                 prod_file = os.path.join(path, "product")
-                if os.path.isfile(mfr_file) and os.path.isfile(prod_file):
-                    mfr = open(mfr_file).read().strip()
-                    prod = open(prod_file).read().strip()
-                    return f"{mfr} {prod}"
-                # Some devices only have product
                 if os.path.isfile(prod_file):
-                    return open(prod_file).read().strip()
+                    prod = open(prod_file).read().strip()
+                    if not prod:
+                        continue
+                    # Include manufacturer only if non-empty
+                    if os.path.isfile(mfr_file):
+                        mfr = open(mfr_file).read().strip()
+                        if mfr:
+                            return f"{mfr} {prod}"
+                    return prod
+        except OSError:
+            pass
+        return None
+
+    @staticmethod
+    def _read_sysfs_usb_id(hci_name: str) -> str | None:
+        """Read the real USB vendor:product ID from sysfs for a BT adapter.
+
+        Walks the same path as _read_sysfs_hw_info but reads idVendor and
+        idProduct files, which are always present for USB devices (unlike
+        manufacturer/product string descriptors).
+
+        Returns e.g. "2357:0604" (lowercase) or None for non-USB adapters.
+        """
+        base = f"/sys/class/bluetooth/{hci_name}"
+        if not os.path.exists(base):
+            return None
+        try:
+            device_path = os.path.realpath(os.path.join(base, "device"))
+            for path in [device_path, os.path.dirname(device_path)]:
+                vid_file = os.path.join(path, "idVendor")
+                pid_file = os.path.join(path, "idProduct")
+                if os.path.isfile(vid_file) and os.path.isfile(pid_file):
+                    vid = open(vid_file).read().strip().lower()
+                    pid = open(pid_file).read().strip().lower()
+                    if vid and pid:
+                        return f"{vid}:{pid}"
         except OSError:
             pass
         return None
@@ -289,6 +319,9 @@ class BluezAdapter:
             # Try to get hardware model from sysfs (USB manufacturer + product)
             hw_model = BluezAdapter._read_sysfs_hw_info(hci_name)
 
+            # Read real USB vendor:product ID from sysfs
+            usb_id = BluezAdapter._read_sysfs_usb_id(hci_name)
+
             # Fall back to BlueZ Modalias property (e.g. "usb:v0A12p0001d0678")
             modalias = _val("Modalias") or ""
             if not hw_model and modalias:
@@ -301,6 +334,7 @@ class BluezAdapter:
                 "alias": _val("Alias") or "",
                 "hw_model": hw_model or "",
                 "modalias": modalias,
+                "usb_id": usb_id or "",
                 "powered": bool(_val("Powered")),
                 "discovering": bool(_val("Discovering")),
             })

@@ -49,7 +49,7 @@ body:
   - type: input
     id: addon-version
     attributes:
-      label: Add-on version
+      label: App version
       placeholder: e.g. 0.3.5
     validations:
       required: true

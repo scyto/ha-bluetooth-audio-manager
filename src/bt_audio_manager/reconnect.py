@@ -85,7 +85,7 @@ class ReconnectService:
 
     async def _reconnect_loop(self, address: str) -> None:
         """Attempt reconnection with exponential backoff and jitter."""
-        # Check if already connected (e.g. device persisted across add-on restart)
+        # Check if already connected (e.g. device persisted across app restart)
         device = self._manager.managed_devices.get(address)
         if device:
             try:

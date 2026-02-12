@@ -8,7 +8,7 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   capability net_raw,
 
   # S6-overlay and shell — rix needed because /init is a shell script
-  # that /bin/sh must read to interpret (matches dnsmasq, Argon One add-ons)
+  # that /bin/sh must read to interpret (matches dnsmasq, Argon One apps)
   /init rix,
   /bin/** ix,
   /usr/bin/** ix,
@@ -27,7 +27,7 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   # player and pairing agent using our dynamic unique bus name
   # (:1.xxx), which cannot be allowlisted by peer name.  Broad
   # send/receive on the system bus is the standard pattern for
-  # HA add-ons that interact with BlueZ (cf. dnsmasq, Argon One).
+  # HA apps that interact with BlueZ (cf. dnsmasq, Argon One).
   dbus send    bus=system,
   dbus receive bus=system,
 
@@ -63,10 +63,22 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /usr/lib/libdbus* r,
   /lib/** r,
 
+  # DNS resolution (required for Supervisor API calls via hostname)
+  /etc/resolv.conf r,
+  /etc/nsswitch.conf r,
+  /etc/hosts r,
+  /etc/host.conf r,
+
   # Read-only system info
   /proc/*/status r,
   /sys/class/bluetooth/** r,
   /sys/devices/**/bluetooth/** r,
+  # Parent USB device attributes (idVendor, idProduct, manufacturer, product)
+  # needed to identify which USB Bluetooth adapter is which
+  /sys/devices/**/idVendor r,
+  /sys/devices/**/idProduct r,
+  /sys/devices/**/manufacturer r,
+  /sys/devices/**/product r,
 
   # Network (ingress web UI, PulseAudio, D-Bus)
   network inet stream,

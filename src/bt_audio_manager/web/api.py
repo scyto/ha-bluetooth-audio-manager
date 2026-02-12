@@ -69,13 +69,16 @@ def create_api_routes(
 
     @routes.get("/api/info")
     async def info(request: web.Request) -> web.Response:
-        """Return add-on version and adapter info for the UI."""
+        """Return app version and adapter info for the UI."""
         import os
-        adapter_name = manager._adapter_path.rsplit("/", 1)[-1]
+        path = manager._adapter_path or "/org/bluez/hci0"
+        adapter_name = path.rsplit("/", 1)[-1]
         return web.json_response({
             "version": os.environ.get("BUILD_VERSION", "dev"),
             "adapter": adapter_name,
-            "adapter_path": manager._adapter_path,
+            "adapter_path": path,
+            "adapter_mac": manager.config.bt_adapter
+            if manager.config.bt_adapter_is_mac else None,
         })
 
     @routes.get("/api/adapters")
@@ -92,7 +95,9 @@ def create_api_routes(
     async def set_adapter(request: web.Request) -> web.Response:
         """Set the Bluetooth adapter. Persists to settings.json.
 
-        Accepts {"adapter": "hci1"}. Requires a restart to take effect.
+        Accepts {"adapter": "hci1", "clean": true}.
+        When clean=true, disconnects and removes all devices before saving.
+        Requires a restart to take effect.
         """
         try:
             body = await request.json()
@@ -102,13 +107,21 @@ def create_api_routes(
                     {"error": "adapter is required"}, status=400
                 )
 
+            clean = body.get("clean", False)
+            if clean:
+                await manager.clear_all_devices()
+
             manager.config.bt_adapter = adapter_name
             manager.config.save_settings()
 
-            logger.info("Adapter selection changed to %s (restart required)", adapter_name)
+            logger.info(
+                "Adapter selection changed to %s (restart required, clean=%s)",
+                adapter_name, clean,
+            )
             return web.json_response({
                 "adapter": adapter_name,
                 "restart_required": True,
+                "cleaned": clean,
             })
         except Exception as e:
             logger.error("Failed to set adapter: %s", e)
@@ -116,7 +129,7 @@ def create_api_routes(
 
     @routes.post("/api/restart")
     async def restart_addon(request: web.Request) -> web.Response:
-        """Restart this add-on via the HA Supervisor API."""
+        """Restart this app via the HA Supervisor API."""
         import aiohttp
         try:
             supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
@@ -139,7 +152,7 @@ def create_api_routes(
 
             return web.json_response({"restarting": True})
         except Exception as e:
-            logger.error("Failed to restart add-on: %s", e)
+            logger.error("Failed to restart app: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
     @routes.get("/api/devices")

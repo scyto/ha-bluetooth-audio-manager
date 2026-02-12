@@ -29,16 +29,33 @@ from .web.events import EventBus
 
 logger = logging.getLogger(__name__)
 
+# Common Bluetooth USB vendor IDs → friendly vendor names.
+# Used as a last-resort fallback when both sysfs and the Supervisor's
+# udev database lack a human-readable product name.
+_USB_BT_VENDORS: dict[str, str] = {
+    "8087": "Intel",
+    "0cf3": "Qualcomm / Atheros",
+    "0a5c": "Broadcom",
+    "0bda": "Realtek",
+    "2357": "TP-Link",
+    "0a12": "Cambridge Silicon Radio",
+    "413c": "Dell",
+    "0489": "Foxconn / Hon Hai",
+    "13d3": "IMC Networks",
+    "04ca": "Lite-On",
+    "0930": "Toshiba",
+}
+
 
 class BluetoothAudioManager:
-    """Central orchestrator for the Bluetooth Audio Manager add-on."""
+    """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
     MAX_RECENT_EVENTS = 50  # ring buffer size for MPRIS/AVRCP events
 
     def __init__(self, config: AppConfig):
         self.config = config
-        self._adapter_path = config.adapter_path
+        self._adapter_path: str | None = None  # resolved in start()
         self.bus: MessageBus | None = None
         self.adapter: BluezAdapter | None = None
         self.agent: PairingAgent | None = None
@@ -65,6 +82,66 @@ class BluetoothAudioManager:
         self._scanning: bool = False
         self._scan_task: asyncio.Task | None = None
         self._scan_debounce_handle: asyncio.TimerHandle | None = None
+
+    async def _resolve_adapter_path(self) -> str:
+        """Resolve the configured bt_adapter to a BlueZ D-Bus path.
+
+        Handles three formats:
+        - "auto"                → first powered adapter (or /org/bluez/hci0)
+        - "78:20:51:F5:F1:07"  → look up by MAC address
+        - "hci1" (legacy)      → look up by HCI name, migrate to MAC
+        """
+        cfg = self.config
+        adapters = await BluezAdapter.list_all(self.bus)
+
+        if cfg.bt_adapter == "auto":
+            # Prefer first powered adapter, else first available
+            powered = [a for a in adapters if a["powered"]]
+            choice = powered[0] if powered else (adapters[0] if adapters else None)
+            if choice:
+                logger.info("Auto-selected adapter %s (%s)", choice["name"], choice["address"])
+                return choice["path"]
+            return "/org/bluez/hci0"
+
+        if cfg.bt_adapter_is_mac:
+            # New format: look up by MAC address
+            match = next((a for a in adapters if a["address"] == cfg.bt_adapter), None)
+            if match:
+                logger.info(
+                    "Resolved adapter MAC %s → %s", cfg.bt_adapter, match["path"],
+                )
+                return match["path"]
+            # Configured adapter not found — fall back to auto for this session
+            logger.warning(
+                "Configured adapter %s not found — falling back to auto "
+                "(adapter may be disconnected; settings preserved)",
+                cfg.bt_adapter,
+            )
+            self._broadcast_status(
+                f"Configured adapter {cfg.bt_adapter} not found — using default"
+            )
+            powered = [a for a in adapters if a["powered"]]
+            choice = powered[0] if powered else (adapters[0] if adapters else None)
+            return choice["path"] if choice else "/org/bluez/hci0"
+
+        # Legacy format: HCI name like "hci1"
+        match = next((a for a in adapters if a["name"] == cfg.bt_adapter), None)
+        if match:
+            logger.info(
+                "Migrating legacy adapter setting %s → %s",
+                cfg.bt_adapter, match["address"],
+            )
+            cfg.bt_adapter = match["address"]
+            cfg.save_settings()
+            return match["path"]
+        # Legacy HCI name not found — fall back
+        logger.warning(
+            "Legacy adapter %s not found — falling back to auto",
+            cfg.bt_adapter,
+        )
+        powered = [a for a in adapters if a["powered"]]
+        choice = powered[0] if powered else (adapters[0] if adapters else None)
+        return choice["path"] if choice else "/org/bluez/hci0"
 
     async def start(self) -> None:
         """Full startup sequence."""
@@ -110,13 +187,12 @@ class BluetoothAudioManager:
                     changed = msg.body[1] if len(msg.body) > 1 else {}
                     prop_names = list(changed.keys()) if isinstance(changed, dict) else []
 
-                    # Suppress noisy RSSI / ManufacturerData spam to DEBUG
+                    # Silently discard noisy RSSI / ManufacturerData / TxPower
+                    # churn — these fire many times per second per device and
+                    # provide no actionable information for this app.
                     _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower"}
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
-                        logger.debug(
-                            "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
-                            iface_name, prop_names, msg.path,
-                        )
+                        pass
                     else:
                         logger.info(
                             "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
@@ -175,7 +251,8 @@ class BluetoothAudioManager:
                 )
             )
 
-        # 2. Initialize BlueZ adapter (using configured adapter path)
+        # 2. Resolve configured adapter (MAC or legacy HCI) → D-Bus path
+        self._adapter_path = await self._resolve_adapter_path()
         logger.info("Using Bluetooth adapter: %s", self._adapter_path)
         self.adapter = BluezAdapter(self.bus, self._adapter_path)
         await self.adapter.initialize()
@@ -215,7 +292,7 @@ class BluetoothAudioManager:
 
         # 6. Register BluezDevice objects for all stored devices so UI
         #    actions (disconnect, forget) work immediately, even if the
-        #    device is already connected from a previous add-on session.
+        #    device is already connected from a previous app session.
         for device_info in self.store.devices:
             addr = device_info["address"]
             try:
@@ -277,7 +354,7 @@ class BluetoothAudioManager:
 
         # 6b. Detect devices connected at the BlueZ level but NOT in our
         #     store (e.g. store wiped during rebuild, or device paired outside
-        #     the add-on).  Create BluezDevice wrappers so UI buttons work.
+        #     the app).  Create BluezDevice wrappers so UI buttons work.
         try:
             from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE
             intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
@@ -408,7 +485,7 @@ class BluetoothAudioManager:
             await self.pulse.disconnect()
 
         # Disconnect D-Bus (do NOT disconnect BT devices — user may want
-        # audio to persist if the add-on restarts)
+        # audio to persist if the app restarts)
         if self.bus:
             self.bus.disconnect()
 
@@ -621,8 +698,9 @@ class BluetoothAudioManager:
         try:
             device = await self._get_or_create_device(address)
 
-            # Skip redundant BlueZ connect if already connected, but still
-            # wait for services and A2DP sink (e.g. after pairing auto-connect)
+            # Always call connect() even if already connected — BlueZ's
+            # pair auto-connect only creates a link-level connection; the
+            # explicit Connect() D-Bus call is needed to set up A2DP profiles.
             already_connected = False
             try:
                 already_connected = await device.is_connected()
@@ -630,9 +708,8 @@ class BluetoothAudioManager:
                 pass
 
             if already_connected:
-                logger.info("Device %s already connected, waiting for services/sink", address)
-            else:
-                await device.connect()
+                logger.info("Device %s already connected, calling connect() to ensure A2DP profiles", address)
+            await device.connect()
 
             self._broadcast_status(f"Waiting for services on {address}...")
             await device.wait_for_services(timeout=10)
@@ -646,7 +723,9 @@ class BluetoothAudioManager:
             # Verify PulseAudio sink appeared
             if self.pulse:
                 self._broadcast_status(f"Waiting for A2DP sink for {address}...")
-                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
+                sink_name = await self.pulse.wait_for_bt_sink(
+                    address, timeout=15, connected_check=device.is_connected
+                )
                 if sink_name:
                     # Disconnect HFP only AFTER A2DP is up — doing it earlier
                     # can cause the speaker to drop the entire connection when
@@ -727,13 +806,79 @@ class BluetoothAudioManager:
             device.cleanup()
 
         # Remove from BlueZ (search all adapters — device may be on a
-        # different adapter than the one this add-on is configured to use)
+        # different adapter than the one this app is configured to use)
         await BluezAdapter.remove_device_any_adapter(self.bus, address)
 
         # Remove from persistent store
         await self.store.remove_device(address)
         logger.info("Device %s forgotten", address)
         self.event_bus.emit("status", {"message": ""})
+        await self._broadcast_all()
+
+    async def clear_all_devices(self) -> None:
+        """Disconnect, unpair, and remove ALL devices from BlueZ and the
+        persistent store.
+
+        Used before switching adapters so the new adapter starts fresh.
+        Broadcasts status updates during the cleanup for frontend progress.
+        """
+        # 1. Stop reconnect service to prevent interference
+        if self.reconnect_service:
+            await self.reconnect_service.stop()
+
+        # 2. Stop all keep-alive instances
+        for addr in list(self._keepalives):
+            await self._stop_keepalive(addr)
+
+        # 3. Collect all known addresses (managed + stored)
+        addresses = set(self.managed_devices.keys())
+        addresses.update(d["address"] for d in self.store.devices)
+
+        if not addresses:
+            self._broadcast_status("No devices to clean up")
+            await asyncio.sleep(0.5)
+            return
+
+        total = len(addresses)
+
+        # 4. Disconnect all connected devices
+        for i, addr in enumerate(addresses, 1):
+            self._broadcast_status(f"Disconnecting device {i}/{total}...")
+            self._suppress_reconnect.add(addr)
+            device = self.managed_devices.get(addr)
+            if device:
+                try:
+                    await device.disconnect()
+                except Exception as exc:
+                    logger.warning("clear_all: disconnect %s failed: %s", addr, exc)
+
+        # 5. Brief pause for BlueZ to process disconnections
+        await asyncio.sleep(1)
+
+        # 6. Remove each device from BlueZ and clean up D-Bus subscriptions
+        for i, addr in enumerate(addresses, 1):
+            self._broadcast_status(f"Removing device {i}/{total}...")
+            device = self.managed_devices.pop(addr, None)
+            if device:
+                device.cleanup()
+            try:
+                await BluezAdapter.remove_device_any_adapter(self.bus, addr)
+            except Exception as exc:
+                logger.warning("clear_all: BlueZ remove %s failed: %s", addr, exc)
+
+        # 7. Clear persistent store (single write instead of N individual removes)
+        self.store._devices.clear()
+        await self.store.save()
+
+        # 8. Clear internal tracking state
+        self._device_connect_time.clear()
+        self._last_signaled_volume.clear()
+        self._suppress_reconnect.clear()
+        self._a2dp_attempts.clear()
+        self._connecting.clear()
+
+        self._broadcast_status(f"Cleared {total} device(s)")
+        logger.info("clear_all_devices: removed %d device(s)", total)
         await self._broadcast_all()
 
     async def get_all_devices(self) -> list[dict]:
@@ -790,7 +935,7 @@ class BluetoothAudioManager:
         """List all Bluetooth adapters on the system.
 
         Each adapter dict includes a flag indicating whether it's the
-        one this add-on is configured to use, and whether it appears to
+        one this app is configured to use, and whether it appears to
         be running HA's BLE scanning (Discovering=true).
 
         Enriches adapter entries with USB device names from the HA
@@ -817,10 +962,21 @@ class BluetoothAudioManager:
                     if hci_key in usb_names:
                         a["hw_model"] = usb_names[hci_key]
                         continue
-                    # Try match by Modalias → USB vendor:product
-                    usb_id = self._modalias_to_usb_id(a["modalias"])
+                    # Try match by real USB ID from sysfs (preferred),
+                    # fall back to modalias-derived ID (less reliable in Docker)
+                    usb_id = a.get("usb_id") or self._modalias_to_usb_id(a["modalias"])
                     if usb_id and usb_id in usb_names:
                         a["hw_model"] = usb_names[usb_id]
+
+        # Final fallback: use built-in USB vendor names for adapters
+        # that still have no friendly name (udev database was incomplete)
+        for a in adapters:
+            if not a["hw_model"] or a["hw_model"] == a["modalias"]:
+                usb_id = a.get("usb_id", "")
+                if usb_id:
+                    vendor_name = _USB_BT_VENDORS.get(usb_id.split(":")[0], "")
+                    if vendor_name:
+                        a["hw_model"] = f"{vendor_name} ({usb_id})"
 
         for a in adapters:
             a["selected"] = a["path"] == self._adapter_path
@@ -831,77 +987,116 @@ class BluetoothAudioManager:
     async def _get_supervisor_usb_names() -> dict[str, str]:
         """Query the HA Supervisor hardware API for USB device names.
 
-        Returns two mappings:
+        Returns mappings keyed by:
         - USB id (vendor:product, lowercase) → device description
-        - hci adapter name → device description (when sysfs path reveals it)
-        Combined into a single dict keyed by both.
+        - hci adapter name (hci:hciX) → device description
+
+        The hci mapping is built by cross-referencing bluetooth devices
+        (which have hci names but no USB product info) with their parent
+        USB devices (which have product info but no hci names) via sysfs
+        path prefix matching.
         """
         import aiohttp
+        import re
         token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
+            logger.warning("SUPERVISOR_TOKEN not set — cannot query hardware API")
+            return {}
+        # Try hostname first, then fall back to standard Supervisor IP
+        # (AppArmor may block /etc/resolv.conf, breaking DNS resolution)
+        urls = ["http://supervisor/hardware/info", "http://172.30.32.2/hardware/info"]
+        result = None
+        for url in urls:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning("Supervisor hardware API returned %s from %s", resp.status, url)
+                            continue
+                        result = await resp.json()
+                        break
+            except Exception as e:
+                logger.debug("Supervisor API at %s failed: %s", url, e)
+                continue
+        if result is None:
+            logger.warning("Failed to query Supervisor hardware API (tried hostname and IP)")
             return {}
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "http://supervisor/hardware/info",
-                    headers={"Authorization": f"Bearer {token}"},
-                ) as resp:
-                    if resp.status != 200:
-                        return {}
-                    result = await resp.json()
 
             devices = result.get("data", {}).get("devices", [])
             names: dict[str, str] = {}
+            # sysfs path → (usb_id, full_name) for parent-path matching
+            usb_by_path: dict[str, tuple[str, str]] = {}
 
+            # Pass 1: collect USB devices with vendor/product info
             for dev in devices:
                 attrs = dev.get("attributes", {})
-                subsystem = dev.get("subsystem", "")
-                sysfs = dev.get("sysfs", dev.get("by_id", ""))
+                sysfs = dev.get("sysfs", "")
                 dev_name = dev.get("name", "")
 
-                # Build a human-readable name from available attributes
-                name = (
-                    attrs.get("ID_MODEL_FROM_DATABASE")
-                    or attrs.get("ID_MODEL")
-                    or ""
-                )
-                vendor = (
-                    attrs.get("ID_VENDOR_FROM_DATABASE")
-                    or attrs.get("ID_VENDOR")
-                    or ""
-                )
-                full_name = f"{vendor} {name}".strip() if vendor and name else (name or vendor or dev_name)
+                vid = attrs.get("ID_VENDOR_ID", "")
+                pid = attrs.get("ID_MODEL_ID", "")
+                if not (vid and pid):
+                    continue
 
+                # Prefer udev database names; raw ID_MODEL/ID_VENDOR are
+                # often just hex IDs (e.g. "8087") which aren't useful.
+                name = attrs.get("ID_MODEL_FROM_DATABASE") or ""
+                vendor = attrs.get("ID_VENDOR_FROM_DATABASE") or ""
+                if not name and not vendor:
+                    # No udev database entry — skip this device, the raw
+                    # IDs aren't useful as display names
+                    continue
+                full_name = f"{vendor} {name}".strip() if vendor and name else (name or vendor)
                 if not full_name:
                     continue
 
-                # Key by USB vendor:product if available
+                usb_id = f"{vid.lower()}:{pid.lower()}"
+                names[usb_id] = full_name
+                if sysfs:
+                    usb_by_path[sysfs] = (usb_id, full_name)
+
+            # Pass 2: find bluetooth/hci devices and map to parent USB names
+            for dev in devices:
+                sysfs = dev.get("sysfs", dev.get("by_id", ""))
+                subsystem = dev.get("subsystem", "")
+                dev_name = dev.get("name", "")
+
+                if subsystem != "bluetooth" and "bluetooth" not in sysfs.lower():
+                    continue
+
+                # Extract hci name from sysfs path or device name
+                m = re.search(r"(hci\d+)", sysfs) or re.search(r"(hci\d+)", dev_name)
+                if not m:
+                    continue
+                hci_name = m.group(1)
+                hci_key = f"hci:{hci_name}"
+
+                # Check if this device itself has vendor/product info
+                attrs = dev.get("attributes", {})
                 vid = attrs.get("ID_VENDOR_ID", "")
                 pid = attrs.get("ID_MODEL_ID", "")
                 if vid and pid:
                     usb_id = f"{vid.lower()}:{pid.lower()}"
-                    names[usb_id] = full_name
+                    if usb_id in names:
+                        names[hci_key] = names[usb_id]
+                        continue
 
-                # Key by hci name if the sysfs path reveals the BT adapter
-                # e.g. sysfs path containing /bluetooth/hci0
-                if "bluetooth" in sysfs.lower() or subsystem == "bluetooth":
-                    import re
-                    m = re.search(r"(hci\d+)", sysfs)
-                    if m:
-                        names[f"hci:{m.group(1)}"] = full_name
+                # Find parent USB device by sysfs path prefix
+                if sysfs:
+                    for usb_sysfs, (_uid, usb_name) in usb_by_path.items():
+                        if sysfs.startswith(usb_sysfs + "/"):
+                            names[hci_key] = usb_name
+                            break
 
             logger.info("Supervisor HW names: %s", names)
-            # Also log raw device list for debugging (first time only)
-            if not names:
-                for dev in devices[:20]:
-                    logger.info("Supervisor HW device: subsystem=%s name=%s sysfs=%s attrs=%s",
-                                dev.get("subsystem"), dev.get("name"),
-                                dev.get("sysfs", dev.get("by_id", "")),
-                                {k: v for k, v in dev.get("attributes", {}).items()
-                                 if any(kw in k.upper() for kw in ("VENDOR", "MODEL", "PRODUCT", "ID_"))})
             return names
         except Exception as e:
-            logger.debug("Failed to query Supervisor hardware API: %s", e)
+            logger.warning("Failed to query Supervisor hardware API: %s", e)
             return {}
 
     @staticmethod
@@ -985,7 +1180,10 @@ class BluetoothAudioManager:
         asyncio.ensure_future(self._stop_keepalive(address))
         asyncio.ensure_future(self._stop_mpd_if_unused())
 
-        if address in self._suppress_reconnect:
+        if address in self._connecting:
+            # Active pair/connect flow in progress — don't start competing reconnect
+            logger.info("Skipping auto-reconnect for %s (connection in progress)", address)
+        elif address in self._suppress_reconnect:
             # User-initiated disconnect — don't auto-reconnect
             self._suppress_reconnect.discard(address)
             logger.info("Skipping auto-reconnect for %s (user-initiated disconnect)", address)
@@ -1068,7 +1266,7 @@ class BluetoothAudioManager:
     async def _refresh_avrcp_session(self, address: str) -> None:
         """Cycle AVRCP profiles to rebind the control channel to this process.
 
-        After an add-on restart the old D-Bus unique name is gone, but the
+        After an app restart the old D-Bus unique name is gone, but the
         AVRCP session still references it.  Disconnecting and reconnecting
         the AVRCP profiles forces BlueZ to re-discover our newly registered
         MPRIS player without tearing down the A2DP audio stream.

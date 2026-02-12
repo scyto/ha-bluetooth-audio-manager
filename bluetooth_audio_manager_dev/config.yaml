@@ -15,6 +15,7 @@ boot: auto
 
 # Permissions (least privilege)
 host_dbus: true
+hassio_api: true
 audio: true
 privileged:
   - NET_ADMIN
@@ -31,7 +32,7 @@ map:
   - type: data
     read_only: false
 
-# User options (runtime settings are managed in the add-on UI)
+# User options (runtime settings are managed in the app UI)
 options:
   log_level: "info"
 

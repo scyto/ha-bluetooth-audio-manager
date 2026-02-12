@@ -2,7 +2,7 @@
  * Bluetooth Audio Manager — Ingress UI
  *
  * Vanilla JS interface with Bootstrap 5.3 components.
- * Communicates with the add-on's REST API via WebSocket for real-time updates.
+ * Communicates with the app's REST API via WebSocket for real-time updates.
  */
 
 // ============================================
@@ -470,19 +470,20 @@ function renderAdaptersModal(adapters) {
         : '<span class="badge bg-secondary">Off</span>';
 
       // Friendly name: prefer resolved hw_model (not raw modalias), else alias
+      // Filter out hostname-like aliases (contain dots) — BlueZ defaults alias to hostname
       const hwResolved = a.hw_model && a.hw_model !== a.modalias;
-      const friendlyName = hwResolved
-        ? a.hw_model
-        : (a.alias && a.alias !== a.name ? a.alias : "");
+      const aliasUseful = a.alias && a.alias !== a.name && !a.alias.includes(".");
+      const friendlyName = hwResolved ? a.hw_model : (aliasUseful ? a.alias : "");
 
       // Technical line: hci name + modalias
       const techParts = [a.name];
       if (a.modalias) techParts.push(a.modalias);
       const techLine = techParts.join(" \u2014 ");
 
+      const displayLabel = friendlyName || a.name;
       const selectBtn =
         !a.selected && a.powered
-          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.name}')">
+          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.address}', '${escapeHtml(displayLabel)}')">
                <i class="fas fa-check me-1"></i>Select
              </button>`
           : "";
@@ -813,14 +814,48 @@ async function forgetDevice(address) {
   }
 }
 
-async function selectAdapter(adapterName) {
-  if (!confirm(`Switch to adapter ${adapterName}? The add-on will restart.`)) return;
+let _pendingAdapterMac = null;
+let _pendingAdapterLabel = null;
+
+async function selectAdapter(adapterMac, displayLabel) {
+  // If no devices are stored/paired, skip the warning — nothing to lose
+  const hasDevices = lastDevices && lastDevices.some((d) => d.stored || d.paired);
+  if (!hasDevices) {
+    await doAdapterSwitch(adapterMac, displayLabel, false);
+    return;
+  }
+
+  // Show confirmation modal with pairing-loss warning
+  _pendingAdapterMac = adapterMac;
+  _pendingAdapterLabel = displayLabel;
+  $("#switch-adapter-name").textContent = displayLabel;
+  new bootstrap.Modal("#adapterSwitchModal").show();
+}
+
+async function doAdapterSwitch(adapterMac, displayLabel, clean) {
   try {
-    showBanner(`Switching to adapter ${adapterName}...`);
-    const result = await apiPost("/api/set-adapter", { adapter: adapterName });
+    // Close both modals — they will have stale data until the server returns
+    bootstrap.Modal.getInstance($("#adapterSwitchModal"))?.hide();
+    bootstrap.Modal.getInstance($("#adaptersModal"))?.hide();
+    showBanner(
+      clean
+        ? `Cleaning devices and switching to ${displayLabel}...`
+        : `Switching to adapter ${displayLabel}...`
+    );
+
+    // Backend handles disconnect-all + forget-all when clean=true,
+    // and pushes live progress via WebSocket status messages.
+    // adapter value is now the MAC address (stable across reboots).
+    const result = await apiPost("/api/set-adapter", {
+      adapter: adapterMac,
+      clean: clean,
+    });
     if (result.restart_required) {
-      showBanner("Restarting add-on with new adapter...");
-      await apiPost("/api/restart");
+      showBanner("Restarting app with new adapter...");
+      // Fire-and-forget: the server will die during restart, so the
+      // response will never arrive (expected 502). The WebSocket
+      // reconnect loop will detect when the server is back.
+      apiPost("/api/restart").catch(() => {});
     }
   } catch (e) {
     hideBanner();
@@ -900,7 +935,7 @@ async function saveDeviceSettings() {
 }
 
 // ============================================
-// Section 11c: Add-on Settings Modal
+// Section 11c: App Settings Modal
 // ============================================
 
 async function openSettingsModal() {
@@ -952,6 +987,7 @@ function connectWebSocket() {
     console.log("[WS] Connected");
     wsReconnectDelay = 1000;
     hideReconnectBanner();
+    hideBanner(); // Clear any pending operation banner (e.g. adapter restart)
     setConnectionStatus("connected");
   };
 
@@ -1066,6 +1102,19 @@ document.addEventListener("DOMContentLoaded", () => {
   // Wire up keep-alive toggle in device settings modal
   const kaToggle = $("#setting-keep-alive-enabled");
   if (kaToggle) kaToggle.addEventListener("change", toggleKeepAliveMethodVisibility);
+
+  // Wire up adapter-switch confirmation button
+  const confirmSwitchBtn = $("#btn-confirm-adapter-switch");
+  if (confirmSwitchBtn) {
+    confirmSwitchBtn.addEventListener("click", async () => {
+      if (!_pendingAdapterMac) return;
+      const mac = _pendingAdapterMac;
+      const label = _pendingAdapterLabel;
+      _pendingAdapterMac = null;
+      _pendingAdapterLabel = null;
+      await doAdapterSwitch(mac, label, true);
+    });
+  }
 
   // WebSocket provides real-time updates (initial state sent on connect)
   connectWebSocket();
