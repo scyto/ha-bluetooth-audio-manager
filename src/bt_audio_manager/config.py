@@ -1,11 +1,11 @@
-"""Configuration loader for the Bluetooth Audio Manager add-on.
+"""Configuration loader for the Bluetooth Audio Manager app.
 
 Reads user options from /data/options.json which is injected by
 the HA Supervisor based on the schema defined in config.yaml.
 
 Runtime settings (auto_reconnect, reconnect intervals, scan duration,
 bt_adapter) are stored in /data/settings.json and managed via the
-add-on's web UI.
+app's web UI.
 """
 
 import json
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 OPTIONS_PATH = "/data/options.json"
 SETTINGS_PATH = "/data/settings.json"
 
-# Keys that live in settings.json (managed via add-on UI)
+# Keys that live in settings.json (managed via app UI)
 _SETTINGS_KEYS = {
     "bt_adapter",
     "auto_reconnect",
@@ -30,12 +30,12 @@ _SETTINGS_KEYS = {
 
 @dataclass
 class AppConfig:
-    """Application configuration loaded from HA add-on options + settings."""
+    """Application configuration loaded from HA app options + settings."""
 
     # From options.json (HAOS config page — requires restart)
     log_level: str = "info"
 
-    # From settings.json (add-on UI)
+    # From settings.json (app UI)
     bt_adapter: str = "auto"
     auto_reconnect: bool = True
     reconnect_interval_seconds: int = 30

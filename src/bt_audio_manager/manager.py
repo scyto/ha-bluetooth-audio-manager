@@ -47,7 +47,7 @@ _USB_BT_VENDORS: dict[str, str] = {
 
 
 class BluetoothAudioManager:
-    """Central orchestrator for the Bluetooth Audio Manager add-on."""
+    """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
     MAX_RECENT_EVENTS = 50  # ring buffer size for MPRIS/AVRCP events
@@ -187,7 +187,7 @@ class BluetoothAudioManager:
 
                     # Silently discard noisy RSSI / ManufacturerData / TxPower
                     # churn — these fire many times per second per device and
-                    # provide no actionable information for this add-on.
+                    # provide no actionable information for this app.
                     _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower"}
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
                         pass
@@ -287,7 +287,7 @@ class BluetoothAudioManager:
 
         # 6. Register BluezDevice objects for all stored devices so UI
         #    actions (disconnect, forget) work immediately, even if the
-        #    device is already connected from a previous add-on session.
+        #    device is already connected from a previous app session.
         for device_info in self.store.devices:
             addr = device_info["address"]
             try:
@@ -349,7 +349,7 @@ class BluetoothAudioManager:
 
         # 6b. Detect devices connected at the BlueZ level but NOT in our
         #     store (e.g. store wiped during rebuild, or device paired outside
-        #     the add-on).  Create BluezDevice wrappers so UI buttons work.
+        #     the app).  Create BluezDevice wrappers so UI buttons work.
         try:
             from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE
             intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
@@ -475,7 +475,7 @@ class BluetoothAudioManager:
             await self.pulse.disconnect()
 
         # Disconnect D-Bus (do NOT disconnect BT devices — user may want
-        # audio to persist if the add-on restarts)
+        # audio to persist if the app restarts)
         if self.bus:
             self.bus.disconnect()
 
@@ -795,7 +795,7 @@ class BluetoothAudioManager:
             device.cleanup()
 
         # Remove from BlueZ (search all adapters — device may be on a
-        # different adapter than the one this add-on is configured to use)
+        # different adapter than the one this app is configured to use)
         await BluezAdapter.remove_device_any_adapter(self.bus, address)
 
         # Remove from persistent store
@@ -924,7 +924,7 @@ class BluetoothAudioManager:
         """List all Bluetooth adapters on the system.
 
         Each adapter dict includes a flag indicating whether it's the
-        one this add-on is configured to use, and whether it appears to
+        one this app is configured to use, and whether it appears to
         be running HA's BLE scanning (Discovering=true).
 
         Enriches adapter entries with USB device names from the HA
@@ -1254,7 +1254,7 @@ class BluetoothAudioManager:
     async def _refresh_avrcp_session(self, address: str) -> None:
         """Cycle AVRCP profiles to rebind the control channel to this process.
 
-        After an add-on restart the old D-Bus unique name is gone, but the
+        After an app restart the old D-Bus unique name is gone, but the
         AVRCP session still references it.  Disconnecting and reconnecting
         the AVRCP profiles forces BlueZ to re-discover our newly registered
         MPRIS player without tearing down the A2DP audio stream.

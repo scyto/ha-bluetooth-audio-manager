@@ -2,7 +2,7 @@
  * Bluetooth Audio Manager — Ingress UI
  *
  * Vanilla JS interface with Bootstrap 5.3 components.
- * Communicates with the add-on's REST API via WebSocket for real-time updates.
+ * Communicates with the app's REST API via WebSocket for real-time updates.
  */
 
 // ============================================
@@ -848,7 +848,7 @@ async function doAdapterSwitch(adapterMac, displayLabel, clean) {
       clean: clean,
     });
     if (result.restart_required) {
-      showBanner("Restarting add-on with new adapter...");
+      showBanner("Restarting app with new adapter...");
       // Fire-and-forget: the server will die during restart, so the
       // response will never arrive (expected 502). The WebSocket
       // reconnect loop will detect when the server is back.
@@ -897,7 +897,7 @@ async function saveDeviceSettings() {
 }
 
 // ============================================
-// Section 11c: Add-on Settings Modal
+// Section 11c: App Settings Modal
 // ============================================
 
 async function openSettingsModal() {

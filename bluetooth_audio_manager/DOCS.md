@@ -5,7 +5,7 @@ persistent pairing, automatic reconnection, and a web-based management UI.
 
 ## How it works
 
-This add-on uses BlueZ (the Linux Bluetooth stack) via D-Bus to discover,
+This app uses BlueZ (the Linux Bluetooth stack) via D-Bus to discover,
 pair, and connect Bluetooth audio devices. Once connected, the device appears
 as a PulseAudio sink that Home Assistant's audio system can use for TTS,
 media playback, and automations.
@@ -20,7 +20,7 @@ media playback, and automations.
 
 ## Coexistence with Home Assistant Bluetooth
 
-This add-on is designed to coexist safely with Home Assistant's built-in
+This app is designed to coexist safely with Home Assistant's built-in
 Bluetooth integration (used for BLE sensors, beacons, etc.):
 
 - Discovery uses `Transport=bredr` (Classic Bluetooth only), while HA scans
@@ -56,7 +56,7 @@ Two methods are available:
 
 ## Usage
 
-1. Open the add-on from the Home Assistant sidebar ("BT Audio")
+1. Open the app from the Home Assistant sidebar ("BT Audio")
 2. Click **Scan for Devices** (make sure your speaker is in pairing mode)
 3. Click **Pair** next to your device
 4. Click **Connect** — the device will appear as a PulseAudio audio sink
@@ -66,7 +66,7 @@ Two methods are available:
 ## Requirements
 
 - A Bluetooth adapter (built-in or USB dongle) accessible to HAOS
-- The Bluetooth adapter must be powered on (managed by HAOS, not this add-on)
+- The Bluetooth adapter must be powered on (managed by HAOS, not this app)
 - The target device must support A2DP (Advanced Audio Distribution Profile)
 
 ## Troubleshooting
@@ -85,15 +85,15 @@ UI (device menu > Settings). Try the `infrasound` method if `silence` doesn't
 work.
 
 **`br-connection-key-missing` error when connecting**: The pairing keys stored
-by BlueZ are out of sync with the speaker. Click **Forget** in the add-on UI,
+by BlueZ are out of sync with the speaker. Click **Forget** in the app UI,
 then clear the pairing on the speaker itself (usually hold the Bluetooth button
 for ~10 seconds until the speaker announces "ready to pair" or the LED enters
-pairing mode). Then scan and pair again from the add-on.
+pairing mode). Then scan and pair again from the app.
 
 **`Authentication Rejected` when pairing**: The speaker still has old pairing
 keys for your system's Bluetooth address and is refusing the new pairing
 attempt. Clear the speaker's paired-device list (hold the Bluetooth button for
-~10 seconds) so both sides start fresh, then re-pair from the add-on.
+~10 seconds) so both sides start fresh, then re-pair from the app.
 
 **Existing BLE integrations stopped working**: This should not happen by
-design. Check the add-on logs for errors and file an issue on GitHub.
+design. Check the app logs for errors and file an issue on GitHub.

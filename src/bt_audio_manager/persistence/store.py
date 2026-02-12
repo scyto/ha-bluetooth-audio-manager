@@ -1,7 +1,7 @@
 """JSON-backed persistent store for paired device information.
 
 Data is stored in /data/paired_devices.json which persists across
-container restarts, add-on updates, and is included in HA backups.
+container restarts, app updates, and is included in HA backups.
 """
 
 import json
