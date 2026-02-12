@@ -1812,7 +1812,15 @@ class BluetoothAudioManager:
             if mpd and mpd.is_running:
                 asyncio.ensure_future(mpd.handle_command(command, detail))
         else:
-            logger.debug("Cannot determine source device for MPRIS command %s, ignoring", command)
+            # Single-instance fallback: if only one MPD is running, route to it
+            running = [(a, m) for a, m in self._mpd_instances.items() if m.is_running]
+            if len(running) == 1:
+                addr, mpd = running[0]
+                logger.info("Single MPD instance — routing %s to %s", command, addr)
+                entry["address"] = addr
+                asyncio.ensure_future(mpd.handle_command(command, detail))
+            else:
+                logger.debug("Cannot determine source device for MPRIS command %s, ignoring", command)
 
     def _on_avrcp_event(self, address: str, prop_name: str, value: object) -> None:
         """Handle AVRCP MediaPlayer1 property change — push to WebSocket."""
@@ -1943,6 +1951,9 @@ class BluetoothAudioManager:
         try:
             await mpd.start(sink_name)
             self._mpd_instances[address] = mpd
+            # Tell speaker we're Playing so it enables AVRCP volume buttons
+            if self.media_player:
+                self.media_player.set_playback_status("Playing")
         except Exception as e:
             logger.warning("MPD start failed for %s: %s", address, e)
 
