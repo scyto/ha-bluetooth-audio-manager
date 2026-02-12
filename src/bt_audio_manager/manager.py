@@ -980,9 +980,12 @@ class BluetoothAudioManager:
                     if vendor_name:
                         a["hw_model"] = f"{vendor_name} ({usb_id})"
 
+        ha_bt_macs = await self._get_ha_bluetooth_macs()
+
         for a in adapters:
             a["selected"] = a["path"] == self._adapter_path
-            a["ble_scanning"] = a["discovering"] and not a["selected"]
+            a["ble_scanning"] = a["discovering"]
+            a["ha_managed"] = a["address"].upper() in ha_bt_macs
         return adapters
 
     @staticmethod
@@ -1100,6 +1103,55 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.warning("Failed to query Supervisor hardware API: %s", e)
             return {}
+
+    @staticmethod
+    async def _get_ha_bluetooth_macs() -> set[str]:
+        """Query HA Core for adapters configured in the Bluetooth integration.
+
+        Returns a set of uppercase MAC addresses that HA is managing.
+        Falls back to an empty set on any failure (non-blocking).
+        """
+        import aiohttp
+
+        token = os.environ.get("SUPERVISOR_TOKEN")
+        if not token:
+            return set()
+        urls = [
+            "http://supervisor/core/api/config/config_entries/entry",
+            "http://172.30.32.2/core/api/config/config_entries/entry",
+        ]
+        for url in urls:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.debug(
+                                "HA Core config entries API returned %s from %s",
+                                resp.status, url,
+                            )
+                            continue
+                        entries = await resp.json()
+                        break
+            except Exception as e:
+                logger.debug("HA Core API at %s failed: %s", url, e)
+                continue
+        else:
+            logger.debug("Could not reach HA Core API for Bluetooth integration info")
+            return set()
+
+        macs: set[str] = set()
+        for entry in entries:
+            if entry.get("domain") == "bluetooth":
+                uid = entry.get("unique_id", "")
+                if uid:
+                    macs.add(uid.upper())
+        if macs:
+            logger.info("HA Bluetooth integration manages adapters: %s", macs)
+        return macs
 
     @staticmethod
     def _modalias_to_usb_id(modalias: str) -> str | None:
