@@ -28,6 +28,23 @@ from .web.events import EventBus
 
 logger = logging.getLogger(__name__)
 
+# Common Bluetooth USB vendor IDs → friendly vendor names.
+# Used as a last-resort fallback when both sysfs and the Supervisor's
+# udev database lack a human-readable product name.
+_USB_BT_VENDORS: dict[str, str] = {
+    "8087": "Intel",
+    "0cf3": "Qualcomm / Atheros",
+    "0a5c": "Broadcom",
+    "0bda": "Realtek",
+    "2357": "TP-Link",
+    "0a12": "Cambridge Silicon Radio",
+    "413c": "Dell",
+    "0489": "Foxconn / Hon Hai",
+    "13d3": "IMC Networks",
+    "04ca": "Lite-On",
+    "0930": "Toshiba",
+}
+
 
 class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager add-on."""
@@ -811,6 +828,16 @@ class BluetoothAudioManager:
                     if usb_id and usb_id in usb_names:
                         a["hw_model"] = usb_names[usb_id]
 
+        # Final fallback: use built-in USB vendor names for adapters
+        # that still have no friendly name (udev database was incomplete)
+        for a in adapters:
+            if not a["hw_model"] or a["hw_model"] == a["modalias"]:
+                usb_id = a.get("usb_id", "")
+                if usb_id:
+                    vendor_name = _USB_BT_VENDORS.get(usb_id.split(":")[0], "")
+                    if vendor_name:
+                        a["hw_model"] = f"{vendor_name} ({usb_id})"
+
         for a in adapters:
             a["selected"] = a["path"] == self._adapter_path
             a["ble_scanning"] = a["discovering"] and not a["selected"]
@@ -876,17 +903,15 @@ class BluetoothAudioManager:
                 if not (vid and pid):
                     continue
 
-                name = (
-                    attrs.get("ID_MODEL_FROM_DATABASE")
-                    or attrs.get("ID_MODEL")
-                    or ""
-                )
-                vendor = (
-                    attrs.get("ID_VENDOR_FROM_DATABASE")
-                    or attrs.get("ID_VENDOR")
-                    or ""
-                )
-                full_name = f"{vendor} {name}".strip() if vendor and name else (name or vendor or dev_name)
+                # Prefer udev database names; raw ID_MODEL/ID_VENDOR are
+                # often just hex IDs (e.g. "8087") which aren't useful.
+                name = attrs.get("ID_MODEL_FROM_DATABASE") or ""
+                vendor = attrs.get("ID_VENDOR_FROM_DATABASE") or ""
+                if not name and not vendor:
+                    # No udev database entry — skip this device, the raw
+                    # IDs aren't useful as display names
+                    continue
+                full_name = f"{vendor} {name}".strip() if vendor and name else (name or vendor)
                 if not full_name:
                     continue
 
@@ -929,13 +954,6 @@ class BluetoothAudioManager:
                             break
 
             logger.info("Supervisor HW names: %s", names)
-            if not any(k.startswith("hci:") for k in names):
-                for dev in devices[:30]:
-                    logger.info("Supervisor HW device: subsystem=%s name=%s sysfs=%s attrs=%s",
-                                dev.get("subsystem"), dev.get("name"),
-                                dev.get("sysfs", dev.get("by_id", "")),
-                                {k: v for k, v in dev.get("attributes", {}).items()
-                                 if any(kw in k.upper() for kw in ("VENDOR", "MODEL", "PRODUCT", "ID_"))})
             return names
         except Exception as e:
             logger.warning("Failed to query Supervisor hardware API: %s", e)
