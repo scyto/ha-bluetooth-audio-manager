@@ -1,5 +1,5 @@
 name: "Bluetooth Audio Manager (Dev)"
-version: "sha-2a2a13b"
+version: "sha-58d10b5"
 slug: bluetooth_audio_manager_dev
 description: "Development build - may be unstable. Bluetooth A2DP audio device management with persistent pairing and auto-reconnect."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
@@ -32,7 +32,7 @@ map:
   - type: data
     read_only: false
 
-# User options (runtime settings are managed in the add-on UI)
+# User options (runtime settings are managed in the app UI)
 options:
   log_level: "info"
 
