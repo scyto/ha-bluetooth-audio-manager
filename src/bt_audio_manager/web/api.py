@@ -69,7 +69,7 @@ def create_api_routes(
 
     @routes.get("/api/info")
     async def info(request: web.Request) -> web.Response:
-        """Return add-on version and adapter info for the UI."""
+        """Return app version and adapter info for the UI."""
         import os
         path = manager._adapter_path or "/org/bluez/hci0"
         adapter_name = path.rsplit("/", 1)[-1]
@@ -129,7 +129,7 @@ def create_api_routes(
 
     @routes.post("/api/restart")
     async def restart_addon(request: web.Request) -> web.Response:
-        """Restart this add-on via the HA Supervisor API."""
+        """Restart this app via the HA Supervisor API."""
         import aiohttp
         try:
             supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
@@ -152,7 +152,7 @@ def create_api_routes(
 
             return web.json_response({"restarting": True})
         except Exception as e:
-            logger.error("Failed to restart add-on: %s", e)
+            logger.error("Failed to restart app: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
     @routes.get("/api/devices")

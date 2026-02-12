@@ -159,10 +159,10 @@ jobs:
           cache-to: type=gha,scope=dev-${{ matrix.arch }},mode=max
 
   # ==========================================================================
-  # Update dev add-on version on main (after successful dev build)
+  # Update dev app version on main (after successful dev build)
   # ==========================================================================
   update-addon-version-dev:
-    name: Update dev add-on version
+    name: Update dev app version
     needs: build-dev
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
@@ -195,7 +195,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No version change needed"
           else
-            git commit -m "chore: update dev add-on version to sha-$(echo "${{ github.sha }}" | cut -c1-7) [skip ci]"
+            git commit -m "chore: update dev app version to sha-$(echo "${{ github.sha }}" | cut -c1-7) [skip ci]"
             git push origin main
-            echo "Dev add-on version bump committed to main"
+            echo "Dev app version bump committed to main"
           fi

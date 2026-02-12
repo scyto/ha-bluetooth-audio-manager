@@ -1,4 +1,4 @@
-"""Entry point for the Bluetooth Audio Manager add-on."""
+"""Entry point for the Bluetooth Audio Manager app."""
 
 import asyncio
 import logging

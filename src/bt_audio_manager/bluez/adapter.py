@@ -59,7 +59,7 @@ class BluezAdapter:
         if not powered.value:
             raise AdapterNotPoweredError(
                 "Bluetooth adapter is not powered. "
-                "Enable Bluetooth in HAOS settings — this add-on does not "
+                "Enable Bluetooth in HAOS settings — this app does not "
                 "modify adapter power state."
             )
 

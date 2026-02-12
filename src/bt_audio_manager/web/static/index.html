@@ -51,7 +51,7 @@
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="#" onclick="openSettingsModal(); return false;">
-                <i class="fas fa-sliders me-2"></i>Add-on Settings
+                <i class="fas fa-sliders me-2"></i>App Settings
               </a></li>
               <li><a class="dropdown-item" href="#" onclick="openAdaptersModal(); return false;">
                 <i class="fas fa-microchip me-2"></i>Bluetooth Adapters
@@ -189,10 +189,10 @@
             <i class="fas fa-exclamation-triangle me-2"></i>
             <strong>Recommendation:</strong> Use a dedicated Bluetooth adapter that is
             <strong>not configured in Home Assistant</strong> and is not used for BLE scanning.
-            Leave the adapter unconfigured in HA &mdash; this add-on will manage it directly.
+            Leave the adapter unconfigured in HA &mdash; this app will manage it directly.
           </div>
           <p class="text-muted">
-            Only one adapter can be active at a time. Select which Bluetooth adapter to use. Changing the adapter requires an add-on restart.
+            Only one adapter can be active at a time. Select which Bluetooth adapter to use. Changing the adapter requires an app restart.
           </p>
           <div id="adapters-container">
             <div class="text-center py-4">
@@ -229,7 +229,7 @@
             to be re-paired on the new adapter.
           </div>
           <p class="mb-0 text-muted small">
-            All connected devices will be disconnected and removed before the add-on restarts
+            All connected devices will be disconnected and removed before the app restarts
             with the new adapter.
           </p>
         </div>
@@ -243,12 +243,12 @@
     </div>
   </div>
 
-  <!-- ========== ADD-ON SETTINGS MODAL ========== -->
+  <!-- ========== APP SETTINGS MODAL ========== -->
   <div class="modal fade" id="settingsModal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title"><i class="fas fa-sliders me-2"></i>Add-on Settings</h5>
+          <h5 class="modal-title"><i class="fas fa-sliders me-2"></i>App Settings</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
