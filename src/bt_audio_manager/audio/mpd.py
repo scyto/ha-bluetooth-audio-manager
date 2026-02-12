@@ -35,14 +35,20 @@ class MPDManager:
         self._client: MPDClient | None = None
         self._running = False
         self._connect_lock = asyncio.Lock()
+        self._sink_name: str | None = None
 
     # -- Lifecycle --
 
-    async def start(self) -> None:
-        """Generate config, start MPD daemon, connect client."""
+    async def start(self, sink_name: str) -> None:
+        """Generate config, start MPD daemon, connect client.
+
+        Args:
+            sink_name: PulseAudio sink to target (e.g. bluez_sink.XX_XX.a2dp_sink).
+        """
         if self._running:
             return
 
+        self._sink_name = sink_name
         os.makedirs(MPD_MUSIC_DIR, exist_ok=True)
         self._generate_config()
         await self._start_daemon()
@@ -78,7 +84,7 @@ class MPDManager:
     # -- Config generation --
 
     def _generate_config(self) -> None:
-        """Write a minimal mpd.conf for PulseAudio output."""
+        """Write a minimal mpd.conf targeting a specific PulseAudio sink."""
         config = textwrap.dedent("""\
             music_directory     "{music_dir}"
             db_file             "{db_file}"
@@ -92,6 +98,7 @@ class MPDManager:
             audio_output {{
                 type    "pulse"
                 name    "Bluetooth Speaker"
+                sink    "{sink}"
             }}
 
             input {{
@@ -103,6 +110,7 @@ class MPDManager:
             state_file=MPD_STATE_FILE,
             pid_file=MPD_PID_FILE,
             port=MPD_PORT,
+            sink=self._sink_name,
         )
 
         with open(MPD_CONF_PATH, "w") as f:
