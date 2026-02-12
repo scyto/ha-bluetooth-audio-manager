@@ -834,6 +834,7 @@ class BluetoothAudioManager:
         import re
         token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
+            logger.warning("SUPERVISOR_TOKEN not set — cannot query hardware API")
             return {}
         try:
             async with aiohttp.ClientSession() as session:
@@ -842,6 +843,7 @@ class BluetoothAudioManager:
                     headers={"Authorization": f"Bearer {token}"},
                 ) as resp:
                     if resp.status != 200:
+                        logger.warning("Supervisor hardware API returned %s", resp.status)
                         return {}
                     result = await resp.json()
 
@@ -923,7 +925,7 @@ class BluetoothAudioManager:
                                  if any(kw in k.upper() for kw in ("VENDOR", "MODEL", "PRODUCT", "ID_"))})
             return names
         except Exception as e:
-            logger.debug("Failed to query Supervisor hardware API: %s", e)
+            logger.warning("Failed to query Supervisor hardware API: %s", e)
             return {}
 
     @staticmethod
