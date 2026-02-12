@@ -967,8 +967,13 @@ async function saveDeviceSettings() {
     if (portVal) settings.mpd_port = parseInt(portVal, 10);
   }
   try {
-    await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
-    showToast("Device settings saved", "success");
+    const resp = await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
+    const port = resp.settings?.mpd_port;
+    if (settings.mpd_enabled && port) {
+      showToast(`Settings saved — MPD on port ${port}`, "success");
+    } else {
+      showToast("Device settings saved", "success");
+    }
     bootstrap.Modal.getInstance($("#deviceSettingsModal"))?.hide();
   } catch (e) {
     showToast(`Failed to save settings: ${e.message}`, "error");

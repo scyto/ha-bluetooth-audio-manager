@@ -278,6 +278,19 @@ def create_api_routes(
         """Update per-device settings (keep-alive, etc.)."""
         address = request.match_info["address"]
         try:
+            # Auto-store paired devices not yet in the persistence store
+            # (can happen when BlueZ paired a device before the add-on tracked it)
+            if manager.store.get_device(address) is None:
+                bluez_dev = manager.managed_devices.get(address)
+                if bluez_dev:
+                    name = await bluez_dev.get_name()
+                    await manager.store.add_device(address, name)
+                    logger.info("Auto-stored BlueZ device %s (%s)", address, name)
+                else:
+                    return web.json_response(
+                        {"error": f"Device {address} not found"}, status=404
+                    )
+
             body = await request.json()
             allowed_keys = {
                 "keep_alive_enabled", "keep_alive_method",
@@ -310,12 +323,13 @@ def create_api_routes(
                     return web.json_response(
                         {"error": "mpd_port must be an integer 6600-6609"}, status=400
                     )
-                ok = await manager.store.set_mpd_port(address, port)
-                if not ok:
+                used = manager.store._used_mpd_ports()
+                if port in used and used[port] != address:
                     return web.json_response(
                         {"error": f"Port {port} is already in use by another device"},
                         status=409,
                     )
+                await manager.store.set_mpd_port(address, port)
             if "mpd_name" in settings:
                 if not isinstance(settings["mpd_name"], str) or len(settings["mpd_name"]) > 64:
                     return web.json_response(
@@ -326,7 +340,9 @@ def create_api_routes(
                 return web.json_response(
                     {"error": f"Device {address} not found"}, status=404
                 )
-            return web.json_response({"address": address, "settings": settings})
+            # Return current settings (includes auto-allocated port, etc.)
+            current = manager.store.get_device_settings(address)
+            return web.json_response({"address": address, "settings": current})
         except Exception as e:
             logger.error("Failed to update settings for %s: %s", address, e)
             return web.json_response({"error": str(e)}, status=500)
