@@ -19,7 +19,12 @@ DEFAULT_DEVICE_SETTINGS = {
     "keep_alive_enabled": False,
     "keep_alive_method": "infrasound",
     "mpd_enabled": False,
+    "mpd_port": None,   # Auto-assigned from pool (6600-6609); user can override
+    "mpd_name": "",      # Custom MPD name; empty = use BT device name
 }
+
+MPD_PORT_MIN = 6600
+MPD_PORT_MAX = 6609
 
 
 class PersistenceStore:
@@ -105,6 +110,68 @@ class PersistenceStore:
         if device is None:
             return dict(DEFAULT_DEVICE_SETTINGS)
         return {k: device.get(k, v) for k, v in DEFAULT_DEVICE_SETTINGS.items()}
+
+    # -- MPD port allocation --
+
+    def _used_mpd_ports(self) -> dict[int, str]:
+        """Return {port: address} for all devices with an assigned mpd_port."""
+        result: dict[int, str] = {}
+        for d in self._devices:
+            port = d.get("mpd_port")
+            if port is not None:
+                result[port] = d["address"]
+        return result
+
+    async def allocate_mpd_port(self, address: str) -> int | None:
+        """Assign the lowest available MPD port to a device.
+
+        Returns the existing port if already assigned, or None if all 10 are taken.
+        """
+        device = self._find_device(address)
+        if device is None:
+            return None
+        existing = device.get("mpd_port")
+        if existing is not None:
+            return existing
+        used = set(self._used_mpd_ports().keys())
+        for port in range(MPD_PORT_MIN, MPD_PORT_MAX + 1):
+            if port not in used:
+                device["mpd_port"] = port
+                await self.save()
+                logger.info("Allocated MPD port %d for %s", port, address)
+                return port
+        logger.warning("All MPD ports in use (6600-6609)")
+        return None
+
+    async def set_mpd_port(self, address: str, port: int) -> bool:
+        """Set a specific MPD port for a device.
+
+        Returns False if port is out of range or already used by another device.
+        """
+        if port < MPD_PORT_MIN or port > MPD_PORT_MAX:
+            return False
+        device = self._find_device(address)
+        if device is None:
+            return False
+        used = self._used_mpd_ports()
+        if port in used and used[port] != address:
+            return False
+        device["mpd_port"] = port
+        await self.save()
+        logger.info("Set MPD port %d for %s", port, address)
+        return True
+
+    async def release_mpd_port(self, address: str) -> None:
+        """Release the MPD port assigned to a device."""
+        device = self._find_device(address)
+        if device is None:
+            return
+        old_port = device.get("mpd_port")
+        device["mpd_port"] = None
+        device["mpd_name"] = ""
+        await self.save()
+        if old_port is not None:
+            logger.info("Released MPD port %d for %s", old_port, address)
 
     @property
     def devices(self) -> list[dict]:

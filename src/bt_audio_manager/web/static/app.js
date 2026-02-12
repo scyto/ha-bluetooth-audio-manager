@@ -353,7 +353,10 @@ function renderDevices(devices) {
         const kaEnabled = d.keep_alive_enabled || false;
         const kaMethod = d.keep_alive_method || "infrasound";
         const mpdEnabled = d.mpd_enabled || false;
+        const mpdPort = d.mpd_port || "";
+        const mpdName = d.mpd_name || "";
         const safeName = escapeHtml(d.name).replace(/'/g, "\\'");
+        const safeMpdName = escapeHtml(mpdName).replace(/'/g, "\\'");
         kebab = `
           <div class="dropdown">
             <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
@@ -361,7 +364,7 @@ function renderDevices(devices) {
               <i class="fas fa-ellipsis-v"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}); return false;">
+              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}, '${mpdPort}', '${safeMpdName}'); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
               ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
@@ -420,7 +423,7 @@ function renderDevices(devices) {
                 <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
                 <div class="d-flex align-items-center gap-1">
                   ${keepAliveActive ? '<i class="fas fa-heartbeat text-danger keep-alive-indicator" title="Keep-alive active"></i>' : ""}
-                  ${mpdActive ? '<i class="fas fa-music text-primary" title="MPD media player enabled"></i>' : ""}
+                  ${mpdActive ? `<i class="fas fa-music text-primary" title="MPD: ${escapeHtml(d.mpd_name || d.name)} (port ${d.mpd_port || '?'})"></i>` : ""}
                   <span class="badge ${badgeClass}">${statusText}</span>
                   ${kebab}
                 </div>
@@ -574,9 +577,11 @@ function deviceNameTag(address) {
 }
 
 function appendMprisCommand(data) {
-  // MPRIS player is global — show connected device name if exactly one
+  // Use resolved address from backend if available, else infer from single connected device
   let nameHtml = "";
-  if (lastDevices) {
+  if (data.address) {
+    nameHtml = deviceNameTag(data.address);
+  } else if (lastDevices) {
     const connected = lastDevices.filter((d) => d.connected);
     if (connected.length === 1) {
       nameHtml = ` <span class="text-muted">[${escapeHtml(connected[0].name)}]</span>`;
@@ -916,20 +921,36 @@ async function saveSettings() {
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled) {
+function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled, mpdPort, mpdName) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
   $("#setting-keep-alive-enabled").checked = kaEnabled;
   $("#setting-keep-alive-method").value = kaMethod || "infrasound";
   $("#setting-mpd-enabled").checked = mpdEnabled || false;
+  $("#setting-mpd-name").value = mpdName || "";
+  $("#setting-mpd-port").value = mpdPort || "";
+  // Show connection info if port is assigned
+  if (mpdPort) {
+    $("#mpd-port-display").textContent = mpdPort;
+    $("#mpd-hostname").textContent = location.hostname;
+    $("#mpd-connection-info").style.display = "";
+  } else {
+    $("#mpd-connection-info").style.display = "none";
+  }
   toggleKeepAliveMethodVisibility();
+  toggleMpdConfigVisibility();
   new bootstrap.Modal("#deviceSettingsModal").show();
 }
 
 function toggleKeepAliveMethodVisibility() {
   const enabled = $("#setting-keep-alive-enabled").checked;
   $("#keep-alive-method-group").style.display = enabled ? "" : "none";
+}
+
+function toggleMpdConfigVisibility() {
+  const enabled = $("#setting-mpd-enabled").checked;
+  $("#mpd-config-group").style.display = enabled ? "" : "none";
 }
 
 async function saveDeviceSettings() {
@@ -939,6 +960,12 @@ async function saveDeviceSettings() {
     keep_alive_method: $("#setting-keep-alive-method").value,
     mpd_enabled: $("#setting-mpd-enabled").checked,
   };
+  // Include MPD config when enabled
+  if (settings.mpd_enabled) {
+    settings.mpd_name = $("#setting-mpd-name").value.trim();
+    const portVal = $("#setting-mpd-port").value;
+    if (portVal) settings.mpd_port = parseInt(portVal, 10);
+  }
   try {
     await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
     showToast("Device settings saved", "success");
