@@ -36,6 +36,7 @@ class MPDManager:
         self._running = False
         self._connect_lock = asyncio.Lock()
         self._sink_name: str | None = None
+        self._stderr_task: asyncio.Task | None = None
 
     # -- Lifecycle --
 
@@ -59,6 +60,10 @@ class MPDManager:
     async def stop(self) -> None:
         """Disconnect client and terminate MPD daemon."""
         self._running = False
+
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            self._stderr_task = None
 
         if self._client:
             try:
@@ -92,7 +97,7 @@ class MPDManager:
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
-            log_level           "default"
+            log_level           "verbose"
             auto_update         "no"
 
             audio_output {{
@@ -122,7 +127,7 @@ class MPDManager:
     async def _start_daemon(self) -> None:
         """Start MPD in foreground mode as a subprocess."""
         self._process = await asyncio.create_subprocess_exec(
-            "mpd", "--no-daemon", MPD_CONF_PATH,
+            "mpd", "--no-daemon", "--stderr", MPD_CONF_PATH,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -132,6 +137,21 @@ class MPDManager:
             stderr = await self._process.stderr.read()
             raise RuntimeError(f"MPD failed to start: {stderr.decode().strip()}")
         logger.info("MPD daemon started (pid=%d)", self._process.pid)
+        # Stream MPD's stderr to our logger so errors are visible
+        self._stderr_task = asyncio.create_task(self._stream_stderr())
+
+    async def _stream_stderr(self) -> None:
+        """Read MPD stderr line by line and forward to our logger."""
+        try:
+            while self._process and self._process.stderr:
+                line = await self._process.stderr.readline()
+                if not line:
+                    break
+                text = line.decode().rstrip()
+                if text:
+                    logger.info("[mpd] %s", text)
+        except Exception:
+            pass
 
     # -- Client connection --
 
