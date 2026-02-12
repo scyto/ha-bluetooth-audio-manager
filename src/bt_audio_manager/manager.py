@@ -1991,5 +1991,11 @@ class BluetoothAudioManager:
                     await self._stop_mpd(address)
                     await self.store.release_mpd_port(address)
 
+        # Eagerly allocate a port when MPD is enabled so the UI shows it
+        # immediately (even if the device isn't connected yet / no PA sink)
+        if "mpd_enabled" in settings and device_info.get("mpd_enabled", False):
+            if self.store.get_device_settings(address).get("mpd_port") is None:
+                await self.store.allocate_mpd_port(address)
+
         await self._broadcast_devices()
         return device_info
