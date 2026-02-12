@@ -248,13 +248,16 @@ class BluezAdapter:
             for path in [device_path, os.path.dirname(device_path)]:
                 mfr_file = os.path.join(path, "manufacturer")
                 prod_file = os.path.join(path, "product")
-                if os.path.isfile(mfr_file) and os.path.isfile(prod_file):
-                    mfr = open(mfr_file).read().strip()
-                    prod = open(prod_file).read().strip()
-                    return f"{mfr} {prod}"
-                # Some devices only have product
                 if os.path.isfile(prod_file):
-                    return open(prod_file).read().strip()
+                    prod = open(prod_file).read().strip()
+                    if not prod:
+                        continue
+                    # Include manufacturer only if non-empty
+                    if os.path.isfile(mfr_file):
+                        mfr = open(mfr_file).read().strip()
+                        if mfr:
+                            return f"{mfr} {prod}"
+                    return prod
         except OSError:
             pass
         return None
