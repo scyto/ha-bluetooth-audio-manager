@@ -741,6 +741,72 @@ class BluetoothAudioManager:
         self.event_bus.emit("status", {"message": ""})
         await self._broadcast_all()
 
+    async def clear_all_devices(self) -> None:
+        """Disconnect, unpair, and remove ALL devices from BlueZ and the
+        persistent store.
+
+        Used before switching adapters so the new adapter starts fresh.
+        Broadcasts status updates during the cleanup for frontend progress.
+        """
+        # 1. Stop reconnect service to prevent interference
+        if self.reconnect_service:
+            await self.reconnect_service.stop()
+
+        # 2. Stop all keep-alive instances
+        for addr in list(self._keepalives):
+            await self._stop_keepalive(addr)
+
+        # 3. Collect all known addresses (managed + stored)
+        addresses = set(self.managed_devices.keys())
+        addresses.update(d["address"] for d in self.store.devices)
+
+        if not addresses:
+            self._broadcast_status("No devices to clean up")
+            await asyncio.sleep(0.5)
+            return
+
+        total = len(addresses)
+
+        # 4. Disconnect all connected devices
+        for i, addr in enumerate(addresses, 1):
+            self._broadcast_status(f"Disconnecting device {i}/{total}...")
+            self._suppress_reconnect.add(addr)
+            device = self.managed_devices.get(addr)
+            if device:
+                try:
+                    await device.disconnect()
+                except Exception as exc:
+                    logger.warning("clear_all: disconnect %s failed: %s", addr, exc)
+
+        # 5. Brief pause for BlueZ to process disconnections
+        await asyncio.sleep(1)
+
+        # 6. Remove each device from BlueZ and clean up D-Bus subscriptions
+        for i, addr in enumerate(addresses, 1):
+            self._broadcast_status(f"Removing device {i}/{total}...")
+            device = self.managed_devices.pop(addr, None)
+            if device:
+                device.cleanup()
+            try:
+                await BluezAdapter.remove_device_any_adapter(self.bus, addr)
+            except Exception as exc:
+                logger.warning("clear_all: BlueZ remove %s failed: %s", addr, exc)
+
+        # 7. Clear persistent store (single write instead of N individual removes)
+        self.store._devices.clear()
+        await self.store.save()
+
+        # 8. Clear internal tracking state
+        self._device_connect_time.clear()
+        self._last_signaled_volume.clear()
+        self._suppress_reconnect.clear()
+        self._a2dp_attempts.clear()
+        self._connecting.clear()
+
+        self._broadcast_status(f"Cleared {total} device(s)")
+        logger.info("clear_all_devices: removed %d device(s)", total)
+        await self._broadcast_all()
+
     async def get_all_devices(self) -> list[dict]:
         """Get combined list of discovered and paired devices."""
         if not self.adapter:

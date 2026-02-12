@@ -810,14 +810,45 @@ async function forgetDevice(address) {
   }
 }
 
+let _pendingAdapterName = null;
+
 async function selectAdapter(adapterName) {
-  if (!confirm(`Switch to adapter ${adapterName}? The add-on will restart.`)) return;
+  // If no devices are stored/paired, skip the warning — nothing to lose
+  const hasDevices = lastDevices && lastDevices.some((d) => d.stored || d.paired);
+  if (!hasDevices) {
+    await doAdapterSwitch(adapterName, false);
+    return;
+  }
+
+  // Show confirmation modal with pairing-loss warning
+  _pendingAdapterName = adapterName;
+  $("#switch-adapter-name").textContent = adapterName;
+  new bootstrap.Modal("#adapterSwitchModal").show();
+}
+
+async function doAdapterSwitch(adapterName, clean) {
   try {
-    showBanner(`Switching to adapter ${adapterName}...`);
-    const result = await apiPost("/api/set-adapter", { adapter: adapterName });
+    // Close both modals — they will have stale data until the server returns
+    bootstrap.Modal.getInstance($("#adapterSwitchModal"))?.hide();
+    bootstrap.Modal.getInstance($("#adaptersModal"))?.hide();
+    showBanner(
+      clean
+        ? `Cleaning devices and switching to ${adapterName}...`
+        : `Switching to adapter ${adapterName}...`
+    );
+
+    // Backend handles disconnect-all + forget-all when clean=true,
+    // and pushes live progress via WebSocket status messages.
+    const result = await apiPost("/api/set-adapter", {
+      adapter: adapterName,
+      clean: clean,
+    });
     if (result.restart_required) {
       showBanner("Restarting add-on with new adapter...");
-      await apiPost("/api/restart");
+      // Fire-and-forget: the server will die during restart, so the
+      // response will never arrive (expected 502). The WebSocket
+      // reconnect loop will detect when the server is back.
+      apiPost("/api/restart").catch(() => {});
     }
   } catch (e) {
     hideBanner();
@@ -914,6 +945,7 @@ function connectWebSocket() {
     console.log("[WS] Connected");
     wsReconnectDelay = 1000;
     hideReconnectBanner();
+    hideBanner(); // Clear any pending operation banner (e.g. adapter restart)
     setConnectionStatus("connected");
   };
 
@@ -1025,6 +1057,17 @@ document.addEventListener("DOMContentLoaded", () => {
   // Wire up keep-alive toggle in device settings modal
   const kaToggle = $("#setting-keep-alive-enabled");
   if (kaToggle) kaToggle.addEventListener("change", toggleKeepAliveMethodVisibility);
+
+  // Wire up adapter-switch confirmation button
+  const confirmSwitchBtn = $("#btn-confirm-adapter-switch");
+  if (confirmSwitchBtn) {
+    confirmSwitchBtn.addEventListener("click", async () => {
+      if (!_pendingAdapterName) return;
+      const name = _pendingAdapterName;
+      _pendingAdapterName = null;
+      await doAdapterSwitch(name, true);
+    });
+  }
 
   // WebSocket provides real-time updates (initial state sent on connect)
   connectWebSocket();
