@@ -688,8 +688,9 @@ class BluetoothAudioManager:
         try:
             device = await self._get_or_create_device(address)
 
-            # Skip redundant BlueZ connect if already connected, but still
-            # wait for services and A2DP sink (e.g. after pairing auto-connect)
+            # Always call connect() even if already connected — BlueZ's
+            # pair auto-connect only creates a link-level connection; the
+            # explicit Connect() D-Bus call is needed to set up A2DP profiles.
             already_connected = False
             try:
                 already_connected = await device.is_connected()
@@ -697,9 +698,8 @@ class BluetoothAudioManager:
                 pass
 
             if already_connected:
-                logger.info("Device %s already connected, waiting for services/sink", address)
-            else:
-                await device.connect()
+                logger.info("Device %s already connected, calling connect() to ensure A2DP profiles", address)
+            await device.connect()
 
             self._broadcast_status(f"Waiting for services on {address}...")
             await device.wait_for_services(timeout=10)
@@ -713,7 +713,9 @@ class BluetoothAudioManager:
             # Verify PulseAudio sink appeared
             if self.pulse:
                 self._broadcast_status(f"Waiting for A2DP sink for {address}...")
-                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
+                sink_name = await self.pulse.wait_for_bt_sink(
+                    address, timeout=15, connected_check=device.is_connected
+                )
                 if sink_name:
                     # Disconnect HFP only AFTER A2DP is up — doing it earlier
                     # can cause the speaker to drop the entire connection when
@@ -1166,7 +1168,10 @@ class BluetoothAudioManager:
         self._last_signaled_volume.pop(address, None)
         asyncio.ensure_future(self._stop_keepalive(address))
 
-        if address in self._suppress_reconnect:
+        if address in self._connecting:
+            # Active pair/connect flow in progress — don't start competing reconnect
+            logger.info("Skipping auto-reconnect for %s (connection in progress)", address)
+        elif address in self._suppress_reconnect:
             # User-initiated disconnect — don't auto-reconnect
             self._suppress_reconnect.discard(address)
             logger.info("Skipping auto-reconnect for %s (user-initiated disconnect)", address)

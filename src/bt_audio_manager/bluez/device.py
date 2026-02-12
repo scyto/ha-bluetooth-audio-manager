@@ -288,6 +288,13 @@ class BluezDevice:
             )
             if resolved.value:
                 return True
+            # Bail out early if device disconnected
+            connected = await self._properties_iface.call_get(
+                DEVICE_INTERFACE, "Connected"
+            )
+            if not connected.value:
+                logger.warning("Device %s disconnected while waiting for services", self._address)
+                return False
             await asyncio.sleep(0.5)
         logger.warning("Services not resolved for %s within %ss", self._address, timeout)
         return False
