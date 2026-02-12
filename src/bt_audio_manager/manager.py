@@ -108,13 +108,12 @@ class BluetoothAudioManager:
                     changed = msg.body[1] if len(msg.body) > 1 else {}
                     prop_names = list(changed.keys()) if isinstance(changed, dict) else []
 
-                    # Suppress noisy RSSI / ManufacturerData spam to DEBUG
+                    # Silently discard noisy RSSI / ManufacturerData / TxPower
+                    # churn — these fire many times per second per device and
+                    # provide no actionable information for this add-on.
                     _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower"}
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
-                        logger.debug(
-                            "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
-                            iface_name, prop_names, msg.path,
-                        )
+                        pass
                     else:
                         logger.info(
                             "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
