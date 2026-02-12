@@ -1811,8 +1811,16 @@ class BluetoothAudioManager:
             mpd = self._mpd_instances.get(target_addr)
             if mpd and mpd.is_running:
                 asyncio.ensure_future(mpd.handle_command(command, detail))
+        elif len(self._mpd_instances) == 1:
+            # Single MPD instance — no disambiguation needed
+            mpd = next(iter(self._mpd_instances.values()))
+            if mpd.is_running:
+                asyncio.ensure_future(mpd.handle_command(command, detail))
         else:
-            logger.debug("Cannot determine source device for MPRIS command %s, ignoring", command)
+            logger.warning(
+                "Multiple MPD instances but cannot determine source device for MPRIS %s — ignoring",
+                command,
+            )
 
     def _on_avrcp_event(self, address: str, prop_name: str, value: object) -> None:
         """Handle AVRCP MediaPlayer1 property change — push to WebSocket."""
