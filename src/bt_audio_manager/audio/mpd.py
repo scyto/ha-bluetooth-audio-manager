@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 MPD_CONF_PATH = "/tmp/mpd.conf"
 MPD_DATA_DIR = "/data/mpd"
 MPD_MUSIC_DIR = "/data/mpd/music"
+MPD_PLAYLIST_DIR = "/data/mpd/playlists"
 MPD_DB_FILE = "/data/mpd/database"
 MPD_STATE_FILE = "/data/mpd/state"
 MPD_PID_FILE = "/tmp/mpd.pid"
@@ -51,6 +52,7 @@ class MPDManager:
 
         self._sink_name = sink_name
         os.makedirs(MPD_MUSIC_DIR, exist_ok=True)
+        os.makedirs(MPD_PLAYLIST_DIR, exist_ok=True)
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
@@ -92,6 +94,7 @@ class MPDManager:
         """Write a minimal mpd.conf targeting a specific PulseAudio sink."""
         config = textwrap.dedent("""\
             music_directory     "{music_dir}"
+            playlist_directory  "{playlist_dir}"
             db_file             "{db_file}"
             state_file          "{state_file}"
             pid_file            "{pid_file}"
@@ -111,6 +114,7 @@ class MPDManager:
             }}
         """).format(
             music_dir=MPD_MUSIC_DIR,
+            playlist_dir=MPD_PLAYLIST_DIR,
             db_file=MPD_DB_FILE,
             state_file=MPD_STATE_FILE,
             pid_file=MPD_PID_FILE,
