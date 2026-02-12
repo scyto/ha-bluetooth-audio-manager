@@ -805,8 +805,19 @@ async function forceReconnectDevice(address) {
   }
 }
 
-async function forgetDevice(address) {
-  if (!confirm(`Forget device ${address}? This will unpair it.`)) return;
+let _pendingForgetAddress = null;
+
+function forgetDevice(address) {
+  _pendingForgetAddress = address;
+  $("#forget-device-address").textContent = address;
+  new bootstrap.Modal("#forgetDeviceModal").show();
+}
+
+async function doForgetDevice() {
+  if (!_pendingForgetAddress) return;
+  const address = _pendingForgetAddress;
+  _pendingForgetAddress = null;
+  bootstrap.Modal.getInstance($("#forgetDeviceModal"))?.hide();
   try {
     await apiPost("/api/forget", { address });
   } catch (e) {
@@ -1102,6 +1113,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Wire up keep-alive toggle in device settings modal
   const kaToggle = $("#setting-keep-alive-enabled");
   if (kaToggle) kaToggle.addEventListener("change", toggleKeepAliveMethodVisibility);
+
+  // Wire up forget-device confirmation button
+  const confirmForgetBtn = $("#btn-confirm-forget");
+  if (confirmForgetBtn) {
+    confirmForgetBtn.addEventListener("click", () => doForgetDevice());
+  }
 
   // Wire up adapter-switch confirmation button
   const confirmSwitchBtn = $("#btn-confirm-adapter-switch");

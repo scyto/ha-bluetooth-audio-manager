@@ -366,6 +366,29 @@
     </div>
   </div>
 
+  <!-- ========== FORGET DEVICE CONFIRMATION MODAL ========== -->
+  <div class="modal fade" id="forgetDeviceModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header bg-danger-subtle">
+          <h5 class="modal-title">
+            <i class="fas fa-exclamation-triangle text-danger me-2"></i>Forget Device
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>Forget device <strong id="forget-device-address"></strong>? This will unpair it.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="btn-confirm-forget">
+            <i class="fas fa-trash me-1"></i>Forget
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Footer -->
   <footer class="app-footer text-center py-2 text-muted">
     <span id="version-label"></span>
