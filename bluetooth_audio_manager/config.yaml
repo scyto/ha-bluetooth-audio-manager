@@ -15,6 +15,7 @@ boot: auto
 
 # Permissions (least privilege)
 host_dbus: true
+hassio_api: true
 audio: true
 privileged:
   - NET_ADMIN
