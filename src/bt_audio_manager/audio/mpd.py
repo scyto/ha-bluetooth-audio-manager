@@ -102,6 +102,7 @@ class MPDManager:
             port                "{port}"
             log_level           "verbose"
             auto_update         "no"
+            user                "root"
 
             audio_output {{
                 type    "pulse"

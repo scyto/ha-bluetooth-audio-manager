@@ -898,6 +898,7 @@ class BluetoothAudioManager:
                 device["keep_alive_enabled"] = s["keep_alive_enabled"]
                 device["keep_alive_method"] = s["keep_alive_method"]
                 device["keep_alive_active"] = addr in self._keepalives
+                device["mpd_enabled"] = s.get("mpd_enabled", False)
 
         # Add stored devices not currently visible
         discovered_addresses = {d["address"] for d in discovered}
@@ -920,6 +921,7 @@ class BluetoothAudioManager:
                         "keep_alive_enabled": s["keep_alive_enabled"],
                         "keep_alive_method": s["keep_alive_method"],
                         "keep_alive_active": addr in self._keepalives,
+                        "mpd_enabled": s.get("mpd_enabled", False),
                     }
                 )
 
