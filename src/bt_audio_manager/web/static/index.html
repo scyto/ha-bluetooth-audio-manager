@@ -210,6 +210,39 @@
     </div>
   </div>
 
+  <!-- ========== ADAPTER SWITCH CONFIRMATION MODAL ========== -->
+  <div class="modal fade" id="adapterSwitchModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header bg-warning-subtle">
+          <h5 class="modal-title">
+            <i class="fas fa-exclamation-triangle text-warning me-2"></i>Switch Bluetooth Adapter
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>You are about to switch to adapter <strong id="switch-adapter-name"></strong>.</p>
+          <div class="alert alert-warning mb-3">
+            <i class="fas fa-info-circle me-2"></i>
+            Bluetooth pairings are tied to a specific adapter. Switching adapters means
+            <strong>all current device pairings will be removed</strong> and devices will need
+            to be re-paired on the new adapter.
+          </div>
+          <p class="mb-0 text-muted small">
+            All connected devices will be disconnected and removed before the add-on restarts
+            with the new adapter.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-warning" id="btn-confirm-adapter-switch">
+            <i class="fas fa-exchange-alt me-1"></i>Switch &amp; Clear Pairings
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ========== ADD-ON SETTINGS MODAL ========== -->
   <div class="modal fade" id="settingsModal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">

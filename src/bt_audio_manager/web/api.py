@@ -92,7 +92,9 @@ def create_api_routes(
     async def set_adapter(request: web.Request) -> web.Response:
         """Set the Bluetooth adapter. Persists to settings.json.
 
-        Accepts {"adapter": "hci1"}. Requires a restart to take effect.
+        Accepts {"adapter": "hci1", "clean": true}.
+        When clean=true, disconnects and removes all devices before saving.
+        Requires a restart to take effect.
         """
         try:
             body = await request.json()
@@ -102,13 +104,21 @@ def create_api_routes(
                     {"error": "adapter is required"}, status=400
                 )
 
+            clean = body.get("clean", False)
+            if clean:
+                await manager.clear_all_devices()
+
             manager.config.bt_adapter = adapter_name
             manager.config.save_settings()
 
-            logger.info("Adapter selection changed to %s (restart required)", adapter_name)
+            logger.info(
+                "Adapter selection changed to %s (restart required, clean=%s)",
+                adapter_name, clean,
+            )
             return web.json_response({
                 "adapter": adapter_name,
                 "restart_required": True,
+                "cleaned": clean,
             })
         except Exception as e:
             logger.error("Failed to set adapter: %s", e)
