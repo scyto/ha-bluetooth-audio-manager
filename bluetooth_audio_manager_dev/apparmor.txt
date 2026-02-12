@@ -63,6 +63,12 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /usr/lib/libdbus* r,
   /lib/** r,
 
+  # DNS resolution (required for Supervisor API calls via hostname)
+  /etc/resolv.conf r,
+  /etc/nsswitch.conf r,
+  /etc/hosts r,
+  /etc/host.conf r,
+
   # Read-only system info
   /proc/*/status r,
   /sys/class/bluetooth/** r,
