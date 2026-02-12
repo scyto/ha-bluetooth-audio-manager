@@ -1143,12 +1143,19 @@ class BluetoothAudioManager:
             logger.debug("Could not reach HA Core API for Bluetooth integration info")
             return set()
 
+        import re
+
+        mac_re = re.compile(r"([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})")
         macs: set[str] = set()
         for entry in entries:
-            if entry.get("domain") == "bluetooth":
-                uid = entry.get("unique_id", "")
-                if uid:
-                    macs.add(uid.upper())
+            if entry.get("domain") != "bluetooth":
+                continue
+            # Prefer unique_id (may be a MAC); fall back to parsing title
+            # e.g. "cyber-blue(HK)Ltd CSR8510 A10 (00:1A:7D:DA:71:11)"
+            uid = entry.get("unique_id") or ""
+            m = mac_re.search(uid) or mac_re.search(entry.get("title", ""))
+            if m:
+                macs.add(m.group(1).upper())
         if macs:
             logger.info("HA Bluetooth integration manages adapters: %s", macs)
         return macs
