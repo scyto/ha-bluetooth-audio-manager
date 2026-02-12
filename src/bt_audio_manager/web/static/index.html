@@ -338,6 +338,23 @@
               Infrasound is recommended for speakers that detect digital silence.
             </div>
           </div>
+
+          <hr class="my-3">
+
+          <!-- MPD Media Player Toggle -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-mpd-enabled">
+              <label class="form-check-label" for="setting-mpd-enabled">
+                <strong>MPD Media Player</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              Route MPD audio output to this speaker. Add the
+              <a href="https://www.home-assistant.io/integrations/mpd/" target="_blank" rel="noopener">HA MPD integration</a>
+              to create a <code>media_player</code> entity for TTS and media playback.
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>

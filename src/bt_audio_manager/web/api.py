@@ -279,7 +279,7 @@ def create_api_routes(
         address = request.match_info["address"]
         try:
             body = await request.json()
-            allowed_keys = {"keep_alive_enabled", "keep_alive_method"}
+            allowed_keys = {"keep_alive_enabled", "keep_alive_method", "mpd_enabled"}
             settings = {k: v for k, v in body.items() if k in allowed_keys}
             if not settings:
                 return web.json_response(
@@ -295,6 +295,11 @@ def create_api_routes(
                 if not isinstance(settings["keep_alive_enabled"], bool):
                     return web.json_response(
                         {"error": "keep_alive_enabled must be a boolean"}, status=400
+                    )
+            if "mpd_enabled" in settings:
+                if not isinstance(settings["mpd_enabled"], bool):
+                    return web.json_response(
+                        {"error": "mpd_enabled must be a boolean"}, status=400
                     )
             result = await manager.update_device_settings(address, settings)
             if result is None:
