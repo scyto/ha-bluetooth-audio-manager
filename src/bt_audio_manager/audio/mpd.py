@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 MPD_CONF_PATH = "/tmp/mpd.conf"
 MPD_DATA_DIR = "/data/mpd"
 MPD_MUSIC_DIR = "/data/mpd/music"
+MPD_PLAYLIST_DIR = "/data/mpd/playlists"
 MPD_DB_FILE = "/data/mpd/database"
 MPD_STATE_FILE = "/data/mpd/state"
 MPD_PID_FILE = "/tmp/mpd.pid"
@@ -35,15 +36,23 @@ class MPDManager:
         self._client: MPDClient | None = None
         self._running = False
         self._connect_lock = asyncio.Lock()
+        self._sink_name: str | None = None
+        self._stderr_task: asyncio.Task | None = None
 
     # -- Lifecycle --
 
-    async def start(self) -> None:
-        """Generate config, start MPD daemon, connect client."""
+    async def start(self, sink_name: str) -> None:
+        """Generate config, start MPD daemon, connect client.
+
+        Args:
+            sink_name: PulseAudio sink to target (e.g. bluez_sink.XX_XX.a2dp_sink).
+        """
         if self._running:
             return
 
+        self._sink_name = sink_name
         os.makedirs(MPD_MUSIC_DIR, exist_ok=True)
+        os.makedirs(MPD_PLAYLIST_DIR, exist_ok=True)
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
@@ -53,6 +62,10 @@ class MPDManager:
     async def stop(self) -> None:
         """Disconnect client and terminate MPD daemon."""
         self._running = False
+
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            self._stderr_task = None
 
         if self._client:
             try:
@@ -78,20 +91,22 @@ class MPDManager:
     # -- Config generation --
 
     def _generate_config(self) -> None:
-        """Write a minimal mpd.conf for PulseAudio output."""
+        """Write a minimal mpd.conf targeting a specific PulseAudio sink."""
         config = textwrap.dedent("""\
             music_directory     "{music_dir}"
+            playlist_directory  "{playlist_dir}"
             db_file             "{db_file}"
             state_file          "{state_file}"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
-            log_level           "default"
+            log_level           "verbose"
             auto_update         "no"
 
             audio_output {{
                 type    "pulse"
                 name    "Bluetooth Speaker"
+                sink    "{sink}"
             }}
 
             input {{
@@ -99,10 +114,12 @@ class MPDManager:
             }}
         """).format(
             music_dir=MPD_MUSIC_DIR,
+            playlist_dir=MPD_PLAYLIST_DIR,
             db_file=MPD_DB_FILE,
             state_file=MPD_STATE_FILE,
             pid_file=MPD_PID_FILE,
             port=MPD_PORT,
+            sink=self._sink_name,
         )
 
         with open(MPD_CONF_PATH, "w") as f:
@@ -114,7 +131,7 @@ class MPDManager:
     async def _start_daemon(self) -> None:
         """Start MPD in foreground mode as a subprocess."""
         self._process = await asyncio.create_subprocess_exec(
-            "mpd", "--no-daemon", MPD_CONF_PATH,
+            "mpd", "--no-daemon", "--stderr", MPD_CONF_PATH,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -124,6 +141,21 @@ class MPDManager:
             stderr = await self._process.stderr.read()
             raise RuntimeError(f"MPD failed to start: {stderr.decode().strip()}")
         logger.info("MPD daemon started (pid=%d)", self._process.pid)
+        # Stream MPD's stderr to our logger so errors are visible
+        self._stderr_task = asyncio.create_task(self._stream_stderr())
+
+    async def _stream_stderr(self) -> None:
+        """Read MPD stderr line by line and forward to our logger."""
+        try:
+            while self._process and self._process.stderr:
+                line = await self._process.stderr.readline()
+                if not line:
+                    break
+                text = line.decode().rstrip()
+                if text:
+                    logger.info("[mpd] %s", text)
+        except Exception:
+            pass
 
     # -- Client connection --
 

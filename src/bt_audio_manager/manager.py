@@ -1820,14 +1820,12 @@ class BluetoothAudioManager:
             logger.debug("No PA sink for %s yet, MPD start deferred", address)
             return
 
-        await self.pulse.set_default_sink(sink_name)
-        logger.info("PA default sink set to %s for MPD", sink_name)
-
         if not self.mpd:
             self.mpd = MPDManager()
         if not self.mpd.is_running:
             try:
-                await self.mpd.start()
+                await self.mpd.start(sink_name)
+                logger.info("MPD started targeting sink %s", sink_name)
             except Exception as e:
                 logger.warning("MPD start failed: %s", e)
                 self.mpd = None
