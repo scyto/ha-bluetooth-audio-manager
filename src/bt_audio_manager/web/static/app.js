@@ -477,9 +477,10 @@ function renderAdaptersModal(adapters) {
       if (a.modalias) techParts.push(a.modalias);
       const techLine = techParts.join(" \u2014 ");
 
+      const displayLabel = friendlyName || a.name;
       const selectBtn =
         !a.selected && a.powered
-          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.name}')">
+          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.address}', '${escapeHtml(displayLabel)}')">
                <i class="fas fa-check me-1"></i>Select
              </button>`
           : "";
@@ -810,37 +811,40 @@ async function forgetDevice(address) {
   }
 }
 
-let _pendingAdapterName = null;
+let _pendingAdapterMac = null;
+let _pendingAdapterLabel = null;
 
-async function selectAdapter(adapterName) {
+async function selectAdapter(adapterMac, displayLabel) {
   // If no devices are stored/paired, skip the warning — nothing to lose
   const hasDevices = lastDevices && lastDevices.some((d) => d.stored || d.paired);
   if (!hasDevices) {
-    await doAdapterSwitch(adapterName, false);
+    await doAdapterSwitch(adapterMac, displayLabel, false);
     return;
   }
 
   // Show confirmation modal with pairing-loss warning
-  _pendingAdapterName = adapterName;
-  $("#switch-adapter-name").textContent = adapterName;
+  _pendingAdapterMac = adapterMac;
+  _pendingAdapterLabel = displayLabel;
+  $("#switch-adapter-name").textContent = displayLabel;
   new bootstrap.Modal("#adapterSwitchModal").show();
 }
 
-async function doAdapterSwitch(adapterName, clean) {
+async function doAdapterSwitch(adapterMac, displayLabel, clean) {
   try {
     // Close both modals — they will have stale data until the server returns
     bootstrap.Modal.getInstance($("#adapterSwitchModal"))?.hide();
     bootstrap.Modal.getInstance($("#adaptersModal"))?.hide();
     showBanner(
       clean
-        ? `Cleaning devices and switching to ${adapterName}...`
-        : `Switching to adapter ${adapterName}...`
+        ? `Cleaning devices and switching to ${displayLabel}...`
+        : `Switching to adapter ${displayLabel}...`
     );
 
     // Backend handles disconnect-all + forget-all when clean=true,
     // and pushes live progress via WebSocket status messages.
+    // adapter value is now the MAC address (stable across reboots).
     const result = await apiPost("/api/set-adapter", {
-      adapter: adapterName,
+      adapter: adapterMac,
       clean: clean,
     });
     if (result.restart_required) {
@@ -1062,10 +1066,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const confirmSwitchBtn = $("#btn-confirm-adapter-switch");
   if (confirmSwitchBtn) {
     confirmSwitchBtn.addEventListener("click", async () => {
-      if (!_pendingAdapterName) return;
-      const name = _pendingAdapterName;
-      _pendingAdapterName = null;
-      await doAdapterSwitch(name, true);
+      if (!_pendingAdapterMac) return;
+      const mac = _pendingAdapterMac;
+      const label = _pendingAdapterLabel;
+      _pendingAdapterMac = null;
+      _pendingAdapterLabel = null;
+      await doAdapterSwitch(mac, label, true);
     });
   }
 

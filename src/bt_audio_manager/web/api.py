@@ -71,11 +71,14 @@ def create_api_routes(
     async def info(request: web.Request) -> web.Response:
         """Return add-on version and adapter info for the UI."""
         import os
-        adapter_name = manager._adapter_path.rsplit("/", 1)[-1]
+        path = manager._adapter_path or "/org/bluez/hci0"
+        adapter_name = path.rsplit("/", 1)[-1]
         return web.json_response({
             "version": os.environ.get("BUILD_VERSION", "dev"),
             "adapter": adapter_name,
-            "adapter_path": manager._adapter_path,
+            "adapter_path": path,
+            "adapter_mac": manager.config.bt_adapter
+            if manager.config.bt_adapter_is_mac else None,
         })
 
     @routes.get("/api/adapters")

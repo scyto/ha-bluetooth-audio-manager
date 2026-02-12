@@ -54,7 +54,7 @@ class BluetoothAudioManager:
 
     def __init__(self, config: AppConfig):
         self.config = config
-        self._adapter_path = config.adapter_path
+        self._adapter_path: str | None = None  # resolved in start()
         self.bus: MessageBus | None = None
         self.adapter: BluezAdapter | None = None
         self.agent: PairingAgent | None = None
@@ -80,6 +80,66 @@ class BluetoothAudioManager:
         self._scanning: bool = False
         self._scan_task: asyncio.Task | None = None
         self._scan_debounce_handle: asyncio.TimerHandle | None = None
+
+    async def _resolve_adapter_path(self) -> str:
+        """Resolve the configured bt_adapter to a BlueZ D-Bus path.
+
+        Handles three formats:
+        - "auto"                → first powered adapter (or /org/bluez/hci0)
+        - "78:20:51:F5:F1:07"  → look up by MAC address
+        - "hci1" (legacy)      → look up by HCI name, migrate to MAC
+        """
+        cfg = self.config
+        adapters = await BluezAdapter.list_all(self.bus)
+
+        if cfg.bt_adapter == "auto":
+            # Prefer first powered adapter, else first available
+            powered = [a for a in adapters if a["powered"]]
+            choice = powered[0] if powered else (adapters[0] if adapters else None)
+            if choice:
+                logger.info("Auto-selected adapter %s (%s)", choice["name"], choice["address"])
+                return choice["path"]
+            return "/org/bluez/hci0"
+
+        if cfg.bt_adapter_is_mac:
+            # New format: look up by MAC address
+            match = next((a for a in adapters if a["address"] == cfg.bt_adapter), None)
+            if match:
+                logger.info(
+                    "Resolved adapter MAC %s → %s", cfg.bt_adapter, match["path"],
+                )
+                return match["path"]
+            # Configured adapter not found — fall back to auto for this session
+            logger.warning(
+                "Configured adapter %s not found — falling back to auto "
+                "(adapter may be disconnected; settings preserved)",
+                cfg.bt_adapter,
+            )
+            self._broadcast_status(
+                f"Configured adapter {cfg.bt_adapter} not found — using default"
+            )
+            powered = [a for a in adapters if a["powered"]]
+            choice = powered[0] if powered else (adapters[0] if adapters else None)
+            return choice["path"] if choice else "/org/bluez/hci0"
+
+        # Legacy format: HCI name like "hci1"
+        match = next((a for a in adapters if a["name"] == cfg.bt_adapter), None)
+        if match:
+            logger.info(
+                "Migrating legacy adapter setting %s → %s",
+                cfg.bt_adapter, match["address"],
+            )
+            cfg.bt_adapter = match["address"]
+            cfg.save_settings()
+            return match["path"]
+        # Legacy HCI name not found — fall back
+        logger.warning(
+            "Legacy adapter %s not found — falling back to auto",
+            cfg.bt_adapter,
+        )
+        powered = [a for a in adapters if a["powered"]]
+        choice = powered[0] if powered else (adapters[0] if adapters else None)
+        return choice["path"] if choice else "/org/bluez/hci0"
 
     async def start(self) -> None:
         """Full startup sequence."""
@@ -186,7 +246,8 @@ class BluetoothAudioManager:
                 )
             )
 
-        # 2. Initialize BlueZ adapter (using configured adapter path)
+        # 2. Resolve configured adapter (MAC or legacy HCI) → D-Bus path
+        self._adapter_path = await self._resolve_adapter_path()
         logger.info("Using Bluetooth adapter: %s", self._adapter_path)
         self.adapter = BluezAdapter(self.bus, self._adapter_path)
         await self.adapter.initialize()

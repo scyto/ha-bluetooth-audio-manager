@@ -43,18 +43,14 @@ class AppConfig:
     scan_duration_seconds: int = 30
 
     @property
-    def adapter_path(self) -> str:
-        """Resolve the bt_adapter setting to a BlueZ D-Bus adapter path.
+    def bt_adapter_is_mac(self) -> bool:
+        """True when bt_adapter stores a MAC address (new format)."""
+        return ":" in self.bt_adapter
 
-        "auto" → "/org/bluez/hci0" (default first adapter).
-        "hci1" → "/org/bluez/hci1", etc.
-        """
-        if self.bt_adapter == "auto":
-            return "/org/bluez/hci0"
-        name = self.bt_adapter
-        if name.startswith("/org/bluez/"):
-            return name
-        return f"/org/bluez/{name}"
+    @property
+    def bt_adapter_is_legacy_hci(self) -> bool:
+        """True when bt_adapter stores a legacy HCI name like 'hci1'."""
+        return self.bt_adapter != "auto" and ":" not in self.bt_adapter
 
     @property
     def runtime_settings(self) -> dict:
