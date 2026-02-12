@@ -1,11 +1,11 @@
 """MPD (Music Player Daemon) management for Bluetooth audio playback.
 
-Embeds an MPD instance that outputs through PulseAudio to the connected
-Bluetooth speaker.  Provides a bridge from AVRCP/MPRIS speaker button
+Embeds one MPD instance per Bluetooth speaker, each on a unique port
+(6600-6609).  Provides a bridge from AVRCP/MPRIS speaker button
 commands to MPD playback control via python-mpd2.
 
-HA's built-in MPD integration connects to port 6600 to create a
-media_player entity.
+HA's built-in MPD integration connects to each port to create a
+media_player entity per speaker.
 """
 
 import asyncio
@@ -18,15 +18,10 @@ from mpd.asyncio import MPDClient
 
 logger = logging.getLogger(__name__)
 
-MPD_CONF_PATH = "/tmp/mpd.conf"
-MPD_DATA_DIR = "/data/mpd"
+MPD_BASE_DIR = "/data/mpd"
 MPD_MUSIC_DIR = "/data/mpd/music"
 MPD_PLAYLIST_DIR = "/data/mpd/playlists"
-MPD_DB_FILE = "/data/mpd/database"
-MPD_STATE_FILE = "/data/mpd/state"
-MPD_PID_FILE = "/tmp/mpd.pid"
 MPD_HOST = "127.0.0.1"
-MPD_PORT = 6600
 
 
 def _chown_mpd_dirs() -> None:
@@ -37,11 +32,11 @@ def _chown_mpd_dirs() -> None:
     """
     try:
         pw = pwd.getpwnam("mpd")
-        for dirpath, dirnames, filenames in os.walk(MPD_DATA_DIR):
+        for dirpath, dirnames, filenames in os.walk(MPD_BASE_DIR):
             os.chown(dirpath, pw.pw_uid, pw.pw_gid)
             for fname in filenames:
                 os.chown(os.path.join(dirpath, fname), pw.pw_uid, pw.pw_gid)
-        logger.debug("chown'd %s to mpd:%d", MPD_DATA_DIR, pw.pw_uid)
+        logger.debug("chown'd %s to mpd:%d", MPD_BASE_DIR, pw.pw_uid)
     except KeyError:
         logger.warning("'mpd' user not found — MPD may fail to write its database")
     except OSError as e:
@@ -51,7 +46,25 @@ def _chown_mpd_dirs() -> None:
 class MPDManager:
     """Manages an embedded MPD daemon and bridges AVRCP commands to it."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        address: str,
+        port: int,
+        speaker_name: str,
+        password: str | None = None,
+    ) -> None:
+        self._address = address
+        self._port = port
+        self._speaker_name = speaker_name
+        self._password = password
+
+        # Per-instance paths (port as discriminator)
+        self._instance_dir = f"{MPD_BASE_DIR}/instance_{port}"
+        self._db_file = f"{self._instance_dir}/database"
+        self._state_file = f"{self._instance_dir}/state"
+        self._conf_path = f"/tmp/mpd_{port}.conf"
+        self._pid_file = f"/tmp/mpd_{port}.pid"
+
         self._process: asyncio.subprocess.Process | None = None
         self._client: MPDClient | None = None
         self._running = False
@@ -73,13 +86,14 @@ class MPDManager:
         self._sink_name = sink_name
         os.makedirs(MPD_MUSIC_DIR, exist_ok=True)
         os.makedirs(MPD_PLAYLIST_DIR, exist_ok=True)
+        os.makedirs(self._instance_dir, exist_ok=True)
         # MPD drops from root to the 'mpd' user; ensure it owns its data dirs
         _chown_mpd_dirs()
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
         self._running = True
-        logger.info("MPD started (port %d)", MPD_PORT)
+        logger.info("MPD started for %s on port %d", self._address, self._port)
 
     async def stop(self) -> None:
         """Disconnect client and terminate MPD daemon."""
@@ -103,17 +117,29 @@ class MPDManager:
             except asyncio.TimeoutError:
                 self._process.kill()
                 await self._process.wait()
-            logger.info("MPD daemon stopped")
+            logger.info("MPD daemon stopped (port %d)", self._port)
         self._process = None
 
     @property
     def is_running(self) -> bool:
         return self._running and self._process is not None
 
+    @property
+    def port(self) -> int:
+        return self._port
+
+    @property
+    def address(self) -> str:
+        return self._address
+
     # -- Config generation --
 
     def _generate_config(self) -> None:
         """Write a minimal mpd.conf targeting a specific PulseAudio sink."""
+        password_line = ""
+        if self._password:
+            password_line = f'password "{self._password}@read,add,control,admin"'
+
         config = textwrap.dedent("""\
             music_directory     "{music_dir}"
             playlist_directory  "{playlist_dir}"
@@ -124,10 +150,11 @@ class MPDManager:
             port                "{port}"
             log_level           "verbose"
             auto_update         "no"
+            {password_line}
 
             audio_output {{
                 type    "pulse"
-                name    "Bluetooth Speaker"
+                name    "{speaker_name}"
                 sink    "{sink}"
             }}
 
@@ -137,23 +164,25 @@ class MPDManager:
         """).format(
             music_dir=MPD_MUSIC_DIR,
             playlist_dir=MPD_PLAYLIST_DIR,
-            db_file=MPD_DB_FILE,
-            state_file=MPD_STATE_FILE,
-            pid_file=MPD_PID_FILE,
-            port=MPD_PORT,
+            db_file=self._db_file,
+            state_file=self._state_file,
+            pid_file=self._pid_file,
+            port=self._port,
+            password_line=password_line,
+            speaker_name=self._speaker_name,
             sink=self._sink_name,
         )
 
-        with open(MPD_CONF_PATH, "w") as f:
+        with open(self._conf_path, "w") as f:
             f.write(config)
-        logger.debug("MPD config written to %s", MPD_CONF_PATH)
+        logger.debug("MPD config written to %s", self._conf_path)
 
     # -- Daemon management --
 
     async def _start_daemon(self) -> None:
         """Start MPD in foreground mode as a subprocess."""
         self._process = await asyncio.create_subprocess_exec(
-            "mpd", "--no-daemon", "--stderr", MPD_CONF_PATH,
+            "mpd", "--no-daemon", "--stderr", self._conf_path,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -162,7 +191,7 @@ class MPDManager:
         if self._process.returncode is not None:
             stderr = await self._process.stderr.read()
             raise RuntimeError(f"MPD failed to start: {stderr.decode().strip()}")
-        logger.info("MPD daemon started (pid=%d)", self._process.pid)
+        logger.info("MPD daemon started (pid=%d, port=%d)", self._process.pid, self._port)
         # Stream MPD's stderr to our logger so errors are visible
         self._stderr_task = asyncio.create_task(self._stream_stderr())
 
@@ -175,7 +204,7 @@ class MPDManager:
                     break
                 text = line.decode().rstrip()
                 if text:
-                    logger.info("[mpd] %s", text)
+                    logger.info("[mpd:%d] %s", self._port, text)
         except Exception:
             pass
 
@@ -186,13 +215,15 @@ class MPDManager:
         self._client = MPDClient()
         for attempt in range(5):
             try:
-                await self._client.connect(MPD_HOST, MPD_PORT)
-                logger.debug("MPD client connected")
+                await self._client.connect(MPD_HOST, self._port)
+                if self._password:
+                    await self._client.password(self._password)
+                logger.debug("MPD client connected (port %d)", self._port)
                 return
             except (ConnectionRefusedError, OSError):
                 if attempt < 4:
                     await asyncio.sleep(0.5)
-        logger.warning("Could not connect MPD client after retries")
+        logger.warning("Could not connect MPD client after retries (port %d)", self._port)
         self._client = None
 
     async def _ensure_connected(self) -> None:
@@ -241,7 +272,7 @@ class MPDManager:
                 except ValueError:
                     pass
         except Exception as e:
-            logger.warning("MPD command %s failed: %s", command, e)
+            logger.warning("MPD command %s failed (port %d): %s", command, self._port, e)
             self._client = None
 
     async def set_volume(self, vol_pct: int) -> None:
@@ -252,7 +283,7 @@ class MPDManager:
         try:
             await self._client.setvol(max(0, min(100, vol_pct)))
         except Exception as e:
-            logger.debug("MPD set_volume failed: %s", e)
+            logger.debug("MPD set_volume failed (port %d): %s", self._port, e)
             self._client = None
 
     async def get_status(self) -> dict:

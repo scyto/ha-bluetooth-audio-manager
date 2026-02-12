@@ -36,9 +36,11 @@ map:
 # User options (runtime settings are managed in the app UI)
 options:
   log_level: "info"
+  mpd_password: ""
 
 schema:
   log_level: "list(debug|info|warning|error)"
+  mpd_password: "str?"
 
 apparmor: true
 watchdog: "http://[HOST]:[PORT:8099]/api/health"

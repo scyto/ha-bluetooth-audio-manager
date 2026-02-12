@@ -344,7 +344,8 @@
           <!-- MPD Media Player Toggle -->
           <div class="mb-3">
             <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="setting-mpd-enabled">
+              <input class="form-check-input" type="checkbox" id="setting-mpd-enabled"
+                     onchange="toggleMpdConfigVisibility()">
               <label class="form-check-label" for="setting-mpd-enabled">
                 <strong>MPD Media Player</strong>
               </label>
@@ -353,6 +354,31 @@
               Route MPD audio output to this speaker. Add the
               <a href="https://www.home-assistant.io/integrations/mpd/" target="_blank" rel="noopener">HA MPD integration</a>
               to create a <code>media_player</code> entity for TTS and media playback.
+            </div>
+          </div>
+
+          <!-- MPD Config (shown when enabled) -->
+          <div id="mpd-config-group" style="display:none;">
+            <div class="mb-3">
+              <label for="setting-mpd-name" class="form-label">MPD Name</label>
+              <input type="text" class="form-control" id="setting-mpd-name"
+                     placeholder="(defaults to speaker name)" maxlength="64">
+              <div class="form-text">
+                Name shown in MPD clients and HA. Leave blank to use the Bluetooth device name.
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="setting-mpd-port" class="form-label">MPD Port</label>
+              <input type="number" class="form-control" id="setting-mpd-port"
+                     min="6600" max="6609" step="1">
+              <div class="form-text">
+                Port for this speaker's MPD instance (6600–6609). Auto-assigned on first enable.
+              </div>
+            </div>
+            <div class="alert alert-info py-2 mb-0" id="mpd-connection-info">
+              <i class="fas fa-info-circle me-1"></i>
+              Use port <strong id="mpd-port-display"></strong> when adding the HA MPD integration.<br>
+              <span class="form-text">Host: <code id="mpd-hostname"></code></span>
             </div>
           </div>
         </div>

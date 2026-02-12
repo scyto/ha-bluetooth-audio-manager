@@ -279,7 +279,10 @@ def create_api_routes(
         address = request.match_info["address"]
         try:
             body = await request.json()
-            allowed_keys = {"keep_alive_enabled", "keep_alive_method", "mpd_enabled"}
+            allowed_keys = {
+                "keep_alive_enabled", "keep_alive_method",
+                "mpd_enabled", "mpd_port", "mpd_name",
+            }
             settings = {k: v for k, v in body.items() if k in allowed_keys}
             if not settings:
                 return web.json_response(
@@ -300,6 +303,23 @@ def create_api_routes(
                 if not isinstance(settings["mpd_enabled"], bool):
                     return web.json_response(
                         {"error": "mpd_enabled must be a boolean"}, status=400
+                    )
+            if "mpd_port" in settings:
+                port = settings["mpd_port"]
+                if not isinstance(port, int) or port < 6600 or port > 6609:
+                    return web.json_response(
+                        {"error": "mpd_port must be an integer 6600-6609"}, status=400
+                    )
+                ok = await manager.store.set_mpd_port(address, port)
+                if not ok:
+                    return web.json_response(
+                        {"error": f"Port {port} is already in use by another device"},
+                        status=409,
+                    )
+            if "mpd_name" in settings:
+                if not isinstance(settings["mpd_name"], str) or len(settings["mpd_name"]) > 64:
+                    return web.json_response(
+                        {"error": "mpd_name must be a string (max 64 chars)"}, status=400
                     )
             result = await manager.update_device_settings(address, settings)
             if result is None:
