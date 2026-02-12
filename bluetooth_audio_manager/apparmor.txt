@@ -63,6 +63,9 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /usr/lib/libdbus* r,
   /lib/** r,
 
+  # Shared data (ICU unicode data required by MPD, MIME types)
+  /usr/share/** r,
+
   # DNS resolution (required for Supervisor API calls via hostname)
   /etc/resolv.conf r,
   /etc/nsswitch.conf r,
