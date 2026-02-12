@@ -1,5 +1,5 @@
 name: "Bluetooth Audio Manager (Dev)"
-version: "sha-3b14c75"
+version: "sha-44664a1"
 slug: bluetooth_audio_manager_dev
 description: "Development build - may be unstable. Bluetooth A2DP audio device management with persistent pairing and auto-reconnect."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
@@ -36,9 +36,11 @@ map:
 # User options (runtime settings are managed in the app UI)
 options:
   log_level: "info"
+  mpd_password: ""
 
 schema:
   log_level: "list(debug|info|warning|error)"
+  mpd_password: "str?"
 
 apparmor: true
 watchdog: "http://[HOST]:[PORT:8099]/api/health"
