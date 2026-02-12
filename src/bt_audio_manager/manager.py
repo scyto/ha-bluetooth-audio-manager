@@ -835,16 +835,30 @@ class BluetoothAudioManager:
         if not token:
             logger.warning("SUPERVISOR_TOKEN not set — cannot query hardware API")
             return {}
+        # Try hostname first, then fall back to standard Supervisor IP
+        # (AppArmor may block /etc/resolv.conf, breaking DNS resolution)
+        urls = ["http://supervisor/hardware/info", "http://172.30.32.2/hardware/info"]
+        result = None
+        for url in urls:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning("Supervisor hardware API returned %s from %s", resp.status, url)
+                            continue
+                        result = await resp.json()
+                        break
+            except Exception as e:
+                logger.debug("Supervisor API at %s failed: %s", url, e)
+                continue
+        if result is None:
+            logger.warning("Failed to query Supervisor hardware API (tried hostname and IP)")
+            return {}
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "http://supervisor/hardware/info",
-                    headers={"Authorization": f"Bearer {token}"},
-                ) as resp:
-                    if resp.status != 200:
-                        logger.warning("Supervisor hardware API returned %s", resp.status)
-                        return {}
-                    result = await resp.json()
 
             devices = result.get("data", {}).get("devices", [])
             names: dict[str, str] = {}
