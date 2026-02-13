@@ -1910,11 +1910,10 @@ class BluetoothAudioManager:
         Runs as a background task after settings are saved.  Sends toast
         notifications via WebSocket so the user sees progress and errors.
 
-        For HFP: ``_unregister_null_hfp_handler`` already restarted PA so
-        it re-registers its native HFP Audio Gateway handler with BlueZ.
-        But BlueZ does NOT call PA's ``NewConnection()`` for devices that
-        are already connected — we must explicitly ``ConnectProfile(HFP_UUID)``
-        to trigger the RFCOMM channel establishment.
+        For HFP: BlueZ does NOT call PA's ``NewConnection()`` for devices
+        that are already connected when a profile handler is registered.
+        We must explicitly ``DisconnectProfile`` + ``ConnectProfile`` to
+        force a fresh RFCOMM channel, triggering PA's callback.
         """
         profile_label = "HFP" if profile == "hfp" else "A2DP"
         try:
@@ -1924,14 +1923,22 @@ class BluetoothAudioManager:
             if not activated and profile == "hfp":
                 from .bluez.constants import HFP_UUID
 
-                # --- Fallback 1: ConnectProfile to trigger PA's NewConnection ---
-                # PA was restarted by _unregister_null_hfp_handler and has HFP
-                # registered fresh.  ConnectProfile asks BlueZ to establish the
-                # HFP RFCOMM channel, which triggers PA's NewConnection() callback.
+                # --- Fallback 1: Disconnect + ConnectProfile to force fresh RFCOMM ---
+                # BlueZ may consider the profile "connected" without an actual
+                # RFCOMM channel (returns instant success).  DisconnectProfile
+                # first to force a real fresh connection that triggers PA's
+                # NewConnection() callback.
                 self._broadcast_status("Activating HFP profile...")
-                logger.info("HFP Fallback 1: ConnectProfile(%s) for %s", HFP_UUID, address)
+                logger.info("HFP Fallback 1: DisconnectProfile + ConnectProfile for %s", address)
                 try:
                     device = await self._get_or_create_device(address)
+                    # Force disconnect the HFP profile first
+                    try:
+                        await device.disconnect_profile(HFP_UUID)
+                        logger.info("HFP Fallback 1: DisconnectProfile succeeded for %s", address)
+                        await asyncio.sleep(1)
+                    except Exception as e:
+                        logger.debug("HFP Fallback 1: DisconnectProfile: %s (continuing)", e)
                     await device.connect_profile(HFP_UUID)
                     logger.info("HFP Fallback 1: ConnectProfile succeeded for %s", address)
                 except Exception as e:
@@ -1943,17 +1950,19 @@ class BluetoothAudioManager:
             if not activated and profile == "hfp":
                 from .bluez.constants import HFP_UUID
 
-                # --- Fallback 2: full disconnect/reconnect cycle ---
-                # Forces BlueZ to re-establish ALL profiles from scratch.
-                logger.info("HFP Fallback 2: disconnect/reconnect cycle for %s", address)
-                self._broadcast_status("Reconnecting device for HFP...")
+                # --- Fallback 2: full disconnect/reconnect + PA restart ---
+                # Nuclear option: restart PA to re-register all handlers,
+                # then reconnect device so BlueZ establishes HFP fresh.
+                logger.info("HFP Fallback 2: PA restart + reconnect for %s", address)
+                self._broadcast_status("Restarting audio for HFP...")
+                await self._reload_pa_bluetooth_module()
                 try:
                     device = await self._get_or_create_device(address)
                     await device.disconnect()
                     await asyncio.sleep(3)
                     await device.connect()
                     await device.wait_for_services(timeout=10)
-                    # Explicit ConnectProfile in case generic Connect() missed HFP
+                    # Explicit ConnectProfile after fresh connect
                     try:
                         await device.connect_profile(HFP_UUID)
                         logger.info("HFP Fallback 2: ConnectProfile succeeded for %s", address)

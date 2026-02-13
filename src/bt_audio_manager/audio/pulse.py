@@ -385,10 +385,11 @@ class PulseAudioManager:
                 # headset-head-unit profile won't come back (PA needs its
                 # HFP handler registered with BlueZ).  Fail fast so the
                 # caller can retry after ensuring HFP is connected.
+                # Log available profiles for diagnostics.
+                available = await self._list_card_profiles(card_name)
                 logger.warning(
-                    "PA card %s has no HFP profile — PulseAudio's HFP handler "
-                    "may not be registered with BlueZ",
-                    card_name,
+                    "PA card %s has no HFP profile — available profiles: %s",
+                    card_name, available or "(card not found)",
                 )
             else:
                 # A2DP: cycle off → target to force recreation
@@ -417,6 +418,38 @@ class PulseAudioManager:
         except (FileNotFoundError, OSError) as exc:
             logger.warning("pactl not available: %s", exc)
             return False
+
+    async def _list_card_profiles(self, card_name: str) -> list[str]:
+        """Return profile names available on a PA card (for diagnostics)."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "list", "cards",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            profiles: list[str] = []
+            in_card = False
+            in_profiles = False
+            for line in stdout.decode(errors="replace").splitlines():
+                if f"Name: {card_name}" in line:
+                    in_card = True
+                    continue
+                if in_card and line.strip().startswith("Name:"):
+                    break  # next card
+                if in_card and "Profiles:" in line:
+                    in_profiles = True
+                    continue
+                if in_card and in_profiles:
+                    if line.startswith("\t\t") and ":" in line:
+                        # Profile line: "\t\tprofile_name: Description ..."
+                        name = line.strip().split(":")[0]
+                        profiles.append(name)
+                    else:
+                        in_profiles = False
+            return profiles
+        except Exception:
+            return []
 
     async def get_sink_for_address(self, address: str) -> str | None:
         """Get the current sink name for a Bluetooth address, if it exists."""
