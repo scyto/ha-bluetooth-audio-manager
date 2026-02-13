@@ -657,6 +657,13 @@ function appendMprisCommand(data) {
 const _lastVolumeEvent = {};  // address → {value, ts}
 const VOLUME_DEDUP_MS = 1500;
 
+function _deviceHasAvrcp(address) {
+  if (!address || !lastDevices) return false;
+  const dev = lastDevices.find((d) => d.address === address);
+  if (!dev || !dev.uuids) return false;
+  return dev.uuids.some((u) => u.startsWith("0000110c") || u.startsWith("0000110e"));
+}
+
 function appendAvrcpEvent(data) {
   // Deduplicate volume events (D-Bus, PulseAudio, and AVRCP can all fire)
   if (data.property === "Volume" && data.address) {
@@ -672,10 +679,15 @@ function appendAvrcpEvent(data) {
     ? JSON.stringify(data.value)
     : String(data.value);
 
+  // Label as "Transport" for devices without AVRCP UUIDs (e.g. initial A2DP volume)
+  const isAvrcp = _deviceHasAvrcp(data.address);
+  const label = isAvrcp ? "AVRCP" : "Transport";
+  const cssClass = isAvrcp ? "avrcp" : "transport";
+
   appendEventEntry(
-    "avrcp",
+    cssClass,
     `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
-    + `<span class="event-type avrcp">AVRCP</span>`
+    + `<span class="event-type ${cssClass}">${label}</span>`
     + `<span class="event-content"><strong>${escapeHtml(data.property)}</strong> = `
     + `<span class="text-success">${escapeHtml(valueStr)}</span>`
     + deviceNameTag(data.address)

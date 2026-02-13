@@ -307,13 +307,19 @@ h1, h2, h3, h4, h5, h6 {
   50% { border-color: var(--bs-border-color); opacity: 0.7; }
 }
 
-/* Wide screens: vertical button in the left margin */
+/* Wide screens: vertical button in the left margin, stretched to grid height */
 @media (min-width: 1440px) {
   #add-device-wrapper {
     position: absolute;
     right: calc(100% + 0.75rem);
-    top: 0;
+    top: 1rem;   /* match Bootstrap g-3 gutter-y so top aligns with first card */
+    bottom: 0;
     margin-bottom: 0;
+  }
+
+  .add-device-tile {
+    display: flex;
+    height: 100%;
   }
 
   .add-device-tile .card-body {
@@ -321,6 +327,7 @@ h1, h2, h3, h4, h5, h6 {
     gap: 0.25rem;
     padding: 0.75rem 0.5rem;
     font-size: 0.75rem;
+    white-space: normal;
   }
 }
 
@@ -492,6 +499,11 @@ h1, h2, h3, h4, h5, h6 {
 .event-type.avrcp {
   background: rgba(59, 130, 246, 0.15);
   color: var(--accent-primary);
+}
+
+.event-type.transport {
+  background: rgba(20, 184, 166, 0.15);
+  color: #14b8a6;
 }
 
 .event-content {
