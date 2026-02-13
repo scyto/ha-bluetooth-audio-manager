@@ -194,7 +194,7 @@ class BluetoothAudioManager:
                     # Silently discard noisy RSSI / ManufacturerData / TxPower
                     # churn — these fire many times per second per device and
                     # provide no actionable information for this app.
-                    _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower"}
+                    _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower", "ServiceData"}
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
                         pass
                     else:
