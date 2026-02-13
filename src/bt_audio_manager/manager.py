@@ -1881,6 +1881,38 @@ class BluetoothAudioManager:
 
         logger.error("Failed to restart audio service via Supervisor API")
 
+    async def _dump_audio_logs(self, lines: int = 40) -> None:
+        """Fetch recent PulseAudio logs from Supervisor for diagnostics."""
+        import aiohttp
+
+        token = os.environ.get("SUPERVISOR_TOKEN")
+        if not token:
+            return
+
+        for url in (f"http://supervisor/audio/logs",
+                     f"http://172.30.32.2/audio/logs"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "text/plain",
+                    }
+                    async with session.get(
+                        url, headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status == 200:
+                            text = await resp.text()
+                            # Get last N lines
+                            recent = text.strip().splitlines()[-lines:]
+                            logger.warning(
+                                "--- PA daemon logs (last %d lines) ---\n%s\n--- end PA logs ---",
+                                len(recent), "\n".join(recent),
+                            )
+                            return
+            except Exception:
+                continue
+
     def _broadcast_toast(self, message: str, level: str = "info") -> None:
         """Push a toast notification to WebSocket clients."""
         self.event_bus.emit("toast", {"message": message, "level": level})
@@ -2006,6 +2038,8 @@ class BluetoothAudioManager:
                     "PA card has no HFP profile after all fallbacks",
                     profile_label, address,
                 )
+                # Fetch PA daemon logs for internal diagnostics
+                await self._dump_audio_logs()
         except Exception as e:
             self._broadcast_status("")
             self._broadcast_toast(
