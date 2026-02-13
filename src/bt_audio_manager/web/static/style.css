@@ -252,36 +252,25 @@ h1, h2, h3, h4, h5, h6 {
    Devices Layout (Add-Device in left margin)
    ============================================ */
 
-.devices-layout {
-  position: relative;
-}
-
-/* Default: horizontal pill above the grid */
-#add-device-wrapper {
-  margin-bottom: 0.75rem;
-}
-
 .add-device-tile {
   border: 2px dashed var(--bs-border-color);
   cursor: pointer;
-  display: inline-block;
   transition: transform var(--transition-base), border-color var(--transition-base);
 }
 
 .add-device-tile .card-body {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.5rem 1rem;
   color: var(--bs-secondary-color);
   font-weight: 500;
   font-size: 0.875rem;
-  white-space: nowrap;
 }
 
 .add-device-tile .card-body i {
-  font-size: 1rem;
+  font-size: 1.25rem;
 }
 
 .add-device-tile:hover {
@@ -305,23 +294,6 @@ h1, h2, h3, h4, h5, h6 {
 @keyframes scan-pulse {
   0%, 100% { border-color: var(--accent-primary); opacity: 1; }
   50% { border-color: var(--bs-border-color); opacity: 0.7; }
-}
-
-/* Wide screens: vertical button in the left margin */
-@media (min-width: 1440px) {
-  #add-device-wrapper {
-    position: absolute;
-    right: calc(100% + 0.75rem);
-    top: 0;
-    margin-bottom: 0;
-  }
-
-  .add-device-tile .card-body {
-    flex-direction: column;
-    gap: 0.25rem;
-    padding: 0.75rem 0.5rem;
-    font-size: 0.75rem;
-  }
 }
 
 /* ============================================
@@ -492,6 +464,11 @@ h1, h2, h3, h4, h5, h6 {
 .event-type.avrcp {
   background: rgba(59, 130, 246, 0.15);
   color: var(--accent-primary);
+}
+
+.event-type.transport {
+  background: rgba(20, 184, 166, 0.15);
+  color: #14b8a6;
 }
 
 .event-content {
