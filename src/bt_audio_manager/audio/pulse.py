@@ -35,6 +35,7 @@ class PulseAudioManager:
         self._server: str | None = None  # resolved PA server address
         self._subscribe_task: asyncio.Task | None = None
         self._volume_callback = None
+        self._state_callback = None
 
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
@@ -90,6 +91,14 @@ class PulseAudioManager:
         """
         self._volume_callback = callback
 
+    def on_sink_state_change(self, callback) -> None:
+        """Register a callback for Bluetooth sink state transitions to 'running'.
+
+        Fires when a BT sink transitions to 'running' (audio actively flowing).
+        Callback signature: ``callback(sink_name: str)``
+        """
+        self._state_callback = callback
+
     async def start_event_monitor(self) -> None:
         """Subscribe to PulseAudio sink events via pulsectl_asyncio.
 
@@ -113,6 +122,7 @@ class PulseAudioManager:
 
     async def _event_monitor_loop(self) -> None:
         """Subscribe to sink events and log Bluetooth volume changes."""
+        bt_sink_states: dict[str, str] = {}  # sink name → last known state
         try:
             # Second connection dedicated to event subscription
             async with PulseAsync("bt-audio-events") as pulse_events:
@@ -123,13 +133,20 @@ class PulseAudioManager:
                             sink = await self._pulse.sink_info(event.index)
                             if "bluez" in sink.name.lower():
                                 vol = round(sink.volume.value_flat * 100)
+                                state_name = getattr(sink.state, "name", str(sink.state))
                                 logger.info(
                                     "PA sink volume change: %s vol=%d%% mute=%s state=%s",
-                                    sink.name, vol, sink.mute,
-                                    getattr(sink.state, "name", sink.state),
+                                    sink.name, vol, sink.mute, state_name,
                                 )
                                 if self._volume_callback:
                                     self._volume_callback(sink.name, vol, sink.mute)
+                                # Detect transition to "running" (audio actively flowing)
+                                prev_state = bt_sink_states.get(sink.name)
+                                bt_sink_states[sink.name] = state_name
+                                if state_name == "running" and prev_state != "running":
+                                    logger.info("BT sink %s → running (was %s)", sink.name, prev_state)
+                                    if self._state_callback:
+                                        self._state_callback(sink.name)
                         except Exception as e:
                             logger.debug("PA event handler error: %s", e)
                     elif event.t in ("new", "remove"):

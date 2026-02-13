@@ -287,6 +287,7 @@ class BluetoothAudioManager:
         try:
             await self.pulse.connect()
             self.pulse.on_volume_change(self._on_pa_volume_change)
+            self.pulse.on_sink_state_change(self._on_pa_sink_running)
             await self.pulse.start_event_monitor()
         except Exception as e:
             logger.warning("PulseAudio connection failed (will retry): %s", e)
@@ -1790,6 +1791,16 @@ class BluetoothAudioManager:
             mpd = self._mpd_instances.get(addr)
             if mpd and mpd.is_running:
                 asyncio.ensure_future(mpd.set_volume(volume))
+
+    def _on_pa_sink_running(self, sink_name: str) -> None:
+        """Handle BT sink transition to 'running' — audio is actively flowing.
+
+        Re-asserts PlaybackStatus='Playing' so the speaker enables AVRCP
+        volume buttons.  Covers all playback triggers: HA dashboard, speaker
+        buttons, automations, TTS, etc.
+        """
+        if self.media_player:
+            self.media_player.set_playback_status("Playing")
 
     AVRCP_DEVICE_WINDOW = 2.0  # seconds to consider _last_avrcp_device valid
 
