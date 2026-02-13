@@ -1778,10 +1778,13 @@ class BluetoothAudioManager:
         registration.  Unregistering ours doesn't restore PA's — the only
         way is to unload/reload the module so PA re-registers with BlueZ.
 
-        Side-effect: all Bluetooth PA cards/sinks are briefly destroyed
-        and recreated.  Active audio on other BT devices will glitch for
-        ~2 seconds.
+        Strategy:
+        1. Try ``pactl unload-module`` + ``pactl load-module`` (fast, minimal disruption).
+        2. If the load fails (common: "lock: Permission denied" from the
+           external PA server), restart the entire HA audio service via the
+           Supervisor API and reconnect our PA client.
         """
+        # --- Attempt 1: pactl unload + load ---
         try:
             proc = await asyncio.create_subprocess_exec(
                 "pactl", "list", "modules", "short",
@@ -1795,23 +1798,16 @@ class BluetoothAudioManager:
                     module_index = line.split()[0]
                     break
 
-            if not module_index:
-                logger.warning("module-bluez5-discover not found — cannot restore PA HFP handler")
-                return
+            if module_index:
+                proc = await asyncio.create_subprocess_exec(
+                    "pactl", "unload-module", module_index,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+                logger.info("Unloaded module-bluez5-discover (index %s)", module_index)
+                await asyncio.sleep(2)
 
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "unload-module", module_index,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.communicate()
-            logger.info("Unloaded module-bluez5-discover (index %s)", module_index)
-
-            await asyncio.sleep(2)
-
-            # Retry load — PA may hold a lock briefly after unload cleanup
-            loaded = False
-            for attempt in range(1, 4):
                 proc = await asyncio.create_subprocess_exec(
                     "pactl", "load-module", "module-bluez5-discover",
                     stdout=asyncio.subprocess.PIPE,
@@ -1820,28 +1816,62 @@ class BluetoothAudioManager:
                 _, stderr = await proc.communicate()
                 if proc.returncode == 0:
                     logger.info("Reloaded module-bluez5-discover — PA HFP/HSP handler restored")
-                    loaded = True
-                    break
-                err_msg = stderr.decode(errors="replace").strip()
-                logger.warning(
-                    "Failed to reload module-bluez5-discover (attempt %d/3): %s",
-                    attempt, err_msg,
-                )
-                if attempt < 3:
                     await asyncio.sleep(2)
-
-            if not loaded:
-                logger.error(
-                    "module-bluez5-discover reload failed after 3 attempts — "
-                    "Bluetooth audio will not work until PA is restarted"
+                    return
+                logger.warning(
+                    "pactl load-module failed: %s — falling back to audio service restart",
+                    stderr.decode(errors="replace").strip(),
                 )
-
-            # Give PA time to re-register handlers and re-discover devices
-            await asyncio.sleep(2)
         except (FileNotFoundError, OSError) as exc:
-            logger.warning("pactl not available for module reload: %s", exc)
+            logger.warning("pactl not available: %s — falling back to audio service restart", exc)
         except Exception as e:
-            logger.warning("PA Bluetooth module reload failed: %s", e)
+            logger.warning("pactl module reload failed: %s — falling back to audio service restart", e)
+
+        # --- Attempt 2: restart the HA audio service via Supervisor API ---
+        await self._restart_audio_service()
+
+    async def _restart_audio_service(self) -> None:
+        """Restart the HA audio service via the Supervisor API.
+
+        This is the nuclear option when ``pactl load-module`` fails.
+        It restarts PulseAudio entirely, which re-registers all Bluetooth
+        handlers fresh.  Our PA client reconnects automatically afterward.
+        """
+        import aiohttp
+
+        token = os.environ.get("SUPERVISOR_TOKEN")
+        if not token:
+            logger.warning("SUPERVISOR_TOKEN not set — cannot restart audio service")
+            return
+
+        self._broadcast_status("Restarting audio service...")
+
+        for url in ("http://supervisor/audio/restart",
+                     "http://172.30.32.2/audio/restart"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    headers = {"Authorization": f"Bearer {token}"}
+                    async with session.post(
+                        url, headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        if resp.status == 200:
+                            logger.info("Audio service restart requested via Supervisor")
+                            # Wait for PA to come back, then reconnect our client
+                            await asyncio.sleep(5)
+                            try:
+                                await self.pulse.reconnect(retries=10, delay=2.0)
+                                logger.info("PA client reconnected after audio restart")
+                            except ConnectionError:
+                                logger.error("PA did not come back after audio restart")
+                            return
+                        body = await resp.text()
+                        logger.debug("Audio restart via %s returned %d: %s", url, resp.status, body)
+            except Exception as e:
+                logger.debug("Audio restart via %s failed: %s", url, e)
+                continue
+
+        logger.error("Failed to restart audio service via Supervisor API")
 
     def _broadcast_toast(self, message: str, level: str = "info") -> None:
         """Push a toast notification to WebSocket clients."""

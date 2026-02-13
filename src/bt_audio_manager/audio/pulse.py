@@ -85,6 +85,38 @@ class PulseAudioManager:
             self._pulse.close()
             self._pulse = None
 
+    async def reconnect(self, retries: int = 10, delay: float = 2.0) -> None:
+        """Reconnect to PulseAudio after the audio service restarts.
+
+        Closes the old connection and retries until PA is back.
+        The event monitor is restarted automatically on success.
+        """
+        if self._pulse:
+            try:
+                self._pulse.close()
+            except Exception:
+                pass
+            self._pulse = None
+
+        for attempt in range(1, retries + 1):
+            try:
+                self._pulse = PulseAsync("bt-audio-manager")
+                await self._pulse.connect()
+                logger.info("Reconnected to PulseAudio (attempt %d)", attempt)
+                await self.start_event_monitor()
+                return
+            except Exception:
+                if self._pulse:
+                    try:
+                        self._pulse.close()
+                    except Exception:
+                        pass
+                    self._pulse = None
+                if attempt < retries:
+                    await asyncio.sleep(delay)
+
+        raise ConnectionError("PulseAudio not reachable after audio restart")
+
     def on_volume_change(self, callback) -> None:
         """Register a callback for Bluetooth sink volume changes.
 
