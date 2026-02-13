@@ -419,6 +419,30 @@ h1, h2, h3, h4, h5, h6 {
   text-align: center;
 }
 
+/* Active capability badges on device cards */
+.cap-badge {
+  font-size: 0.65rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  display: inline-block;
+  line-height: 1.2;
+  min-width: unset;
+}
+
+/* Feature indicator badges in action row */
+.feature-badge {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid;
+  background: transparent;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
 /* ============================================
    Events Log
    ============================================ */
