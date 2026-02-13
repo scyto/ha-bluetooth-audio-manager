@@ -199,22 +199,27 @@ class BluetoothAudioManager:
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
                         pass
                     else:
-                        # Log values for key interfaces; just names for the rest
+                        # Log values for key interfaces; just names for the rest.
+                        # Adapter1 changes (UUIDs, Class) are demoted to debug —
+                        # they fire in bursts during profile re-registration and
+                        # aren't actionable.
                         _VALUE_IFACES = {
                             "org.bluez.MediaTransport1",
                             "org.bluez.Device1",
                             "org.bluez.Adapter1",
                         }
+                        is_adapter = iface_name == "org.bluez.Adapter1"
+                        log_fn = logger.debug if is_adapter else logger.info
                         if iface_name in _VALUE_IFACES and isinstance(changed, dict):
                             props_str = " ".join(
                                 f"{k}={v.value}" for k, v in changed.items()
                             )
-                            logger.info(
+                            log_fn(
                                 "BlueZ PropertiesChanged: iface=%s %s path=%s",
                                 iface_name, props_str, msg.path,
                             )
                         else:
-                            logger.info(
+                            log_fn(
                                 "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
                                 iface_name, prop_names, msg.path,
                             )
@@ -2056,7 +2061,7 @@ class BluetoothAudioManager:
             return False
 
         uuids = await device.get_uuids()
-        logger.info("Device %s UUIDs: %s", address, uuids)
+        logger.debug("Device %s UUIDs: %s", address, uuids)
 
         has_a2dp = any("110b" in u.lower() for u in uuids)
         if not has_a2dp:
