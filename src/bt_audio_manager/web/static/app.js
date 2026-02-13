@@ -355,7 +355,9 @@ function renderDevices(devices) {
         const mpdEnabled = d.mpd_enabled || false;
         const mpdPort = d.mpd_port || "";
         const mpdHwVolume = d.mpd_hw_volume ?? 100;
+        const avrcpEnabled = d.avrcp_enabled ?? true;
         const safeName = escapeHtml(d.name).replace(/'/g, "\\'");
+        const uuidsJson = JSON.stringify(d.uuids || []).replace(/'/g, "\\'");
         kebab = `
           <div class="dropdown">
             <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
@@ -363,7 +365,7 @@ function renderDevices(devices) {
               <i class="fas fa-ellipsis-v"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}); return false;">
+              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
               ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
@@ -920,7 +922,7 @@ async function saveSettings() {
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled, mpdPort, mpdHwVolume) {
+function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
@@ -936,6 +938,21 @@ function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled, mpdP
     $("#mpd-connection-info").style.display = "";
   } else {
     $("#mpd-connection-info").style.display = "none";
+  }
+  // AVRCP toggle — disable if device lacks AVRCP UUIDs
+  const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
+  const AVRCP_TARGET = "0000110c-0000-1000-8000-00805f9b34fb";
+  const AVRCP_CONTROLLER = "0000110e-0000-1000-8000-00805f9b34fb";
+  const lowerUuids = uuids.map(u => u.toLowerCase());
+  const hasAvrcp = lowerUuids.includes(AVRCP_TARGET) || lowerUuids.includes(AVRCP_CONTROLLER);
+  const avrcpToggle = $("#setting-avrcp-enabled");
+  const avrcpHelp = $("#avrcp-help-text");
+  avrcpToggle.checked = hasAvrcp ? (avrcpEnabled ?? true) : false;
+  avrcpToggle.disabled = !hasAvrcp;
+  if (hasAvrcp) {
+    avrcpHelp.textContent = "Track playback state and accept media-button commands from the speaker. Disable if the speaker won't enter power-save when idle.";
+  } else {
+    avrcpHelp.textContent = "Device does not support AVRCP media buttons.";
   }
   toggleKeepAliveMethodVisibility();
   toggleMpdConfigVisibility();
@@ -965,6 +982,11 @@ async function saveDeviceSettings() {
     const portVal = $("#setting-mpd-port").value;
     if (portVal) settings.mpd_port = parseInt(portVal, 10);
   }
+  // Include AVRCP setting only if toggle is not disabled (device supports AVRCP)
+  const avrcpToggle = $("#setting-avrcp-enabled");
+  if (!avrcpToggle.disabled) {
+    settings.avrcp_enabled = avrcpToggle.checked;
+  }
   try {
     const resp = await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
     const port = resp.settings?.mpd_port;
@@ -974,39 +996,6 @@ async function saveDeviceSettings() {
       showToast("Device settings saved", "success");
     }
     bootstrap.Modal.getInstance($("#deviceSettingsModal"))?.hide();
-  } catch (e) {
-    showToast(`Failed to save settings: ${e.message}`, "error");
-  }
-}
-
-// ============================================
-// Section 11c: App Settings Modal
-// ============================================
-
-async function openSettingsModal() {
-  try {
-    const data = await apiGet("/api/settings");
-    $("#setting-auto-reconnect").checked = data.auto_reconnect;
-    $("#setting-reconnect-interval").value = data.reconnect_interval_seconds;
-    $("#setting-reconnect-max-backoff").value = data.reconnect_max_backoff_seconds;
-    $("#setting-scan-duration").value = data.scan_duration_seconds;
-    new bootstrap.Modal("#settingsModal").show();
-  } catch (e) {
-    showToast(`Failed to load settings: ${e.message}`, "error");
-  }
-}
-
-async function saveSettings() {
-  const settings = {
-    auto_reconnect: $("#setting-auto-reconnect").checked,
-    reconnect_interval_seconds: parseInt($("#setting-reconnect-interval").value, 10),
-    reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
-    scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
-  };
-  try {
-    await apiPut("/api/settings", settings);
-    showToast("Settings saved", "success");
-    bootstrap.Modal.getInstance($("#settingsModal"))?.hide();
   } catch (e) {
     showToast(`Failed to save settings: ${e.message}`, "error");
   }

@@ -21,6 +21,7 @@ DEFAULT_DEVICE_SETTINGS = {
     "mpd_enabled": False,
     "mpd_port": None,   # Auto-assigned from pool (6600-6609); user can override
     "mpd_hw_volume": 100,  # Hardware volume % set when MPD starts (1-100)
+    "avrcp_enabled": True,  # Auto-track PlaybackStatus; False = always Stopped
 }
 
 MPD_PORT_MIN = 6600

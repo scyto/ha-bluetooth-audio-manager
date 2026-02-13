@@ -295,6 +295,7 @@ def create_api_routes(
             allowed_keys = {
                 "keep_alive_enabled", "keep_alive_method",
                 "mpd_enabled", "mpd_port", "mpd_hw_volume",
+                "avrcp_enabled",
             }
             settings = {k: v for k, v in body.items() if k in allowed_keys}
             if not settings:
@@ -316,6 +317,11 @@ def create_api_routes(
                 if not isinstance(settings["mpd_enabled"], bool):
                     return web.json_response(
                         {"error": "mpd_enabled must be a boolean"}, status=400
+                    )
+            if "avrcp_enabled" in settings:
+                if not isinstance(settings["avrcp_enabled"], bool):
+                    return web.json_response(
+                        {"error": "avrcp_enabled must be a boolean"}, status=400
                     )
             if "mpd_port" in settings:
                 port = settings["mpd_port"]
