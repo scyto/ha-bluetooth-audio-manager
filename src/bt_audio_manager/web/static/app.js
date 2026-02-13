@@ -737,7 +737,8 @@ function renderSingleLogEntry(entry, isNew) {
   const el = document.createElement("div");
   el.className = `log-entry${isNew ? " new" : ""}`;
 
-  const ts = new Date(entry.ts * 1000).toLocaleTimeString();
+  const d = new Date(entry.ts * 1000);
+  const ts = d.toLocaleTimeString() + "." + String(d.getMilliseconds()).padStart(3, "0");
   const levelClass = entry.level.toLowerCase();
   const logger = (entry.logger || "").split(".").pop();
 
