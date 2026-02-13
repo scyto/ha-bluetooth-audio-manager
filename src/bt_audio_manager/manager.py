@@ -210,25 +210,33 @@ class BluetoothAudioManager:
                         self._schedule_scan_broadcast()
 
                     if iface_name == "org.bluez.MediaTransport1":
+                        # Extract device address from transport D-Bus path
+                        parts = msg.path.split("/")
+                        transport_addr = next(
+                            (p[4:].replace("_", ":") for p in parts if p.startswith("dev_")), ""
+                        )
                         if "Volume" in changed:
                             vol_raw = changed["Volume"].value  # 0-127 uint16
                             vol_pct = round(vol_raw / 127 * 100)
                             logger.info("AVRCP transport volume: %d%% (raw %d)", vol_pct, vol_raw)
-                            parts = msg.path.split("/")
-                            addr = next((p[4:].replace("_", ":") for p in parts if p.startswith("dev_")), "")
-                            self._last_signaled_volume[addr] = vol_raw
-                            entry = {"address": addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
+                            self._last_signaled_volume[transport_addr] = vol_raw
+                            entry = {"address": transport_addr, "property": "Volume", "value": f"{vol_pct}%", "ts": time.time()}
                             self.recent_avrcp.append(entry)
                             self.event_bus.emit("avrcp_event", entry)
                             # Sync volume to the device's MPD instance
-                            mpd = self._mpd_instances.get(addr)
+                            mpd = self._mpd_instances.get(transport_addr)
                             if mpd and mpd.is_running:
                                 asyncio.ensure_future(mpd.set_volume(vol_pct))
                         if "State" in changed:
                             state = changed["State"].value
-                            # Tell speaker we're Playing so it enables AVRCP volume buttons
                             if self.media_player and state == "active":
-                                self.media_player.set_playback_status("Playing")
+                                if self._is_avrcp_enabled(transport_addr):
+                                    self.media_player.set_playback_status("Playing")
+                                else:
+                                    logger.info(
+                                        "AVRCP disabled for %s — skipping PlaybackStatus=Playing",
+                                        transport_addr,
+                                    )
                 else:
                     # Log ALL other BlueZ signals (InterfacesAdded, etc.)
                     logger.info(
@@ -288,6 +296,7 @@ class BluetoothAudioManager:
             await self.pulse.connect()
             self.pulse.on_volume_change(self._on_pa_volume_change)
             self.pulse.on_sink_state_change(self._on_pa_sink_running)
+            self.pulse.on_sink_idle(self._on_pa_sink_idle)
             await self.pulse.start_event_monitor()
         except Exception as e:
             logger.warning("PulseAudio connection failed (will retry): %s", e)
@@ -411,9 +420,21 @@ class BluetoothAudioManager:
                     state_v = tp.get("State")
                     state = state_v.value if hasattr(state_v, "value") else state_v
                     if state == "active":
-                        logger.info("Active A2DP transport found at startup (%s) — setting PlaybackStatus=Playing", path)
-                        self.media_player.set_playback_status("Playing")
-                        break
+                        # Extract device address from transport path
+                        parts = path.split("/")
+                        addr = next(
+                            (p[4:].replace("_", ":") for p in parts if p.startswith("dev_")), ""
+                        )
+                        if self._is_avrcp_enabled(addr):
+                            logger.info(
+                                "Active A2DP transport at startup (%s) — setting PlaybackStatus=Playing", path,
+                            )
+                            self.media_player.set_playback_status("Playing")
+                            break
+                        else:
+                            logger.info(
+                                "Active A2DP transport at startup (%s) but AVRCP disabled — skipping", path,
+                            )
             except Exception as e:
                 logger.debug("Could not check transport state at startup: %s", e)
 
@@ -908,6 +929,7 @@ class BluetoothAudioManager:
                 device["mpd_enabled"] = s.get("mpd_enabled", False)
                 device["mpd_port"] = s.get("mpd_port")
                 device["mpd_name"] = s.get("mpd_name", "")
+                device["avrcp_enabled"] = s.get("avrcp_enabled", True)
 
         # Add stored devices not currently visible
         discovered_addresses = {d["address"] for d in discovered}
@@ -933,6 +955,7 @@ class BluetoothAudioManager:
                         "mpd_enabled": s.get("mpd_enabled", False),
                         "mpd_port": s.get("mpd_port"),
                         "mpd_name": s.get("mpd_name", ""),
+                        "avrcp_enabled": s.get("avrcp_enabled", True),
                     }
                 )
 
@@ -1792,15 +1815,43 @@ class BluetoothAudioManager:
             if mpd and mpd.is_running:
                 asyncio.ensure_future(mpd.set_volume(volume))
 
+    @staticmethod
+    def _addr_from_sink_name(sink_name: str) -> str:
+        """Extract BT address from sink name like 'bluez_sink.XX_XX_XX_XX_XX_XX.a2dp_sink'."""
+        parts = sink_name.split(".")
+        return parts[1].replace("_", ":") if len(parts) >= 2 else ""
+
+    def _is_avrcp_enabled(self, address: str) -> bool:
+        """Check if AVRCP media buttons are enabled for a device."""
+        if not address:
+            return True  # unknown device — default to enabled
+        settings = self.store.get_device_settings(address)
+        return settings.get("avrcp_enabled", True)
+
     def _on_pa_sink_running(self, sink_name: str) -> None:
         """Handle BT sink transition to 'running' — audio is actively flowing.
 
-        Re-asserts PlaybackStatus='Playing' so the speaker enables AVRCP
-        volume buttons.  Covers all playback triggers: HA dashboard, speaker
-        buttons, automations, TTS, etc.
+        Sets PlaybackStatus='Playing' so the speaker enables AVRCP volume
+        buttons (if AVRCP is enabled for this device).
         """
         if self.media_player:
-            self.media_player.set_playback_status("Playing")
+            addr = self._addr_from_sink_name(sink_name)
+            if self._is_avrcp_enabled(addr):
+                self.media_player.set_playback_status("Playing")
+            else:
+                logger.info("AVRCP disabled for %s — skipping PlaybackStatus=Playing on sink running", addr)
+
+    def _on_pa_sink_idle(self, sink_name: str) -> None:
+        """Handle BT sink transition from 'running' to idle — audio stopped.
+
+        Sets PlaybackStatus='Stopped' so the speaker knows nothing is playing
+        (if AVRCP is enabled for this device — auto-tracking mode).
+        """
+        if self.media_player:
+            addr = self._addr_from_sink_name(sink_name)
+            if self._is_avrcp_enabled(addr):
+                self.media_player.set_playback_status("Stopped")
+                logger.info("Sink idle for %s — set PlaybackStatus=Stopped", addr)
 
     AVRCP_DEVICE_WINDOW = 2.0  # seconds to consider _last_avrcp_device valid
 
@@ -1821,6 +1872,11 @@ class BluetoothAudioManager:
         self.recent_mpris.append(entry)
         self.event_bus.emit("mpris_command", entry)
 
+        # Guard: if we know the source device and AVRCP is disabled, skip routing
+        if target_addr and not self._is_avrcp_enabled(target_addr):
+            logger.info("AVRCP disabled for %s — ignoring %s command", target_addr, command)
+            return
+
         # Route to the specific device's MPD instance
         if not self._mpd_instances:
             return
@@ -1833,6 +1889,9 @@ class BluetoothAudioManager:
             running = [(a, m) for a, m in self._mpd_instances.items() if m.is_running]
             if len(running) == 1:
                 addr, mpd = running[0]
+                if not self._is_avrcp_enabled(addr):
+                    logger.info("AVRCP disabled for %s — ignoring %s (single-instance fallback)", addr, command)
+                    return
                 logger.info("Single MPD instance — routing %s to %s", command, addr)
                 entry["address"] = addr
                 asyncio.ensure_future(mpd.handle_command(command, detail))
@@ -1969,7 +2028,7 @@ class BluetoothAudioManager:
             await mpd.start(sink_name)
             self._mpd_instances[address] = mpd
             # Tell speaker we're Playing so it enables AVRCP volume buttons
-            if self.media_player:
+            if self.media_player and self._is_avrcp_enabled(address):
                 self.media_player.set_playback_status("Playing")
             # Sync volume: set hardware to 100% so MPD is the single volume
             # control, or sync MPD to hardware if a stream is active.
@@ -2050,6 +2109,23 @@ class BluetoothAudioManager:
         if "mpd_enabled" in settings and device_info.get("mpd_enabled", False):
             if self.store.get_device_settings(address).get("mpd_port") is None:
                 await self.store.allocate_mpd_port(address)
+
+        # React to AVRCP changes if device is connected
+        if address in self._device_connect_time and "avrcp_enabled" in settings:
+            if self.media_player:
+                if not device_info.get("avrcp_enabled", True):
+                    # AVRCP just disabled — set Stopped
+                    self.media_player.set_playback_status("Stopped")
+                    logger.info("AVRCP disabled for %s — set PlaybackStatus=Stopped", address)
+                else:
+                    # AVRCP just enabled — set Playing if sink is currently running
+                    if self.pulse:
+                        sink_name = await self.pulse.get_sink_for_address(address)
+                        if sink_name:
+                            vol_info = await self.pulse.get_sink_volume(sink_name)
+                            if vol_info and vol_info[1] == "running":
+                                self.media_player.set_playback_status("Playing")
+                                logger.info("AVRCP enabled for %s — sink running, set PlaybackStatus=Playing", address)
 
         await self._broadcast_devices()
         return device_info

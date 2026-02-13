@@ -36,6 +36,7 @@ class PulseAudioManager:
         self._subscribe_task: asyncio.Task | None = None
         self._volume_callback = None
         self._state_callback = None
+        self._idle_callback = None
 
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
@@ -99,6 +100,15 @@ class PulseAudioManager:
         """
         self._state_callback = callback
 
+    def on_sink_idle(self, callback) -> None:
+        """Register a callback for Bluetooth sink state transitions to 'idle'.
+
+        Fires when a BT sink transitions from 'running' to 'idle' or 'suspended'
+        (audio stopped flowing).
+        Callback signature: ``callback(sink_name: str)``
+        """
+        self._idle_callback = callback
+
     async def start_event_monitor(self) -> None:
         """Subscribe to PulseAudio sink events via pulsectl_asyncio.
 
@@ -140,13 +150,17 @@ class PulseAudioManager:
                                 )
                                 if self._volume_callback:
                                     self._volume_callback(sink.name, vol, sink.mute)
-                                # Detect transition to "running" (audio actively flowing)
+                                # Detect state transitions
                                 prev_state = bt_sink_states.get(sink.name)
                                 bt_sink_states[sink.name] = state_name
                                 if state_name == "running" and prev_state != "running":
                                     logger.info("BT sink %s → running (was %s)", sink.name, prev_state)
                                     if self._state_callback:
                                         self._state_callback(sink.name)
+                                elif state_name != "running" and prev_state == "running":
+                                    logger.info("BT sink %s → %s (was running)", sink.name, state_name)
+                                    if self._idle_callback:
+                                        self._idle_callback(sink.name)
                         except Exception as e:
                             logger.debug("PA event handler error: %s", e)
                     elif event.t in ("new", "remove"):

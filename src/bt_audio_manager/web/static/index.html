@@ -381,6 +381,22 @@
               <span class="form-text">Host: <code id="mpd-hostname"></code></span>
             </div>
           </div>
+
+          <hr class="my-3">
+
+          <!-- AVRCP Media Buttons Toggle -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-avrcp-enabled" checked>
+              <label class="form-check-label" for="setting-avrcp-enabled">
+                <strong>Media Buttons (AVRCP)</strong>
+              </label>
+            </div>
+            <div class="form-text" id="avrcp-help-text">
+              Track playback state and accept media-button commands from the speaker.
+              Disable if the speaker won't enter power-save when idle.
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
