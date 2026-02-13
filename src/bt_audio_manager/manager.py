@@ -1784,6 +1784,12 @@ class BluetoothAudioManager:
         entry = {"address": addr, "property": "Volume", "value": value, "ts": time.time()}
         self.recent_avrcp.append(entry)
         self.event_bus.emit("avrcp_event", entry)
+        # Sync PA volume change to MPD so HA's media_player entity reflects
+        # the speaker's actual volume (speaker buttons → AVRCP → PA → MPD)
+        if addr:
+            mpd = self._mpd_instances.get(addr)
+            if mpd and mpd.is_running:
+                asyncio.ensure_future(mpd.set_volume(volume))
 
     AVRCP_DEVICE_WINDOW = 2.0  # seconds to consider _last_avrcp_device valid
 
@@ -1954,8 +1960,45 @@ class BluetoothAudioManager:
             # Tell speaker we're Playing so it enables AVRCP volume buttons
             if self.media_player:
                 self.media_player.set_playback_status("Playing")
+            # Sync volume: set hardware to 100% so MPD is the single volume
+            # control, or sync MPD to hardware if a stream is active.
+            await self._init_mpd_volume(address, mpd, sink_name)
         except Exception as e:
             logger.warning("MPD start failed for %s: %s", address, e)
+
+    async def _init_mpd_volume(
+        self, address: str, mpd: "MPDManager", sink_name: str
+    ) -> None:
+        """Set hardware volume to 100% and MPD to 100% when no stream is active.
+
+        Makes MPD the single volume control — HA automations can then
+        reliably set volume via ``media_player.volume_set`` before TTS.
+        If a stream IS active (e.g. add-on restarted mid-playback), sync
+        MPD volume to the current hardware level instead.
+        """
+        if not self.pulse:
+            return
+        try:
+            vol_state = await self.pulse.get_sink_volume(sink_name)
+            if not vol_state:
+                return
+            current_vol, state = vol_state
+            if state != "running":
+                # No active stream — safe to reset hardware to 100%
+                await self.pulse.set_sink_volume(sink_name, 100)
+                logger.info(
+                    "Hardware volume set to 100%% for %s (was %d%%, state=%s)",
+                    address, current_vol, state,
+                )
+            else:
+                # Stream active — sync MPD to current hardware volume
+                await mpd.set_volume(current_vol)
+                logger.info(
+                    "MPD initial volume synced to hardware: %d%% for %s",
+                    current_vol, address,
+                )
+        except Exception as e:
+            logger.debug("MPD volume init for %s failed: %s", address, e)
 
     async def _stop_mpd(self, address: str) -> None:
         """Stop the MPD instance for a specific device (keeps port assigned)."""

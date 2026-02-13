@@ -330,3 +330,50 @@ class PulseAudioManager:
             if pattern in sink.name:
                 return sink.name
         return None
+
+    async def get_sink_volume(self, sink_name: str) -> tuple[int, str] | None:
+        """Get (volume_pct, state_name) for a specific sink.
+
+        Returns None if the sink is not found.
+        """
+        try:
+            sinks = await self._pulse.sink_list()
+            for sink in sinks:
+                if sink.name == sink_name:
+                    vol = round(sink.volume.value_flat * 100)
+                    state_name = getattr(sink.state, "name", None)
+                    if state_name is None:
+                        raw = str(sink.state)
+                        state_name = raw.split("=")[-1].rstrip(">") if "=" in raw else raw
+                    return (vol, state_name)
+        except Exception as e:
+            logger.debug("get_sink_volume(%s) failed: %s", sink_name, e)
+        return None
+
+    async def set_sink_volume(self, sink_name: str, volume_pct: int) -> bool:
+        """Set PulseAudio sink volume (0-100%).
+
+        Uses ``pactl set-sink-volume`` which propagates to AVRCP Absolute
+        Volume on Bluetooth sinks — changing the speaker's hardware level.
+
+        Returns True if the command succeeded.
+        """
+        vol_str = f"{max(0, min(100, volume_pct))}%"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "set-sink-volume", sink_name, vol_str,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                logger.info("PA sink volume set: %s → %s", sink_name, vol_str)
+                return True
+            logger.warning(
+                "pactl set-sink-volume %s %s failed: %s",
+                sink_name, vol_str, stderr.decode(errors="replace").strip(),
+            )
+            return False
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning("pactl not available: %s", exc)
+            return False
