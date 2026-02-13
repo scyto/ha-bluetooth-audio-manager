@@ -1843,6 +1843,88 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.warning("PA Bluetooth module reload failed: %s", e)
 
+    def _broadcast_toast(self, message: str, level: str = "info") -> None:
+        """Push a toast notification to WebSocket clients."""
+        self.event_bus.emit("toast", {"message": message, "level": level})
+
+    async def _apply_audio_profile(self, address: str, profile: str) -> None:
+        """Activate the requested PA card profile with full fallback chain.
+
+        Runs as a background task after settings are saved.  Sends toast
+        notifications via WebSocket so the user sees progress and errors.
+        """
+        profile_label = "HFP" if profile == "hfp" else "A2DP"
+        try:
+            activated = await self.pulse.activate_bt_card_profile(address, profile=profile)
+
+            if not activated and profile == "hfp":
+                # Fallback 1: ask BlueZ to connect the HFP profile, then retry
+                from .bluez.constants import HFP_UUID
+                self._broadcast_status(f"Connecting HFP profile for {address}...")
+                try:
+                    device = await self._get_or_create_device(address)
+                    await device.connect_profile(HFP_UUID)
+                    await asyncio.sleep(3)
+                    activated = await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                except Exception as e:
+                    logger.warning("ConnectProfile(HFP) for %s failed: %s", address, e)
+
+            if not activated and profile == "hfp":
+                # Fallback 2: reload PA bluetooth module and reconnect
+                self._broadcast_status(f"Reloading audio subsystem for {address}...")
+                await self._reload_pa_bluetooth_module()
+                try:
+                    device = await self._get_or_create_device(address)
+                    await device.connect()
+                    await device.wait_for_services(timeout=10)
+                    await asyncio.sleep(2)
+                    activated = await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                except Exception as e:
+                    logger.warning("Reconnect after PA reload for %s failed: %s", address, e)
+
+            self._broadcast_status("")  # clear status banner
+
+            if activated:
+                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=10)
+                if sink_name:
+                    await self._apply_idle_mode(address)
+                    await self._start_mpd_if_enabled(address)
+                self._broadcast_toast(
+                    f"Audio profile switched to {profile_label}", "success",
+                )
+                logger.info("Audio profile for %s → %s", address, profile_label)
+            elif profile == "a2dp":
+                # Switching back to A2DP — disconnect HFP if needed
+                if self._should_disconnect_hfp(address):
+                    await self._disconnect_hfp(address)
+                sink_name = await self.pulse.wait_for_bt_sink(address, timeout=10)
+                if sink_name:
+                    await self._apply_idle_mode(address)
+                self._broadcast_toast(
+                    f"Audio profile switched to {profile_label}", "success",
+                )
+                logger.info("Audio profile for %s → %s", address, profile_label)
+            else:
+                self._broadcast_toast(
+                    f"Failed to activate {profile_label} — PulseAudio does not have "
+                    f"the HFP handler registered. Try disconnecting and reconnecting "
+                    f"the device.",
+                    "error",
+                )
+                logger.warning(
+                    "Audio profile switch to %s failed for %s — "
+                    "PA card has no HFP profile after all fallbacks",
+                    profile_label, address,
+                )
+        except Exception as e:
+            self._broadcast_status("")
+            self._broadcast_toast(
+                f"Audio profile switch failed: {e}", "error",
+            )
+            logger.error("Audio profile switch for %s failed: %s", address, e)
+        finally:
+            await self._broadcast_devices()
+
     async def _disconnect_hfp(self, address: str) -> bool:
         """Disconnect HFP profile so the speaker uses AVRCP for volume control.
 
@@ -2400,38 +2482,17 @@ class BluetoothAudioManager:
         if device_info is None:
             return None
 
-        # React to audio profile changes
+        # React to audio profile changes — fire as background task so
+        # the settings API returns immediately and the modal can close.
         if "audio_profile" in settings:
             new_profile = settings["audio_profile"]
             if new_profile == "hfp" and self._null_hfp_registered:
                 await self._unregister_null_hfp_handler()
 
-            # Activate the PA card profile if the device is currently connected
             if address in self._device_connect_time and self.pulse:
-                activated = await self.pulse.activate_bt_card_profile(
-                    address, profile=new_profile,
+                asyncio.create_task(
+                    self._apply_audio_profile(address, new_profile)
                 )
-                if not activated and new_profile == "hfp":
-                    # HFP profile may not be available yet — try ConnectProfile
-                    from .bluez.constants import HFP_UUID
-                    try:
-                        device = await self._get_or_create_device(address)
-                        await device.connect_profile(HFP_UUID)
-                        await asyncio.sleep(3)
-                        activated = await self.pulse.activate_bt_card_profile(
-                            address, profile="hfp",
-                        )
-                    except Exception as e:
-                        logger.warning("ConnectProfile(HFP) for %s failed: %s", address, e)
-                if activated:
-                    sink_name = await self.pulse.wait_for_bt_sink(address, timeout=10)
-                    if sink_name:
-                        await self._apply_idle_mode(address)
-                        await self._start_mpd_if_enabled(address)
-                elif new_profile == "a2dp":
-                    # Switching back to A2DP — disconnect HFP if needed
-                    if self._should_disconnect_hfp(address):
-                        await self._disconnect_hfp(address)
 
         # React to idle mode changes if device is connected
         idle_keys = {"idle_mode", "keep_alive_method", "power_save_delay", "auto_disconnect_minutes"}

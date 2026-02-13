@@ -1068,6 +1068,9 @@ function toggleMpdConfigVisibility() {
 
 async function saveDeviceSettings() {
   if (!_settingsAddress) return;
+  const btn = $("#btnSaveSettings");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
   const idleMode = $("#setting-idle-mode").value;
   const settings = {
     audio_profile: $("#setting-audio-profile").value,
@@ -1099,6 +1102,9 @@ async function saveDeviceSettings() {
     bootstrap.Modal.getInstance($("#deviceSettingsModal"))?.hide();
   } catch (e) {
     showToast(`Failed to save settings: ${e.message}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-save me-1"></i>Save';
   }
 }
 
@@ -1185,6 +1191,9 @@ function connectWebSocket() {
         } else {
           hideBanner();
         }
+        break;
+      case "toast":
+        showToast(msg.message, msg.level || "info");
         break;
       default:
         console.log("[WS] Unknown message type:", msg.type);
