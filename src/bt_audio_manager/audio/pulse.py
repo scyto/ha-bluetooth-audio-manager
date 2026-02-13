@@ -345,9 +345,8 @@ class PulseAudioManager:
     async def activate_bt_card_profile(self, address: str, profile: str = "a2dp") -> bool:
         """Activate a Bluetooth PA card profile for a specific device.
 
-        Uses ``pactl set-card-profile`` to tell PulseAudio to create a sink
-        for a specific device.  Per-device safe — does not affect other
-        Bluetooth audio connections.
+        Uses pulsectl's native PA protocol (same authenticated connection)
+        instead of shelling out to ``pactl``.
 
         Args:
             address: Bluetooth MAC address.
@@ -361,114 +360,95 @@ class PulseAudioManager:
             # PA native HFP backend (HAOS default) uses "handsfree_head_unit";
             # oFono backend uses "headset_head_unit"; PipeWire may use either
             # with hyphens or underscores.
-            candidates = (
+            candidates = [
                 "handsfree_head_unit", "handsfree-head-unit",
                 "headset_head_unit", "headset-head-unit",
-            )
+            ]
         else:
-            # A2DP: PA uses "a2dp-sink", PipeWire may use "a2dp_sink"
-            candidates = ("a2dp-sink", "a2dp_sink")
+            # A2DP: PA uses "a2dp_sink", older may use "a2dp-sink"
+            candidates = ["a2dp_sink", "a2dp-sink"]
 
         try:
+            cards = await self._pulse.card_list()
+            card = None
+            for c in cards:
+                if c.name == card_name:
+                    card = c
+                    break
+
+            if card is None:
+                logger.warning("PA card %s not found", card_name)
+                return False
+
+            # Build lookup of available profiles on this card
+            profile_map = {p.name: p for p in card.profile_list}
+
+            # Try each candidate profile name
             for pa_profile in candidates:
-                proc = await asyncio.create_subprocess_exec(
-                    "pactl", "set-card-profile", card_name, pa_profile,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                _, stderr = await proc.communicate()
-                if proc.returncode == 0:
+                if pa_profile not in profile_map:
+                    continue
+
+                p = profile_map[pa_profile]
+                avail = getattr(p, "available", None)
+                if avail is not None and avail == 0:
+                    # available=0 means "no" in PA's enum
+                    logger.warning(
+                        "PA card %s profile %s exists but available=no — "
+                        "HFP RFCOMM transport not connected",
+                        card_name, pa_profile,
+                    )
+                    # Still try — PA may accept it anyway
+                try:
+                    await self._pulse.card_profile_set(card, p)
                     logger.info("PA card profile set: %s -> %s", card_name, pa_profile)
                     return True
-                err_msg = stderr.decode(errors="replace").strip()
-                # Log at WARNING for the first (most likely) candidate so we
-                # can see why it fails; DEBUG for the rest.
-                log_fn = logger.warning if pa_profile == candidates[0] else logger.debug
-                log_fn(
-                    "set-card-profile %s %s failed: %s",
-                    card_name, pa_profile, err_msg or "(no stderr)",
-                )
+                except Exception as exc:
+                    logger.warning(
+                        "card_profile_set %s %s failed: %s",
+                        card_name, pa_profile, exc,
+                    )
+                    break  # correct profile found, activation failed
 
+            # Log diagnostics on failure
+            avail_info = [
+                f"{p.name} (available: {'yes' if getattr(p, 'available', 1) else 'no'})"
+                for p in card.profile_list
+            ]
             if profile == "hfp":
-                # For HFP: cycling to "off" destroys the card and the
-                # headset-head-unit profile won't come back (PA needs its
-                # HFP handler registered with BlueZ).  Fail fast so the
-                # caller can retry after ensuring HFP is connected.
-                # Log available profiles for diagnostics.
-                available = await self._list_card_profiles(card_name)
                 logger.warning(
-                    "PA card %s has no HFP profile — available profiles: %s",
-                    card_name, available or "(card not found)",
+                    "PA card %s HFP profile activation failed — profiles: %s",
+                    card_name, avail_info,
                 )
             else:
-                # A2DP: cycle off → target to force recreation
+                # A2DP: try cycling off → target
                 logger.info("Cycling PA card profile for %s (off -> %s)...", card_name, profile)
-                proc = await asyncio.create_subprocess_exec(
-                    "pactl", "set-card-profile", card_name, "off",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await proc.communicate()
-                await asyncio.sleep(1)
-
-                for pa_profile in candidates:
-                    proc = await asyncio.create_subprocess_exec(
-                        "pactl", "set-card-profile", card_name, pa_profile,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    _, stderr = await proc.communicate()
-                    if proc.returncode == 0:
-                        logger.info("PA card profile cycled: %s -> %s", card_name, pa_profile)
-                        return True
-
-                logger.warning("PA card %s not found or profile activation failed", card_name)
+                off_profile = profile_map.get("off")
+                if off_profile:
+                    try:
+                        await self._pulse.card_profile_set(card, off_profile)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1)
+                    # Re-fetch card (profile list may have changed)
+                    cards = await self._pulse.card_list()
+                    for c in cards:
+                        if c.name == card_name:
+                            card = c
+                            break
+                    profile_map = {p.name: p for p in card.profile_list}
+                    for pa_profile in candidates:
+                        if pa_profile in profile_map:
+                            try:
+                                await self._pulse.card_profile_set(card, profile_map[pa_profile])
+                                logger.info("PA card profile cycled: %s -> %s", card_name, pa_profile)
+                                return True
+                            except Exception:
+                                pass
+                logger.warning("PA card %s profile activation failed", card_name)
             return False
-        except (FileNotFoundError, OSError) as exc:
-            logger.warning("pactl not available: %s", exc)
+        except Exception as exc:
+            logger.warning("PA card profile operation failed: %s", exc)
             return False
-
-    async def _list_card_profiles(self, card_name: str) -> list[str]:
-        """Return profile names on a PA card with availability (for diagnostics).
-
-        Each entry is ``"name (available: yes)"`` or ``"name (available: no)"``.
-        """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "list", "cards",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
-            profiles: list[str] = []
-            in_card = False
-            in_profiles = False
-            for line in stdout.decode(errors="replace").splitlines():
-                if f"Name: {card_name}" in line:
-                    in_card = True
-                    continue
-                if in_card and line.strip().startswith("Name:"):
-                    break  # next card
-                if in_card and "Profiles:" in line:
-                    in_profiles = True
-                    continue
-                if in_card and in_profiles:
-                    if line.startswith("\t\t") and ":" in line:
-                        # Profile line: "\t\tname: Description (available: yes)"
-                        stripped = line.strip()
-                        name = stripped.split(":")[0]
-                        # Extract availability from the line
-                        avail = "?"
-                        if "available: yes" in stripped:
-                            avail = "yes"
-                        elif "available: no" in stripped:
-                            avail = "no"
-                        profiles.append(f"{name} (available: {avail})")
-                    else:
-                        in_profiles = False
-            return profiles
-        except Exception:
-            return []
 
     async def get_sink_for_address(self, address: str) -> str | None:
         """Get the current sink name for a Bluetooth address, if it exists."""
