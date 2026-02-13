@@ -199,22 +199,27 @@ class BluetoothAudioManager:
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
                         pass
                     else:
-                        # Log values for key interfaces; just names for the rest
+                        # Log values for key interfaces; just names for the rest.
+                        # Adapter1 changes (UUIDs, Class) are demoted to debug —
+                        # they fire in bursts during profile re-registration and
+                        # aren't actionable.
                         _VALUE_IFACES = {
                             "org.bluez.MediaTransport1",
                             "org.bluez.Device1",
                             "org.bluez.Adapter1",
                         }
+                        is_adapter = iface_name == "org.bluez.Adapter1"
+                        log_fn = logger.debug if is_adapter else logger.info
                         if iface_name in _VALUE_IFACES and isinstance(changed, dict):
                             props_str = " ".join(
                                 f"{k}={v.value}" for k, v in changed.items()
                             )
-                            logger.info(
+                            log_fn(
                                 "BlueZ PropertiesChanged: iface=%s %s path=%s",
                                 iface_name, props_str, msg.path,
                             )
                         else:
-                            logger.info(
+                            log_fn(
                                 "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
                                 iface_name, prop_names, msg.path,
                             )
@@ -1880,40 +1885,83 @@ class BluetoothAudioManager:
         """Push a toast notification to WebSocket clients."""
         self.event_bus.emit("toast", {"message": message, "level": level})
 
+    async def _poll_card_profile(
+        self, address: str, profile: str, attempts: int = 5, interval: float = 2,
+    ) -> bool:
+        """Poll PA card until the requested profile appears and is activated."""
+        for i in range(attempts):
+            if i > 0:
+                await asyncio.sleep(interval)
+            if await self.pulse.activate_bt_card_profile(address, profile=profile):
+                logger.info(
+                    "Card profile %s activated for %s (poll attempt %d)",
+                    profile, address, i + 1,
+                )
+                return True
+            logger.debug(
+                "Card profile %s not yet available for %s (attempt %d/%d)",
+                profile, address, i + 1, attempts,
+            )
+        return False
+
     async def _apply_audio_profile(self, address: str, profile: str) -> None:
         """Activate the requested PA card profile with full fallback chain.
 
         Runs as a background task after settings are saved.  Sends toast
         notifications via WebSocket so the user sees progress and errors.
+
+        For HFP: ``_unregister_null_hfp_handler`` already restarted PA so
+        it re-registers its native HFP Audio Gateway handler with BlueZ.
+        But BlueZ does NOT call PA's ``NewConnection()`` for devices that
+        are already connected — we must explicitly ``ConnectProfile(HFP_UUID)``
+        to trigger the RFCOMM channel establishment.
         """
         profile_label = "HFP" if profile == "hfp" else "A2DP"
         try:
+            # --- Quick check: profile may already be available ---
             activated = await self.pulse.activate_bt_card_profile(address, profile=profile)
 
             if not activated and profile == "hfp":
-                # Fallback 1: ask BlueZ to connect the HFP profile, then retry
                 from .bluez.constants import HFP_UUID
-                self._broadcast_status(f"Connecting HFP profile for {address}...")
+
+                # --- Fallback 1: ConnectProfile to trigger PA's NewConnection ---
+                # PA was restarted by _unregister_null_hfp_handler and has HFP
+                # registered fresh.  ConnectProfile asks BlueZ to establish the
+                # HFP RFCOMM channel, which triggers PA's NewConnection() callback.
+                self._broadcast_status("Activating HFP profile...")
+                logger.info("HFP Fallback 1: ConnectProfile(%s) for %s", HFP_UUID, address)
                 try:
                     device = await self._get_or_create_device(address)
                     await device.connect_profile(HFP_UUID)
-                    await asyncio.sleep(3)
-                    activated = await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                    logger.info("HFP Fallback 1: ConnectProfile succeeded for %s", address)
                 except Exception as e:
-                    logger.warning("ConnectProfile(HFP) for %s failed: %s", address, e)
+                    logger.warning("HFP Fallback 1: ConnectProfile failed for %s: %s", address, e)
+
+                # Poll — PA needs time to process NewConnection and create the profile
+                activated = await self._poll_card_profile(address, "hfp", attempts=5, interval=2)
 
             if not activated and profile == "hfp":
-                # Fallback 2: reload PA bluetooth module and reconnect
-                self._broadcast_status(f"Reloading audio subsystem for {address}...")
-                await self._reload_pa_bluetooth_module()
+                from .bluez.constants import HFP_UUID
+
+                # --- Fallback 2: full disconnect/reconnect cycle ---
+                # Forces BlueZ to re-establish ALL profiles from scratch.
+                logger.info("HFP Fallback 2: disconnect/reconnect cycle for %s", address)
+                self._broadcast_status("Reconnecting device for HFP...")
                 try:
                     device = await self._get_or_create_device(address)
+                    await device.disconnect()
+                    await asyncio.sleep(3)
                     await device.connect()
                     await device.wait_for_services(timeout=10)
-                    await asyncio.sleep(2)
-                    activated = await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                    # Explicit ConnectProfile in case generic Connect() missed HFP
+                    try:
+                        await device.connect_profile(HFP_UUID)
+                        logger.info("HFP Fallback 2: ConnectProfile succeeded for %s", address)
+                    except Exception as e:
+                        logger.debug("HFP Fallback 2: ConnectProfile after connect: %s", e)
+                    activated = await self._poll_card_profile(address, "hfp", attempts=5, interval=2)
                 except Exception as e:
-                    logger.warning("Reconnect after PA reload for %s failed: %s", address, e)
+                    logger.warning("HFP Fallback 2: reconnect cycle failed for %s: %s", address, e)
 
             self._broadcast_status("")  # clear status banner
 
@@ -1939,9 +1987,9 @@ class BluetoothAudioManager:
                 logger.info("Audio profile for %s → %s", address, profile_label)
             else:
                 self._broadcast_toast(
-                    f"Failed to activate {profile_label} — PulseAudio does not have "
-                    f"the HFP handler registered. Try disconnecting and reconnecting "
-                    f"the device.",
+                    f"Failed to activate {profile_label} — device may not support "
+                    f"HFP, or PulseAudio could not establish the HFP channel. "
+                    f"Try disconnecting and reconnecting the device.",
                     "error",
                 )
                 logger.warning(
@@ -2056,7 +2104,7 @@ class BluetoothAudioManager:
             return False
 
         uuids = await device.get_uuids()
-        logger.info("Device %s UUIDs: %s", address, uuids)
+        logger.debug("Device %s UUIDs: %s", address, uuids)
 
         has_a2dp = any("110b" in u.lower() for u in uuids)
         if not has_a2dp:
