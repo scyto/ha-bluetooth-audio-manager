@@ -16,8 +16,10 @@ DEFAULT_STORE_PATH = "/data/paired_devices.json"
 # Per-device settings with their default values.
 # Existing device records without these keys get defaults automatically.
 DEFAULT_DEVICE_SETTINGS = {
-    "keep_alive_enabled": False,
-    "keep_alive_method": "infrasound",
+    "idle_mode": "default",           # "default" | "power_save" | "keep_alive" | "auto_disconnect"
+    "keep_alive_method": "infrasound",  # only used when idle_mode="keep_alive"
+    "power_save_delay": 0,             # seconds before suspending (0-300)
+    "auto_disconnect_minutes": 30,     # minutes before disconnect (5-60)
     "mpd_enabled": False,
     "mpd_port": None,   # Auto-assigned from pool (6600-6609); user can override
     "mpd_hw_volume": 100,  # Hardware volume % set when MPD starts (1-100)
@@ -110,7 +112,11 @@ class PersistenceStore:
         device = self._find_device(address)
         if device is None:
             return dict(DEFAULT_DEVICE_SETTINGS)
-        return {k: device.get(k, v) for k, v in DEFAULT_DEVICE_SETTINGS.items()}
+        settings = {k: device.get(k, v) for k, v in DEFAULT_DEVICE_SETTINGS.items()}
+        # Migrate legacy keep_alive_enabled → idle_mode
+        if "keep_alive_enabled" in device and "idle_mode" not in device:
+            settings["idle_mode"] = "keep_alive" if device["keep_alive_enabled"] else "default"
+        return settings
 
     # -- MPD port allocation --
 

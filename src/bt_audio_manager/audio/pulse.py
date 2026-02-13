@@ -381,6 +381,38 @@ class PulseAudioManager:
             logger.debug("get_sink_volume(%s) failed: %s", sink_name, e)
         return None
 
+    async def suspend_sink(self, sink_name: str) -> bool:
+        """Suspend a sink to release the A2DP transport."""
+        if not self._pulse:
+            return False
+        try:
+            sinks = await self._pulse.sink_list()
+            for sink in sinks:
+                if sink.name == sink_name:
+                    await self._pulse.sink_suspend(sink.index, suspend=True)
+                    logger.info("Suspended PA sink: %s", sink_name)
+                    return True
+            logger.warning("Sink not found for suspend: %s", sink_name)
+        except Exception as e:
+            logger.warning("Failed to suspend sink %s: %s", sink_name, e)
+        return False
+
+    async def resume_sink(self, sink_name: str) -> bool:
+        """Resume a previously suspended sink."""
+        if not self._pulse:
+            return False
+        try:
+            sinks = await self._pulse.sink_list()
+            for sink in sinks:
+                if sink.name == sink_name:
+                    await self._pulse.sink_suspend(sink.index, suspend=False)
+                    logger.info("Resumed PA sink: %s", sink_name)
+                    return True
+            logger.warning("Sink not found for resume: %s", sink_name)
+        except Exception as e:
+            logger.warning("Failed to resume sink %s: %s", sink_name, e)
+        return False
+
     async def set_sink_volume(self, sink_name: str, volume_pct: int) -> bool:
         """Set PulseAudio sink volume (0-100%).
 

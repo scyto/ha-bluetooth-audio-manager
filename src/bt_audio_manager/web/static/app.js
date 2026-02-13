@@ -346,12 +346,14 @@ function renderDevices(devices) {
       }
 
       // Kebab dropdown for paired/stored devices (Settings + Forget)
+      const idleMode = (d.stored || d.paired) ? (d.idle_mode || "default") : "default";
       const keepAliveActive = (d.stored || d.paired) && d.keep_alive_active;
       const mpdActive = (d.stored || d.paired) && d.mpd_enabled;
       let kebab = "";
       if (d.stored || d.paired) {
-        const kaEnabled = d.keep_alive_enabled || false;
         const kaMethod = d.keep_alive_method || "infrasound";
+        const powerSaveDelay = d.power_save_delay ?? 0;
+        const autoDisconnectMinutes = d.auto_disconnect_minutes ?? 30;
         const mpdEnabled = d.mpd_enabled || false;
         const mpdPort = d.mpd_port || "";
         const mpdHwVolume = d.mpd_hw_volume ?? 100;
@@ -365,7 +367,7 @@ function renderDevices(devices) {
               <i class="fas fa-ellipsis-v"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
+              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
               ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
@@ -406,7 +408,8 @@ function renderDevices(devices) {
             matchedSink.format || null,
           ].filter(Boolean);
           const vol = matchedSink.mute ? "Muted" : `${matchedSink.volume}%`;
-          const stateLabel = matchedSink.state === "running" ? "Streaming" : matchedSink.state;
+          const stateMap = { running: "Streaming", idle: "Idle", suspended: "Suspended" };
+          const stateLabel = stateMap[matchedSink.state] || matchedSink.state;
           sinkInfo = `
             <div class="mt-2 small text-muted">
               <i class="fas fa-music me-1"></i>${audioParts.length ? escapeHtml(audioParts.join(" / ")) + " &middot; " : ""}${escapeHtml(vol)}
@@ -423,7 +426,9 @@ function renderDevices(devices) {
               <div class="d-flex justify-content-between align-items-start mb-2">
                 <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
                 <div class="d-flex align-items-center gap-1">
-                  ${keepAliveActive ? '<i class="fas fa-heartbeat text-danger keep-alive-indicator" title="Keep-alive active"></i>' : ""}
+                  ${idleMode === "keep_alive" && keepAliveActive ? '<i class="fas fa-heartbeat text-danger" title="Stay Awake active"></i>' : ""}
+                  ${idleMode === "power_save" ? '<i class="fas fa-moon text-info" title="Power Save"></i>' : ""}
+                  ${idleMode === "auto_disconnect" ? '<i class="fas fa-plug text-warning" title="Auto-Disconnect"></i>' : ""}
                   ${mpdActive ? `<i class="fas fa-music text-primary" title="MPD: port ${d.mpd_port || '?'}"></i>` : ""}
                   <span class="badge ${badgeClass}">${statusText}</span>
                   ${kebab}
@@ -922,12 +927,14 @@ async function saveSettings() {
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson) {
+function openDeviceSettings(address, name, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
-  $("#setting-keep-alive-enabled").checked = kaEnabled;
+  $("#setting-idle-mode").value = idleMode || "default";
   $("#setting-keep-alive-method").value = kaMethod || "infrasound";
+  $("#setting-power-save-delay").value = String(powerSaveDelay ?? 0);
+  $("#setting-auto-disconnect-minutes").value = String(autoDisconnectMinutes ?? 30);
   $("#setting-mpd-enabled").checked = mpdEnabled || false;
   $("#setting-mpd-hw-volume").value = mpdHwVolume ?? 100;
   $("#setting-mpd-port").value = mpdPort || "";
@@ -954,14 +961,23 @@ function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled, mpdP
   } else {
     avrcpHelp.textContent = "Device does not support AVRCP media buttons.";
   }
-  toggleKeepAliveMethodVisibility();
+  toggleIdleModeOptions();
   toggleMpdConfigVisibility();
   new bootstrap.Modal("#deviceSettingsModal").show();
 }
 
-function toggleKeepAliveMethodVisibility() {
-  const enabled = $("#setting-keep-alive-enabled").checked;
-  $("#keep-alive-method-group").style.display = enabled ? "" : "none";
+function toggleIdleModeOptions() {
+  const mode = $("#setting-idle-mode").value;
+  $("#power-save-options").style.display = mode === "power_save" ? "" : "none";
+  $("#keep-alive-options").style.display = mode === "keep_alive" ? "" : "none";
+  $("#auto-disconnect-options").style.display = mode === "auto_disconnect" ? "" : "none";
+  const helpTexts = {
+    default: "Sink stays idle with transport held open. Speaker uses its own sleep timer.",
+    power_save: "Suspends the audio sink to release the A2DP transport, letting the speaker enter power-save.",
+    keep_alive: "Streams inaudible audio to prevent the speaker from auto-shutting down during silence.",
+    auto_disconnect: "Fully disconnects the Bluetooth device after the specified idle timeout.",
+  };
+  $("#idle-mode-help").textContent = helpTexts[mode] || "";
 }
 
 function toggleMpdConfigVisibility() {
@@ -971,9 +987,12 @@ function toggleMpdConfigVisibility() {
 
 async function saveDeviceSettings() {
   if (!_settingsAddress) return;
+  const idleMode = $("#setting-idle-mode").value;
   const settings = {
-    keep_alive_enabled: $("#setting-keep-alive-enabled").checked,
+    idle_mode: idleMode,
     keep_alive_method: $("#setting-keep-alive-method").value,
+    power_save_delay: parseInt($("#setting-power-save-delay").value, 10) || 0,
+    auto_disconnect_minutes: parseInt($("#setting-auto-disconnect-minutes").value, 10) || 30,
     mpd_enabled: $("#setting-mpd-enabled").checked,
   };
   // Include MPD config when enabled
@@ -1133,9 +1152,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Set initial connection state
   setConnectionStatus("connecting");
 
-  // Wire up keep-alive toggle in device settings modal
-  const kaToggle = $("#setting-keep-alive-enabled");
-  if (kaToggle) kaToggle.addEventListener("change", toggleKeepAliveMethodVisibility);
+  // Wire up idle mode dropdown in device settings modal
+  const idleModeSelect = $("#setting-idle-mode");
+  if (idleModeSelect) idleModeSelect.addEventListener("change", toggleIdleModeOptions);
 
   // Wire up forget-device confirmation button
   const confirmForgetBtn = $("#btn-confirm-forget");

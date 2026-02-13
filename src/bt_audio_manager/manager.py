@@ -63,6 +63,9 @@ class BluetoothAudioManager:
         self.store: PersistenceStore | None = None
         self.reconnect_service: ReconnectService | None = None
         self._keepalives: dict[str, KeepAliveService] = {}  # per-device keep-alive
+        self._pending_suspends: dict[str, asyncio.Task] = {}  # addr → delayed suspend task
+        self._auto_disconnect_tasks: dict[str, asyncio.Task] = {}  # addr → auto-disconnect timer
+        self._suspended_sinks: set[str] = set()  # addresses with suspended sinks
         self._mpd_instances: dict[str, MPDManager] = {}  # addr → per-device MPD
         self._last_avrcp_device: tuple[str, float] | None = None  # (addr, timestamp)
         self.media_player: AVRCPMediaPlayer | None = None
@@ -448,11 +451,11 @@ class BluetoothAudioManager:
         # 9. Migrate global keep-alive → per-device (one-time for upgrading users)
         await self._migrate_global_keepalive()
 
-        # 9b. Start keep-alive and MPD for any connected devices that have them enabled
+        # 9b. Start idle mode handlers and MPD for any connected devices
         for device_info in self.store.devices:
             addr = device_info["address"]
             if addr in self._device_connect_time:
-                await self._start_keepalive_if_enabled(addr)
+                await self._apply_idle_mode(addr)
                 await self._start_mpd_if_enabled(addr)
 
         # 10. Start periodic sink state polling
@@ -484,9 +487,13 @@ class BluetoothAudioManager:
         for addr in list(self._mpd_instances):
             await self._stop_mpd(addr)
 
-        # Stop all per-device keep-alive instances
+        # Stop all idle handlers (keep-alive, pending suspends, auto-disconnect)
         for addr in list(self._keepalives):
             await self._stop_keepalive(addr)
+        for addr in list(self._pending_suspends):
+            self._cancel_pending_suspend(addr)
+        for addr in list(self._auto_disconnect_tasks):
+            self._cancel_auto_disconnect_timer(addr)
 
         # Stop reconnection service
         if self.reconnect_service:
@@ -755,7 +762,7 @@ class BluetoothAudioManager:
                     # can cause the speaker to drop the entire connection when
                     # HFP is the only active profile.
                     await self._disconnect_hfp(address)
-                    await self._start_keepalive_if_enabled(address)
+                    await self._apply_idle_mode(address)
                     await self._start_mpd_if_enabled(address)
                     await self._broadcast_all()
                     return True
@@ -854,9 +861,13 @@ class BluetoothAudioManager:
         if self.reconnect_service:
             await self.reconnect_service.stop()
 
-        # 2. Stop all keep-alive instances
+        # 2. Stop all idle handlers
         for addr in list(self._keepalives):
             await self._stop_keepalive(addr)
+        for addr in list(self._pending_suspends):
+            self._cancel_pending_suspend(addr)
+        for addr in list(self._auto_disconnect_tasks):
+            self._cancel_auto_disconnect_timer(addr)
 
         # 3. Collect all known addresses (managed + stored)
         addresses = set(self.managed_devices.keys())
@@ -923,9 +934,11 @@ class BluetoothAudioManager:
             device["stored"] = addr in stored_addresses
             if device["stored"]:
                 s = self.store.get_device_settings(addr)
-                device["keep_alive_enabled"] = s["keep_alive_enabled"]
+                device["idle_mode"] = s.get("idle_mode", "default")
                 device["keep_alive_method"] = s["keep_alive_method"]
                 device["keep_alive_active"] = addr in self._keepalives
+                device["power_save_delay"] = s.get("power_save_delay", 0)
+                device["auto_disconnect_minutes"] = s.get("auto_disconnect_minutes", 30)
                 device["mpd_enabled"] = s.get("mpd_enabled", False)
                 device["mpd_port"] = s.get("mpd_port")
                 device["mpd_hw_volume"] = s.get("mpd_hw_volume", 100)
@@ -949,9 +962,11 @@ class BluetoothAudioManager:
                         "bearers": [],
                         "has_transport": False,
                         "adapter": "",
-                        "keep_alive_enabled": s["keep_alive_enabled"],
+                        "idle_mode": s.get("idle_mode", "default"),
                         "keep_alive_method": s["keep_alive_method"],
                         "keep_alive_active": addr in self._keepalives,
+                        "power_save_delay": s.get("power_save_delay", 0),
+                        "auto_disconnect_minutes": s.get("auto_disconnect_minutes", 30),
                         "mpd_enabled": s.get("mpd_enabled", False),
                         "mpd_port": s.get("mpd_port"),
                         "mpd_hw_volume": s.get("mpd_hw_volume", 100),
@@ -1272,7 +1287,7 @@ class BluetoothAudioManager:
         """Handle device disconnection event."""
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
-        asyncio.ensure_future(self._stop_keepalive(address))
+        asyncio.ensure_future(self._stop_idle_handler(address))
         asyncio.ensure_future(self._stop_mpd(address))
 
         if address in self._connecting:
@@ -1579,7 +1594,7 @@ class BluetoothAudioManager:
                 sink_name = await self.pulse.get_sink_for_address(address)
                 if sink_name:
                     logger.info("HFP cycle: PA sink for %s: %s", address, sink_name)
-                    await self._start_keepalive_if_enabled(address)
+                    await self._apply_idle_mode(address)
                     await self._start_mpd_if_enabled(address)
 
         except DBusError as e:
@@ -1833,9 +1848,17 @@ class BluetoothAudioManager:
 
         Sets PlaybackStatus='Playing' so the speaker enables AVRCP volume
         buttons (if AVRCP is enabled for this device).
+        Cancels any pending power-save suspend or auto-disconnect timer.
         """
+        addr = self._addr_from_sink_name(sink_name)
+        # Cancel pending power-save suspend
+        self._cancel_pending_suspend(addr)
+        # Cancel auto-disconnect timer
+        self._cancel_auto_disconnect_timer(addr)
+        # Resume sink if it was suspended (PA does this automatically on play,
+        # but track our state)
+        self._suspended_sinks.discard(addr)
         if self.media_player:
-            addr = self._addr_from_sink_name(sink_name)
             if self._is_avrcp_enabled(addr):
                 self.media_player.set_playback_status("Playing")
             else:
@@ -1846,12 +1869,22 @@ class BluetoothAudioManager:
 
         Sets PlaybackStatus='Stopped' so the speaker knows nothing is playing
         (if AVRCP is enabled for this device — auto-tracking mode).
+        Then applies idle mode behaviour (power-save suspend, auto-disconnect).
         """
+        addr = self._addr_from_sink_name(sink_name)
         if self.media_player:
-            addr = self._addr_from_sink_name(sink_name)
             if self._is_avrcp_enabled(addr):
                 self.media_player.set_playback_status("Stopped")
                 logger.info("Sink idle for %s — set PlaybackStatus=Stopped", addr)
+        # Apply idle mode behaviour
+        if addr and self.store:
+            settings = self.store.get_device_settings(addr)
+            mode = settings.get("idle_mode", "default")
+            if mode == "power_save":
+                delay = settings.get("power_save_delay", 0)
+                self._schedule_sink_suspend(addr, sink_name, delay)
+            elif mode == "auto_disconnect":
+                self._start_auto_disconnect_timer(addr, settings)
 
     AVRCP_DEVICE_WINDOW = 2.0  # seconds to consider _last_avrcp_device valid
 
@@ -1936,16 +1969,16 @@ class BluetoothAudioManager:
                     for device_info in self.store.devices:
                         await self.store.update_device_settings(
                             device_info["address"],
-                            {"keep_alive_enabled": True, "keep_alive_method": method},
+                            {"idle_mode": "keep_alive", "keep_alive_method": method},
                         )
             marker.write_text("migrated")
         except Exception as e:
             logger.warning("Keep-alive migration failed (non-fatal): %s", e)
 
     async def _start_keepalive_if_enabled(self, address: str) -> None:
-        """Start keep-alive for a device if enabled in its settings and connected."""
+        """Start keep-alive for a device if idle_mode is 'keep_alive' and connected."""
         settings = self.store.get_device_settings(address)
-        if not settings["keep_alive_enabled"]:
+        if settings.get("idle_mode", "default") != "keep_alive":
             return
         if address in self._keepalives:
             return  # already running
@@ -1973,6 +2006,90 @@ class BluetoothAudioManager:
             await ka.stop()
             logger.info("Keep-alive stopped for %s", address)
             self.event_bus.emit("keepalive_changed", {"address": address, "enabled": False})
+
+    # -- Idle mode management --
+
+    async def _apply_idle_mode(self, address: str) -> None:
+        """Start the appropriate idle handler for the device's idle_mode setting."""
+        settings = self.store.get_device_settings(address)
+        mode = settings.get("idle_mode", "default")
+
+        # Stop any existing idle handler first
+        await self._stop_idle_handler(address)
+
+        if mode == "keep_alive":
+            await self._start_keepalive_if_enabled(address)
+        # power_save and auto_disconnect are triggered reactively by
+        # _on_pa_sink_idle, not started proactively here
+
+    async def _stop_idle_handler(self, address: str) -> None:
+        """Stop any active idle handler for a device."""
+        await self._stop_keepalive(address)
+        self._cancel_pending_suspend(address)
+        self._cancel_auto_disconnect_timer(address)
+        # Resume sink if we suspended it
+        if address in self._suspended_sinks and self.pulse:
+            sink_name = await self.pulse.get_sink_for_address(address)
+            if sink_name:
+                await self.pulse.resume_sink(sink_name)
+            self._suspended_sinks.discard(address)
+
+    def _schedule_sink_suspend(self, address: str, sink_name: str, delay: int) -> None:
+        """Schedule a delayed PA sink suspension for power-save mode."""
+        self._cancel_pending_suspend(address)
+        if delay <= 0:
+            task = asyncio.ensure_future(self._do_sink_suspend(address, sink_name))
+        else:
+            task = asyncio.ensure_future(self._delayed_sink_suspend(address, sink_name, delay))
+        self._pending_suspends[address] = task
+
+    async def _delayed_sink_suspend(self, address: str, sink_name: str, delay: int) -> None:
+        """Wait then suspend the sink."""
+        try:
+            logger.info("Power-save: suspending sink for %s in %ds", address, delay)
+            await asyncio.sleep(delay)
+            await self._do_sink_suspend(address, sink_name)
+        except asyncio.CancelledError:
+            logger.debug("Power-save suspend cancelled for %s", address)
+
+    async def _do_sink_suspend(self, address: str, sink_name: str) -> None:
+        """Actually suspend the PA sink."""
+        self._pending_suspends.pop(address, None)
+        if self.pulse:
+            ok = await self.pulse.suspend_sink(sink_name)
+            if ok:
+                self._suspended_sinks.add(address)
+                logger.info("Power-save: sink suspended for %s", address)
+
+    def _cancel_pending_suspend(self, address: str) -> None:
+        """Cancel a pending power-save suspend task."""
+        task = self._pending_suspends.pop(address, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _start_auto_disconnect_timer(self, address: str, settings: dict) -> None:
+        """Start an auto-disconnect timer that fires when idle for N minutes."""
+        self._cancel_auto_disconnect_timer(address)
+        minutes = settings.get("auto_disconnect_minutes", 30)
+        logger.info("Auto-disconnect: will disconnect %s in %d minutes if idle", address, minutes)
+        task = asyncio.ensure_future(self._auto_disconnect_after(address, minutes * 60))
+        self._auto_disconnect_tasks[address] = task
+
+    async def _auto_disconnect_after(self, address: str, seconds: int) -> None:
+        """Wait then disconnect the device."""
+        try:
+            await asyncio.sleep(seconds)
+            self._auto_disconnect_tasks.pop(address, None)
+            logger.info("Auto-disconnect: disconnecting %s after idle timeout", address)
+            await self.disconnect_device(address)
+        except asyncio.CancelledError:
+            logger.debug("Auto-disconnect timer cancelled for %s", address)
+
+    def _cancel_auto_disconnect_timer(self, address: str) -> None:
+        """Cancel a pending auto-disconnect timer."""
+        task = self._auto_disconnect_tasks.pop(address, None)
+        if task and not task.done():
+            task.cancel()
 
     # -- Per-device MPD management --
 
@@ -2085,15 +2202,22 @@ class BluetoothAudioManager:
         if device_info is None:
             return None
 
-        # React to keep-alive changes if device is connected
-        if address in self._device_connect_time:
-            if "keep_alive_enabled" in settings:
-                if device_info.get("keep_alive_enabled", False):
-                    # Method may have changed — stop old instance and restart
-                    await self._stop_keepalive(address)
-                    await self._start_keepalive_if_enabled(address)
-                else:
-                    await self._stop_keepalive(address)
+        # React to idle mode changes if device is connected
+        idle_keys = {"idle_mode", "keep_alive_method", "power_save_delay", "auto_disconnect_minutes"}
+        if address in self._device_connect_time and idle_keys.intersection(settings):
+            # Stop old handler and apply new one
+            await self._stop_idle_handler(address)
+            await self._apply_idle_mode(address)
+            # If switching TO power_save and sink is currently idle → schedule suspend
+            new_mode = self.store.get_device_settings(address).get("idle_mode", "default")
+            if new_mode == "power_save" and self.pulse:
+                sink_name = await self.pulse.get_sink_for_address(address)
+                if sink_name:
+                    vol_info = await self.pulse.get_sink_volume(sink_name)
+                    if vol_info and vol_info[1] != "running":
+                        s = self.store.get_device_settings(address)
+                        delay = s.get("power_save_delay", 0)
+                        self._schedule_sink_suspend(address, sink_name, delay)
 
         # React to MPD changes if device is connected
         if address in self._device_connect_time:
