@@ -907,7 +907,7 @@ class BluetoothAudioManager:
                 device["keep_alive_active"] = addr in self._keepalives
                 device["mpd_enabled"] = s.get("mpd_enabled", False)
                 device["mpd_port"] = s.get("mpd_port")
-                device["mpd_name"] = s.get("mpd_name", "")
+                device["mpd_hw_volume"] = s.get("mpd_hw_volume", 100)
 
         # Add stored devices not currently visible
         discovered_addresses = {d["address"] for d in discovered}
@@ -932,7 +932,7 @@ class BluetoothAudioManager:
                         "keep_alive_active": addr in self._keepalives,
                         "mpd_enabled": s.get("mpd_enabled", False),
                         "mpd_port": s.get("mpd_port"),
-                        "mpd_name": s.get("mpd_name", ""),
+                        "mpd_hw_volume": s.get("mpd_hw_volume", 100),
                     }
                 )
 
@@ -1951,11 +1951,12 @@ class BluetoothAudioManager:
             logger.warning("Cannot start MPD for %s: all 10 ports in use", address)
             return
 
-        # Determine the MPD instance name
-        mpd_name = settings.get("mpd_name", "")
-        if not mpd_name:
-            device_info = self.store.get_device(address)
-            mpd_name = device_info["name"] if device_info else address
+        # Auto-generate MPD name from device name + last 5 chars of MAC
+        # for disambiguation when multiple devices share the same name
+        device_info = self.store.get_device(address)
+        device_name = device_info["name"] if device_info else address
+        mac_suffix = address.replace(":", "")[-5:].upper()
+        mpd_name = f"{device_name} ({mac_suffix})"
 
         mpd_password = self._get_mpd_password()
 
@@ -1980,7 +1981,7 @@ class BluetoothAudioManager:
     async def _init_mpd_volume(
         self, address: str, mpd: "MPDManager", sink_name: str
     ) -> None:
-        """Set hardware volume to 100% and MPD to 100% when no stream is active.
+        """Set hardware volume to configured level when no stream is active.
 
         Makes MPD the single volume control — HA automations can then
         reliably set volume via ``media_player.volume_set`` before TTS.
@@ -1990,16 +1991,18 @@ class BluetoothAudioManager:
         if not self.pulse:
             return
         try:
+            settings = self.store.get_device_settings(address)
+            hw_vol = settings.get("mpd_hw_volume", 100)
             vol_state = await self.pulse.get_sink_volume(sink_name)
             if not vol_state:
                 return
             current_vol, state = vol_state
             if state != "running":
-                # No active stream — safe to reset hardware to 100%
-                await self.pulse.set_sink_volume(sink_name, 100)
+                # No active stream — safe to set hardware to configured level
+                await self.pulse.set_sink_volume(sink_name, hw_vol)
                 logger.info(
-                    "Hardware volume set to 100%% for %s (was %d%%, state=%s)",
-                    address, current_vol, state,
+                    "Hardware volume set to %d%% for %s (was %d%%, state=%s)",
+                    hw_vol, address, current_vol, state,
                 )
             else:
                 # Stream active — sync MPD to current hardware volume
@@ -2035,7 +2038,7 @@ class BluetoothAudioManager:
 
         # React to MPD changes if device is connected
         if address in self._device_connect_time:
-            mpd_changed = {"mpd_enabled", "mpd_port", "mpd_name"}.intersection(settings)
+            mpd_changed = {"mpd_enabled", "mpd_port", "mpd_hw_volume"}.intersection(settings)
             if mpd_changed:
                 if device_info.get("mpd_enabled", False):
                     # Restart to pick up any config changes (port, name)

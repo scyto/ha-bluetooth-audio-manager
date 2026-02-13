@@ -354,9 +354,8 @@ function renderDevices(devices) {
         const kaMethod = d.keep_alive_method || "infrasound";
         const mpdEnabled = d.mpd_enabled || false;
         const mpdPort = d.mpd_port || "";
-        const mpdName = d.mpd_name || "";
+        const mpdHwVolume = d.mpd_hw_volume ?? 100;
         const safeName = escapeHtml(d.name).replace(/'/g, "\\'");
-        const safeMpdName = escapeHtml(mpdName).replace(/'/g, "\\'");
         kebab = `
           <div class="dropdown">
             <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
@@ -364,7 +363,7 @@ function renderDevices(devices) {
               <i class="fas fa-ellipsis-v"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}, '${mpdPort}', '${safeMpdName}'); return false;">
+              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}', ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
               ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
@@ -423,7 +422,7 @@ function renderDevices(devices) {
                 <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
                 <div class="d-flex align-items-center gap-1">
                   ${keepAliveActive ? '<i class="fas fa-heartbeat text-danger keep-alive-indicator" title="Keep-alive active"></i>' : ""}
-                  ${mpdActive ? `<i class="fas fa-music text-primary" title="MPD: ${escapeHtml(d.mpd_name || d.name)} (port ${d.mpd_port || '?'})"></i>` : ""}
+                  ${mpdActive ? `<i class="fas fa-music text-primary" title="MPD: port ${d.mpd_port || '?'}"></i>` : ""}
                   <span class="badge ${badgeClass}">${statusText}</span>
                   ${kebab}
                 </div>
@@ -921,14 +920,14 @@ async function saveSettings() {
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled, mpdPort, mpdName) {
+function openDeviceSettings(address, name, kaEnabled, kaMethod, mpdEnabled, mpdPort, mpdHwVolume) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
   $("#setting-keep-alive-enabled").checked = kaEnabled;
   $("#setting-keep-alive-method").value = kaMethod || "infrasound";
   $("#setting-mpd-enabled").checked = mpdEnabled || false;
-  $("#setting-mpd-name").value = mpdName || "";
+  $("#setting-mpd-hw-volume").value = mpdHwVolume ?? 100;
   $("#setting-mpd-port").value = mpdPort || "";
   // Show connection info if port is assigned
   if (mpdPort) {
@@ -962,7 +961,7 @@ async function saveDeviceSettings() {
   };
   // Include MPD config when enabled
   if (settings.mpd_enabled) {
-    settings.mpd_name = $("#setting-mpd-name").value.trim();
+    settings.mpd_hw_volume = parseInt($("#setting-mpd-hw-volume").value, 10) || 100;
     const portVal = $("#setting-mpd-port").value;
     if (portVal) settings.mpd_port = parseInt(portVal, 10);
   }
