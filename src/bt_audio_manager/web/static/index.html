@@ -360,11 +360,12 @@
           <!-- MPD Config (shown when enabled) -->
           <div id="mpd-config-group" style="display:none;">
             <div class="mb-3">
-              <label for="setting-mpd-name" class="form-label">MPD Name</label>
-              <input type="text" class="form-control" id="setting-mpd-name"
-                     placeholder="(defaults to speaker name)" maxlength="64">
+              <label for="setting-mpd-hw-volume" class="form-label">Hardware Volume (%)</label>
+              <input type="number" class="form-control" id="setting-mpd-hw-volume"
+                     min="1" max="100" step="1" value="100">
               <div class="form-text">
-                Name shown in MPD clients and HA. Leave blank to use the Bluetooth device name.
+                Sets speaker hardware volume when MPD starts (1&ndash;100%). MPD then controls
+                perceived loudness as a single volume knob. Default: 100%.
               </div>
             </div>
             <div class="mb-3">
