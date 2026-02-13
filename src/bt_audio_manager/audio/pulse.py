@@ -131,44 +131,57 @@ class PulseAudioManager:
             self._subscribe_task = None
 
     async def _event_monitor_loop(self) -> None:
-        """Subscribe to sink events and log Bluetooth volume changes."""
-        bt_sink_states: dict[str, str] = {}  # sink name → last known state
-        try:
-            # Second connection dedicated to event subscription
-            async with PulseAsync("bt-audio-events") as pulse_events:
-                logger.info("PA event subscription started (sink events)")
-                async for event in pulse_events.subscribe_events("sink", "server"):
-                    if event.t == "change" and self._pulse:
-                        try:
-                            sink = await self._pulse.sink_info(event.index)
-                            if "bluez" in sink.name.lower():
-                                vol = round(sink.volume.value_flat * 100)
-                                state_name = getattr(sink.state, "name", str(sink.state))
-                                logger.info(
-                                    "PA sink volume change: %s vol=%d%% mute=%s state=%s",
-                                    sink.name, vol, sink.mute, state_name,
-                                )
-                                if self._volume_callback:
-                                    self._volume_callback(sink.name, vol, sink.mute)
-                                # Detect state transitions
-                                prev_state = bt_sink_states.get(sink.name)
-                                bt_sink_states[sink.name] = state_name
-                                if state_name == "running" and prev_state != "running":
-                                    logger.info("BT sink %s → running (was %s)", sink.name, prev_state)
-                                    if self._state_callback:
-                                        self._state_callback(sink.name)
-                                elif state_name != "running" and prev_state == "running":
-                                    logger.info("BT sink %s → %s (was running)", sink.name, state_name)
-                                    if self._idle_callback:
-                                        self._idle_callback(sink.name)
-                        except Exception as e:
-                            logger.debug("PA event handler error: %s", e)
-                    elif event.t in ("new", "remove"):
-                        logger.info("PA sink %s: index=%d", event.t, event.index)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.warning("PA event subscription error: %s", e)
+        """Subscribe to sink events and log Bluetooth volume changes.
+
+        Auto-restarts with exponential backoff if the PA connection drops
+        (e.g. after a module-bluez5-discover reload).
+        """
+        retry_delay = 2
+        while True:
+            bt_sink_states: dict[str, str] = {}
+            try:
+                async with PulseAsync("bt-audio-events") as pulse_events:
+                    retry_delay = 2  # reset on successful connection
+                    logger.info("PA event subscription started (sink events)")
+                    async for event in pulse_events.subscribe_events("sink", "server"):
+                        if event.t == "change" and self._pulse:
+                            try:
+                                sink = await self._pulse.sink_info(event.index)
+                                if "bluez" in sink.name.lower():
+                                    vol = round(sink.volume.value_flat * 100)
+                                    state_name = getattr(sink.state, "name", str(sink.state))
+                                    logger.info(
+                                        "PA sink volume change: %s vol=%d%% mute=%s state=%s",
+                                        sink.name, vol, sink.mute, state_name,
+                                    )
+                                    if self._volume_callback:
+                                        self._volume_callback(sink.name, vol, sink.mute)
+                                    # Detect state transitions
+                                    prev_state = bt_sink_states.get(sink.name)
+                                    bt_sink_states[sink.name] = state_name
+                                    if state_name == "running" and prev_state != "running":
+                                        logger.info("BT sink %s → running (was %s)", sink.name, prev_state)
+                                        if self._state_callback:
+                                            self._state_callback(sink.name)
+                                    elif state_name != "running" and prev_state == "running":
+                                        logger.info("BT sink %s → %s (was running)", sink.name, state_name)
+                                        if self._idle_callback:
+                                            self._idle_callback(sink.name)
+                            except Exception as e:
+                                logger.debug("PA event handler error: %s", e)
+                        elif event.t in ("new", "remove"):
+                            logger.info("PA sink %s: index=%d", event.t, event.index)
+            except asyncio.CancelledError:
+                return  # clean shutdown
+            except Exception as e:
+                logger.warning(
+                    "PA event subscription error: %s — restarting in %ds", e, retry_delay,
+                )
+                try:
+                    await asyncio.sleep(retry_delay)
+                except asyncio.CancelledError:
+                    return
+                retry_delay = min(retry_delay * 2, 30)
 
     async def _pactl_sample_specs(self) -> dict[str, dict]:
         """Parse sample specs from ``pactl list sinks``.

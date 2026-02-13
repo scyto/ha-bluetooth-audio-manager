@@ -671,7 +671,11 @@ def create_api_routes(
         try:
             # Send initial state so UI renders immediately
             devices = await manager.get_all_devices()
-            sinks = await manager.get_audio_sinks()
+            try:
+                sinks = await manager.get_audio_sinks()
+            except Exception:
+                logger.warning("PA unavailable during WS init — sending empty sinks")
+                sinks = []
             await ws.send_json({"type": "devices_changed", "devices": devices})
             await ws.send_json({"type": "sinks_changed", "sinks": sinks})
             await ws.send_json({

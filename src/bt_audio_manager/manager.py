@@ -1807,20 +1807,33 @@ class BluetoothAudioManager:
             await proc.communicate()
             logger.info("Unloaded module-bluez5-discover (index %s)", module_index)
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
 
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "load-module", "module-bluez5-discover",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode == 0:
-                logger.info("Reloaded module-bluez5-discover — PA HFP/HSP handler restored")
-            else:
+            # Retry load — PA may hold a lock briefly after unload cleanup
+            loaded = False
+            for attempt in range(1, 4):
+                proc = await asyncio.create_subprocess_exec(
+                    "pactl", "load-module", "module-bluez5-discover",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+                if proc.returncode == 0:
+                    logger.info("Reloaded module-bluez5-discover — PA HFP/HSP handler restored")
+                    loaded = True
+                    break
+                err_msg = stderr.decode(errors="replace").strip()
                 logger.warning(
-                    "Failed to reload module-bluez5-discover: %s",
-                    stderr.decode(errors="replace").strip(),
+                    "Failed to reload module-bluez5-discover (attempt %d/3): %s",
+                    attempt, err_msg,
+                )
+                if attempt < 3:
+                    await asyncio.sleep(2)
+
+            if not loaded:
+                logger.error(
+                    "module-bluez5-discover reload failed after 3 attempts — "
+                    "Bluetooth audio will not work until PA is restarted"
                 )
 
             # Give PA time to re-register handlers and re-discover devices
@@ -2387,10 +2400,38 @@ class BluetoothAudioManager:
         if device_info is None:
             return None
 
-        # React to audio profile changes — unregister null HFP handler if needed
+        # React to audio profile changes
         if "audio_profile" in settings:
-            if settings["audio_profile"] == "hfp" and self._null_hfp_registered:
+            new_profile = settings["audio_profile"]
+            if new_profile == "hfp" and self._null_hfp_registered:
                 await self._unregister_null_hfp_handler()
+
+            # Activate the PA card profile if the device is currently connected
+            if address in self._device_connect_time and self.pulse:
+                activated = await self.pulse.activate_bt_card_profile(
+                    address, profile=new_profile,
+                )
+                if not activated and new_profile == "hfp":
+                    # HFP profile may not be available yet — try ConnectProfile
+                    from .bluez.constants import HFP_UUID
+                    try:
+                        device = await self._get_or_create_device(address)
+                        await device.connect_profile(HFP_UUID)
+                        await asyncio.sleep(3)
+                        activated = await self.pulse.activate_bt_card_profile(
+                            address, profile="hfp",
+                        )
+                    except Exception as e:
+                        logger.warning("ConnectProfile(HFP) for %s failed: %s", address, e)
+                if activated:
+                    sink_name = await self.pulse.wait_for_bt_sink(address, timeout=10)
+                    if sink_name:
+                        await self._apply_idle_mode(address)
+                        await self._start_mpd_if_enabled(address)
+                elif new_profile == "a2dp":
+                    # Switching back to A2DP — disconnect HFP if needed
+                    if self._should_disconnect_hfp(address):
+                        await self._disconnect_hfp(address)
 
         # React to idle mode changes if device is connected
         idle_keys = {"idle_mode", "keep_alive_method", "power_save_delay", "auto_disconnect_minutes"}
