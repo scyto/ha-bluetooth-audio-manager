@@ -198,10 +198,25 @@ class BluetoothAudioManager:
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
                         pass
                     else:
-                        logger.info(
-                            "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
-                            iface_name, prop_names, msg.path,
-                        )
+                        # Log values for key interfaces; just names for the rest
+                        _VALUE_IFACES = {
+                            "org.bluez.MediaTransport1",
+                            "org.bluez.Device1",
+                            "org.bluez.Adapter1",
+                        }
+                        if iface_name in _VALUE_IFACES and isinstance(changed, dict):
+                            props_str = " ".join(
+                                f"{k}={v.value}" for k, v in changed.items()
+                            )
+                            logger.info(
+                                "BlueZ PropertiesChanged: iface=%s %s path=%s",
+                                iface_name, props_str, msg.path,
+                            )
+                        else:
+                            logger.info(
+                                "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
+                                iface_name, prop_names, msg.path,
+                            )
 
                     # During scanning, broadcast when UUIDs or Name change
                     # (UUIDs often arrive after InterfacesAdded)
