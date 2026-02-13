@@ -194,14 +194,29 @@ class BluetoothAudioManager:
                     # Silently discard noisy RSSI / ManufacturerData / TxPower
                     # churn — these fire many times per second per device and
                     # provide no actionable information for this app.
-                    _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower"}
+                    _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower", "ServiceData"}
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
                         pass
                     else:
-                        logger.info(
-                            "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
-                            iface_name, prop_names, msg.path,
-                        )
+                        # Log values for key interfaces; just names for the rest
+                        _VALUE_IFACES = {
+                            "org.bluez.MediaTransport1",
+                            "org.bluez.Device1",
+                            "org.bluez.Adapter1",
+                        }
+                        if iface_name in _VALUE_IFACES and isinstance(changed, dict):
+                            props_str = " ".join(
+                                f"{k}={v.value}" for k, v in changed.items()
+                            )
+                            logger.info(
+                                "BlueZ PropertiesChanged: iface=%s %s path=%s",
+                                iface_name, props_str, msg.path,
+                            )
+                        else:
+                            logger.info(
+                                "BlueZ PropertiesChanged: iface=%s props=%s path=%s",
+                                iface_name, prop_names, msg.path,
+                            )
 
                     # During scanning, broadcast when UUIDs or Name change
                     # (UUIDs often arrive after InterfacesAdded)
@@ -1861,6 +1876,7 @@ class BluetoothAudioManager:
         if self.media_player:
             if self._is_avrcp_enabled(addr):
                 self.media_player.set_playback_status("Playing")
+                logger.info("Sink running for %s — set PlaybackStatus=Playing", addr)
             else:
                 logger.info("AVRCP disabled for %s — skipping PlaybackStatus=Playing on sink running", addr)
 
@@ -1876,6 +1892,8 @@ class BluetoothAudioManager:
             if self._is_avrcp_enabled(addr):
                 self.media_player.set_playback_status("Stopped")
                 logger.info("Sink idle for %s — set PlaybackStatus=Stopped", addr)
+            else:
+                logger.info("AVRCP disabled for %s — skipping PlaybackStatus=Stopped on sink idle", addr)
         # Apply idle mode behaviour
         if addr and self.store:
             settings = self.store.get_device_settings(addr)
