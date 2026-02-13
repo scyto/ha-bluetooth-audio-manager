@@ -990,12 +990,14 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
 
+  // Parse UUIDs once — used by both Audio Profile and AVRCP sections
+  const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
+  const lowerUuids = uuids.map(u => u.toLowerCase());
+
   // Audio Profile — hidden when HFP switching is disabled (SCO unavailable)
   const profileSection = $("#setting-audio-profile").closest(".mb-3");
   if (window._hfpSwitchingEnabled) {
     profileSection.style.display = "";
-    const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
-    const lowerUuids = uuids.map(u => u.toLowerCase());
     const HFP_UUID = "0000111e-0000-1000-8000-00805f9b34fb";
     const HSP_UUID = "00001108-0000-1000-8000-00805f9b34fb";
     const hasHfp = lowerUuids.includes(HFP_UUID) || lowerUuids.includes(HSP_UUID);
