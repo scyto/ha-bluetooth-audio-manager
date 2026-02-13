@@ -396,6 +396,9 @@ function renderDevices(devices) {
           <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${d.address}')">
             <i class="fas fa-handshake me-1"></i>Pair
           </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="dismissDevice('${d.address}')" title="Dismiss">
+            <i class="fas fa-times"></i>
+          </button>
         `;
       }
 
@@ -858,6 +861,14 @@ async function forceReconnectDevice(address) {
     await apiPost("/api/force-reconnect", { address });
   } catch (e) {
     showToast(`Force reconnect failed: ${e.message}`, "error");
+  }
+}
+
+async function dismissDevice(address) {
+  try {
+    await apiPost("/api/forget", { address });
+  } catch (e) {
+    showToast(`Dismiss failed: ${e.message}`, "error");
   }
 }
 
