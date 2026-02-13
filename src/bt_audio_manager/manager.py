@@ -1373,41 +1373,44 @@ class BluetoothAudioManager:
 
     async def _on_device_connected_async(self, address: str) -> None:
         """Async handler for device connection — broadcasts state and starts AVRCP."""
-        await self._broadcast_all()
-
-        # If a connect or HFP reconnect cycle is in progress, don't interfere
-        if address in self._connecting:
-            logger.debug("Skipping auto setup for %s (connect/cycle in progress)", address)
-            return
-
-        # Try to subscribe to AVRCP after reconnection
         try:
-            device = await self._get_or_create_device(address)
+            await self._broadcast_all()
+
+            # If a connect or HFP reconnect cycle is in progress, don't interfere
+            if address in self._connecting:
+                logger.debug("Skipping auto setup for %s (connect/cycle in progress)", address)
+                return
+
+            # Try to subscribe to AVRCP after reconnection
             try:
-                await device.watch_media_player()
+                device = await self._get_or_create_device(address)
+                try:
+                    await device.watch_media_player()
+                except Exception as e:
+                    logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
             except Exception as e:
-                logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
+                logger.debug("Cannot access reconnected device %s: %s", address, e)
+
+            # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
+            if self._should_disconnect_hfp(address):
+                await self._disconnect_hfp(address)
+
+            audio_profile = self._get_audio_profile(address)
+            if audio_profile == "hfp":
+                # For HFP devices: activate headset-head-unit PA profile and
+                # apply idle mode / MPD (the auto-reconnect signal handler
+                # doesn't go through connect_device's setup path).
+                if self.pulse:
+                    await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                    sink_name = await self.pulse.get_sink_for_address(address)
+                    if sink_name:
+                        await self._apply_idle_mode(address)
+                        await self._start_mpd_if_enabled(address)
+            else:
+                # Check/activate A2DP transport (may need ConnectProfile)
+                await self._ensure_a2dp_transport(address)
         except Exception as e:
-            logger.debug("Cannot access reconnected device %s: %s", address, e)
-
-        # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
-        if self._should_disconnect_hfp(address):
-            await self._disconnect_hfp(address)
-
-        audio_profile = self._get_audio_profile(address)
-        if audio_profile == "hfp":
-            # For HFP devices: activate headset-head-unit PA profile and
-            # apply idle mode / MPD (the auto-reconnect signal handler
-            # doesn't go through connect_device's setup path).
-            if self.pulse:
-                await self.pulse.activate_bt_card_profile(address, profile="hfp")
-                sink_name = await self.pulse.get_sink_for_address(address)
-                if sink_name:
-                    await self._apply_idle_mode(address)
-                    await self._start_mpd_if_enabled(address)
-        else:
-            # Check/activate A2DP transport (may need ConnectProfile)
-            await self._ensure_a2dp_transport(address)
+            logger.warning("Post-connect setup failed for %s: %s", address, e)
 
     async def _log_transport_properties(self, address: str) -> bool:
         """Enumerate BlueZ objects to find and log MediaTransport1 for a device.
@@ -1866,9 +1869,9 @@ class BluetoothAudioManager:
                                 logger.error("PA did not come back after audio restart")
                             return
                         body = await resp.text()
-                        logger.debug("Audio restart via %s returned %d: %s", url, resp.status, body)
+                        logger.warning("Audio restart via %s returned %d: %s", url, resp.status, body)
             except Exception as e:
-                logger.debug("Audio restart via %s failed: %s", url, e)
+                logger.warning("Audio restart via %s failed: %s", url, e)
                 continue
 
         logger.error("Failed to restart audio service via Supervisor API")
