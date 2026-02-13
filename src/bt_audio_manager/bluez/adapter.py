@@ -17,6 +17,7 @@ from .constants import (
     DEFAULT_ADAPTER_PATH,
     DEVICE_INTERFACE,
     HFP_UUID,
+    HSP_UUID,
     OBJECT_MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
 )
@@ -76,7 +77,7 @@ class BluezAdapter:
         """
         await self._adapter_iface.call_set_discovery_filter(
             {
-                "UUIDs": Variant("as", [A2DP_SINK_UUID, A2DP_SOURCE_UUID, HFP_UUID]),
+                "UUIDs": Variant("as", [A2DP_SINK_UUID, A2DP_SOURCE_UUID, HFP_UUID, HSP_UUID]),
                 "Transport": Variant("s", "bredr"),
             }
         )

@@ -261,6 +261,7 @@ const BT_PROFILES = {
   "0000110c-0000-1000-8000-00805f9b34fb": "AVRCP Target",
   "0000110e-0000-1000-8000-00805f9b34fb": "AVRCP Controller",
   "0000111e-0000-1000-8000-00805f9b34fb": "HFP",
+  "00001108-0000-1000-8000-00805f9b34fb": "HSP",
 };
 
 function profileLabels(uuids) {
@@ -294,13 +295,13 @@ function buildCapBadges(device) {
       badges.push('<span class="cap-badge bg-warning text-dark" title="Media buttons disabled">AVRCP \u2717</span>');
     }
   }
-  // HFP
-  const hasHfp = uuids.some((u) => u.startsWith("0000111e"));
-  if (hasHfp) {
+  // HFP / HSP
+  const hasHfpHsp = uuids.some((u) => u.startsWith("0000111e") || u.startsWith("00001108"));
+  if (hasHfpHsp) {
     if (device.audio_profile === "hfp") {
-      badges.push('<span class="cap-badge bg-success" title="HFP audio profile active (mono + mic)">HFP \u2713</span>');
+      badges.push('<span class="cap-badge bg-success" title="HFP/HSP audio profile active (mono + mic)">HFP \u2713</span>');
     } else {
-      badges.push('<span class="cap-badge bg-info" title="Hands-Free Profile available">HFP</span>');
+      badges.push('<span class="cap-badge bg-info" title="Hands-Free / Headset Profile available">HFP</span>');
     }
   }
   return badges.length > 0
@@ -976,7 +977,8 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
   const lowerUuids = uuids.map(u => u.toLowerCase());
   const HFP_UUID = "0000111e-0000-1000-8000-00805f9b34fb";
-  const hasHfp = lowerUuids.includes(HFP_UUID);
+  const HSP_UUID = "00001108-0000-1000-8000-00805f9b34fb";
+  const hasHfp = lowerUuids.includes(HFP_UUID) || lowerUuids.includes(HSP_UUID);
   const profileSelect = $("#setting-audio-profile");
   profileSelect.value = audioProfile || "a2dp";
   // Disable HFP option if device doesn't support it
