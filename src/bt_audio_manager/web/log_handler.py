@@ -34,7 +34,7 @@ class WebSocketLogHandler(logging.Handler):
                 "ts": record.created,
                 "level": record.levelname,
                 "logger": record.name,
-                "message": self.format(record),
+                "message": record.getMessage(),
             }
             self.recent_logs.append(entry)
             self._event_bus.emit("log_entry", entry)
