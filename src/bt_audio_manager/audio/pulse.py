@@ -358,8 +358,13 @@ class PulseAudioManager:
         card_name = "bluez_card." + address.replace(":", "_")
 
         if profile == "hfp":
-            # HFP/HSP: BlueZ uses "headset-head-unit", PipeWire may use "headset_head_unit"
-            candidates = ("headset-head-unit", "headset_head_unit")
+            # PA native HFP backend (HAOS default) uses "handsfree_head_unit";
+            # oFono backend uses "headset_head_unit"; PipeWire may use either
+            # with hyphens or underscores.
+            candidates = (
+                "handsfree_head_unit", "handsfree-head-unit",
+                "headset_head_unit", "headset-head-unit",
+            )
         else:
             # A2DP: PA uses "a2dp-sink", PipeWire may use "a2dp_sink"
             candidates = ("a2dp-sink", "a2dp_sink")
