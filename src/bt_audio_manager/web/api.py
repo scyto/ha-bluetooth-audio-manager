@@ -293,7 +293,8 @@ def create_api_routes(
 
             body = await request.json()
             allowed_keys = {
-                "keep_alive_enabled", "keep_alive_method",
+                "idle_mode", "keep_alive_method",
+                "power_save_delay", "auto_disconnect_minutes",
                 "mpd_enabled", "mpd_port", "mpd_hw_volume",
                 "avrcp_enabled",
             }
@@ -302,16 +303,29 @@ def create_api_routes(
                 return web.json_response(
                     {"error": "No valid settings provided"}, status=400
                 )
+            if "idle_mode" in settings:
+                valid_modes = ("default", "power_save", "keep_alive", "auto_disconnect")
+                if settings["idle_mode"] not in valid_modes:
+                    return web.json_response(
+                        {"error": f"idle_mode must be one of {valid_modes}"}, status=400
+                    )
             if "keep_alive_method" in settings:
                 if settings["keep_alive_method"] not in ("silence", "infrasound"):
                     return web.json_response(
                         {"error": "keep_alive_method must be 'silence' or 'infrasound'"},
                         status=400,
                     )
-            if "keep_alive_enabled" in settings:
-                if not isinstance(settings["keep_alive_enabled"], bool):
+            if "power_save_delay" in settings:
+                val = settings["power_save_delay"]
+                if not isinstance(val, int) or val < 0 or val > 300:
                     return web.json_response(
-                        {"error": "keep_alive_enabled must be a boolean"}, status=400
+                        {"error": "power_save_delay must be 0-300 seconds"}, status=400
+                    )
+            if "auto_disconnect_minutes" in settings:
+                val = settings["auto_disconnect_minutes"]
+                if not isinstance(val, int) or val < 5 or val > 60:
+                    return web.json_response(
+                        {"error": "auto_disconnect_minutes must be 5-60"}, status=400
                     )
             if "mpd_enabled" in settings:
                 if not isinstance(settings["mpd_enabled"], bool):

@@ -314,28 +314,52 @@
           <h6 id="device-settings-name" class="fw-semibold mb-1"></h6>
           <p id="device-settings-address" class="font-monospace small text-muted mb-3"></p>
 
-          <!-- Keep-Alive Toggle -->
+          <!-- When Idle -->
           <div class="mb-3">
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="setting-keep-alive-enabled">
-              <label class="form-check-label" for="setting-keep-alive-enabled">
-                <strong>Keep-Alive</strong>
-              </label>
-            </div>
-            <div class="form-text">
-              Stream inaudible audio to prevent the speaker from auto-shutting down during silence.
+            <label for="setting-idle-mode" class="form-label"><strong>When Idle</strong></label>
+            <select class="form-select" id="setting-idle-mode" onchange="toggleIdleModeOptions()">
+              <option value="default">Default (do nothing)</option>
+              <option value="power_save">Power Save (let speaker sleep)</option>
+              <option value="keep_alive">Stay Awake (stream silence)</option>
+              <option value="auto_disconnect">Auto-Disconnect</option>
+            </select>
+            <div class="form-text" id="idle-mode-help"></div>
+          </div>
+
+          <!-- Power Save options (shown when power_save selected) -->
+          <div id="power-save-options" style="display:none;">
+            <div class="mb-3">
+              <label for="setting-power-save-delay" class="form-label">Delay before suspending</label>
+              <select class="form-select" id="setting-power-save-delay">
+                <option value="0">Immediately</option>
+                <option value="30">30 seconds</option>
+                <option value="60">1 minute</option>
+                <option value="300">5 minutes</option>
+              </select>
             </div>
           </div>
 
-          <!-- Keep-Alive Method -->
-          <div class="mb-3" id="keep-alive-method-group">
-            <label for="setting-keep-alive-method" class="form-label">Keep-Alive Method</label>
-            <select class="form-select" id="setting-keep-alive-method">
-              <option value="infrasound">Infrasound (2 Hz tone &mdash; recommended)</option>
-              <option value="silence">Silence (PCM zeros)</option>
-            </select>
-            <div class="form-text">
-              Infrasound is recommended for speakers that detect digital silence.
+          <!-- Keep-Alive options (shown when keep_alive selected) -->
+          <div id="keep-alive-options" style="display:none;">
+            <div class="mb-3">
+              <label for="setting-keep-alive-method" class="form-label">Method</label>
+              <select class="form-select" id="setting-keep-alive-method">
+                <option value="infrasound">Infrasound (2 Hz tone &mdash; recommended)</option>
+                <option value="silence">Silence (PCM zeros)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Auto-Disconnect options (shown when auto_disconnect selected) -->
+          <div id="auto-disconnect-options" style="display:none;">
+            <div class="mb-3">
+              <label for="setting-auto-disconnect-minutes" class="form-label">Disconnect after</label>
+              <select class="form-select" id="setting-auto-disconnect-minutes">
+                <option value="5">5 minutes</option>
+                <option value="15">15 minutes</option>
+                <option value="30">30 minutes</option>
+                <option value="60">1 hour</option>
+              </select>
             </div>
           </div>
 
