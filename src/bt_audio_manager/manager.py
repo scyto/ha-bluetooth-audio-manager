@@ -79,6 +79,7 @@ class BluetoothAudioManager:
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
         self._a2dp_attempts: dict[str, int] = {}  # addr → consecutive A2DP activation failures
+        self._null_hfp_registered: bool = False  # tracks null HFP handler state
         # Ring buffers so WebSocket clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
@@ -297,14 +298,19 @@ class BluetoothAudioManager:
             logger.warning("AVRCP media player registration failed: %s", e)
             self.media_player = None
 
-        # 3c. Register null HFP handler to prevent HFP from being established
-        #     Speakers like Bose send volume buttons as HFP AT+VGS commands
-        #     instead of AVRCP.  Blocking HFP forces AVRCP volume.
-        await self._register_null_hfp_handler()
-
         # 4. Load persistent device store
         self.store = PersistenceStore()
         await self.store.load()
+
+        # 3c. Register null HFP handler to prevent HFP from being established
+        #     Speakers like Bose send volume buttons as HFP AT+VGS commands
+        #     instead of AVRCP.  Blocking HFP forces AVRCP volume.
+        #     Skipped when any device uses HFP audio profile (it would block
+        #     legitimate HFP connections).
+        if self._has_hfp_profile_devices():
+            logger.info("HFP audio profile device(s) found — skipping null HFP handler")
+        else:
+            await self._register_null_hfp_handler()
 
         # 5. Initialize PulseAudio manager
         pulse_server = os.environ.get("PULSE_SERVER", "<unset>")
@@ -332,7 +338,8 @@ class BluetoothAudioManager:
                     self._last_signaled_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
                     # Disconnect any pre-existing HFP (null handler blocks new ones)
-                    await self._disconnect_hfp(addr)
+                    if self._should_disconnect_hfp(addr):
+                        await self._disconnect_hfp(addr)
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
 
@@ -414,7 +421,8 @@ class BluetoothAudioManager:
                 try:
                     device = await self._get_or_create_device(addr)
                     self._device_connect_time[addr] = time.time()
-                    await self._disconnect_hfp(addr)
+                    if self._should_disconnect_hfp(addr):
+                        await self._disconnect_hfp(addr)
                 except Exception as e:
                     logger.debug("Could not initialize unmanaged device %s: %s", addr, e)
         except Exception as e:
@@ -766,22 +774,27 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("AVRCP watch failed for %s: %s", address, e)
 
-            # Verify PulseAudio sink appeared
+            # Activate the selected audio profile and verify sink appeared
+            audio_profile = self._get_audio_profile(address)
             if self.pulse:
-                self._broadcast_status(f"Waiting for A2DP sink for {address}...")
+                profile_label = "HFP" if audio_profile == "hfp" else "A2DP"
+                self._broadcast_status(f"Waiting for {profile_label} sink for {address}...")
+                # Set the PA card to the desired profile
+                await self.pulse.activate_bt_card_profile(address, profile=audio_profile)
                 sink_name = await self.pulse.wait_for_bt_sink(
                     address, timeout=15, connected_check=device.is_connected
                 )
                 if sink_name:
-                    # Disconnect HFP only AFTER A2DP is up — doing it earlier
+                    # Disconnect HFP only for A2DP devices — doing it earlier
                     # can cause the speaker to drop the entire connection when
                     # HFP is the only active profile.
-                    await self._disconnect_hfp(address)
+                    if self._should_disconnect_hfp(address):
+                        await self._disconnect_hfp(address)
                     await self._apply_idle_mode(address)
                     await self._start_mpd_if_enabled(address)
                     await self._broadcast_all()
                     return True
-                logger.warning("A2DP sink for %s did not appear in PulseAudio", address)
+                logger.warning("%s sink for %s did not appear in PulseAudio", profile_label, address)
                 await self._broadcast_all()
                 return False
 
@@ -1342,7 +1355,8 @@ class BluetoothAudioManager:
             logger.debug("Cannot access reconnected device %s: %s", address, e)
 
         # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
-        await self._disconnect_hfp(address)
+        if self._should_disconnect_hfp(address):
+            await self._disconnect_hfp(address)
 
         # Check/activate A2DP transport (may need ConnectProfile)
         await self._ensure_a2dp_transport(address)
@@ -1675,14 +1689,32 @@ class BluetoothAudioManager:
                     "Role": Variant("s", "client"),
                 },
             )
+            self._null_hfp_registered = True
             logger.info("Null HFP profile handler registered — HFP connections will be rejected")
         except DBusError as e:
             if "AlreadyExists" in str(e):
+                self._null_hfp_registered = True
                 logger.info("Null HFP profile already registered")
             else:
                 logger.warning("Failed to register null HFP handler: %s (HFP may still work)", e)
         except Exception as e:
             logger.warning("Unexpected error registering null HFP handler: %s", e)
+
+    async def _unregister_null_hfp_handler(self) -> None:
+        """Unregister the null HFP handler so real HFP connections can proceed."""
+        if not self._null_hfp_registered:
+            return
+        from .bluez.constants import BLUEZ_SERVICE
+        profile_path = "/org/ha/bluetooth_audio/null_hfp"
+        try:
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/org/bluez")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/org/bluez", intro)
+            profile_mgr = proxy.get_interface("org.bluez.ProfileManager1")
+            await profile_mgr.call_unregister_profile(profile_path)
+            self._null_hfp_registered = False
+            logger.info("Null HFP handler unregistered — HFP connections now allowed")
+        except Exception as e:
+            logger.debug("Could not unregister null HFP handler: %s", e)
 
     async def _disconnect_hfp(self, address: str) -> bool:
         """Disconnect HFP profile so the speaker uses AVRCP for volume control.
@@ -1857,6 +1889,27 @@ class BluetoothAudioManager:
             return True  # unknown device — default to enabled
         settings = self.store.get_device_settings(address)
         return settings.get("avrcp_enabled", True)
+
+    def _get_audio_profile(self, address: str) -> str:
+        """Get the audio profile setting for a device ('a2dp' or 'hfp')."""
+        if not address:
+            return "a2dp"
+        settings = self.store.get_device_settings(address)
+        return settings.get("audio_profile", "a2dp")
+
+    def _should_disconnect_hfp(self, address: str) -> bool:
+        """Check if HFP should be disconnected for this device (A2DP mode only)."""
+        return self._get_audio_profile(address) != "hfp"
+
+    def _has_hfp_profile_devices(self) -> bool:
+        """Check if any stored device uses the HFP audio profile."""
+        if not self.store:
+            return False
+        for d in self.store.devices:
+            settings = self.store.get_device_settings(d["address"])
+            if settings.get("audio_profile") == "hfp":
+                return True
+        return False
 
     def _on_pa_sink_running(self, sink_name: str) -> None:
         """Handle BT sink transition to 'running' — audio is actively flowing.
@@ -2219,6 +2272,11 @@ class BluetoothAudioManager:
         device_info = await self.store.update_device_settings(address, settings)
         if device_info is None:
             return None
+
+        # React to audio profile changes — unregister null HFP handler if needed
+        if "audio_profile" in settings:
+            if settings["audio_profile"] == "hfp" and self._null_hfp_registered:
+                await self._unregister_null_hfp_handler()
 
         # React to idle mode changes if device is connected
         idle_keys = {"idle_mode", "keep_alive_method", "power_save_delay", "auto_disconnect_minutes"}

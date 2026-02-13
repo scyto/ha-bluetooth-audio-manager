@@ -314,6 +314,18 @@
           <h6 id="device-settings-name" class="fw-semibold mb-1"></h6>
           <p id="device-settings-address" class="font-monospace small text-muted mb-3"></p>
 
+          <!-- Audio Profile -->
+          <div class="mb-3">
+            <label for="setting-audio-profile" class="form-label"><strong>Audio Profile</strong></label>
+            <select class="form-select" id="setting-audio-profile">
+              <option value="a2dp">A2DP (stereo music)</option>
+              <option value="hfp">HFP (mono + microphone)</option>
+            </select>
+            <div class="form-text" id="audio-profile-help"></div>
+          </div>
+
+          <hr class="my-3">
+
           <!-- When Idle -->
           <div class="mb-3">
             <label for="setting-idle-mode" class="form-label"><strong>When Idle</strong></label>

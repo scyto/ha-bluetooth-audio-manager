@@ -293,6 +293,7 @@ def create_api_routes(
 
             body = await request.json()
             allowed_keys = {
+                "audio_profile",
                 "idle_mode", "keep_alive_method",
                 "power_save_delay", "auto_disconnect_minutes",
                 "mpd_enabled", "mpd_port", "mpd_hw_volume",
@@ -303,6 +304,11 @@ def create_api_routes(
                 return web.json_response(
                     {"error": "No valid settings provided"}, status=400
                 )
+            if "audio_profile" in settings:
+                if settings["audio_profile"] not in ("a2dp", "hfp"):
+                    return web.json_response(
+                        {"error": "audio_profile must be 'a2dp' or 'hfp'"}, status=400
+                    )
             if "idle_mode" in settings:
                 valid_modes = ("default", "power_save", "keep_alive", "auto_disconnect")
                 if settings["idle_mode"] not in valid_modes:
