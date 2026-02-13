@@ -337,8 +337,13 @@ class BluetoothAudioManager:
                     logger.info("Device %s already connected at startup", addr)
                     self._last_signaled_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
-                    # Disconnect any pre-existing HFP (null handler blocks new ones)
-                    if self._should_disconnect_hfp(addr):
+                    audio_profile = self._get_audio_profile(addr)
+                    if audio_profile == "hfp":
+                        # Activate HFP PA card profile (PA defaults to a2dp
+                        # after reboot even if device was using HFP before)
+                        if self.pulse:
+                            await self.pulse.activate_bt_card_profile(addr, profile="hfp")
+                    elif self._should_disconnect_hfp(addr):
                         await self._disconnect_hfp(addr)
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
