@@ -1861,6 +1861,7 @@ class BluetoothAudioManager:
         if self.media_player:
             if self._is_avrcp_enabled(addr):
                 self.media_player.set_playback_status("Playing")
+                logger.info("Sink running for %s — set PlaybackStatus=Playing", addr)
             else:
                 logger.info("AVRCP disabled for %s — skipping PlaybackStatus=Playing on sink running", addr)
 
@@ -1876,6 +1877,8 @@ class BluetoothAudioManager:
             if self._is_avrcp_enabled(addr):
                 self.media_player.set_playback_status("Stopped")
                 logger.info("Sink idle for %s — set PlaybackStatus=Stopped", addr)
+            else:
+                logger.info("AVRCP disabled for %s — skipping PlaybackStatus=Stopped on sink idle", addr)
         # Apply idle mode behaviour
         if addr and self.store:
             settings = self.store.get_device_settings(addr)
