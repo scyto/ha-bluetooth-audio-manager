@@ -1120,13 +1120,15 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     console.log("[WS] Connected");
-    wsReconnectDelay = 1000;
+    // Don't reset backoff here — wait for first successful message
+    // (server may disconnect immediately if PA is unavailable)
     hideReconnectBanner();
     hideBanner(); // Clear any pending operation banner (e.g. adapter restart)
     setConnectionStatus("connected");
   };
 
   ws.onmessage = (e) => {
+    wsReconnectDelay = 1000; // Reset backoff on successful data
     const msg = JSON.parse(e.data);
     switch (msg.type) {
       case "devices_changed":
