@@ -992,7 +992,7 @@ function openDeviceSettings(address, name, idleMode, kaMethod, powerSaveDelay, a
   avrcpToggle.checked = hasAvrcp ? (avrcpEnabled ?? true) : false;
   avrcpToggle.disabled = !hasAvrcp;
   if (hasAvrcp) {
-    avrcpHelp.textContent = "Track playback state and accept media-button commands from the speaker. Disable if the speaker won't enter power-save when idle.";
+    avrcpHelp.textContent = "Track playback state and accept media-button commands from the speaker. Media buttons may or may not work reliably depending on hardware.";
   } else {
     avrcpHelp.textContent = "Device does not support AVRCP media buttons.";
   }
@@ -1007,8 +1007,8 @@ function toggleIdleModeOptions() {
   $("#keep-alive-options").style.display = mode === "keep_alive" ? "" : "none";
   $("#auto-disconnect-options").style.display = mode === "auto_disconnect" ? "" : "none";
   const helpTexts = {
-    default: "Sink stays idle with transport held open. Speaker uses its own sleep timer.",
-    power_save: "Suspends the audio sink to release the A2DP transport, letting the speaker enter power-save.",
+    default: "No action taken when audio stops. Whether the speaker sleeps depends on its own hardware idle timer.",
+    power_save: "Suspends the audio sink after the delay to release the A2DP transport. The speaker's own internal sleep timer determines when it actually powers down.",
     keep_alive: "Streams inaudible audio to prevent the speaker from auto-shutting down during silence.",
     auto_disconnect: "Fully disconnects the Bluetooth device after the specified idle timeout.",
   };
