@@ -268,7 +268,56 @@ function profileLabels(uuids) {
   const labels = uuids
     .map((u) => BT_PROFILES[u.toLowerCase()])
     .filter(Boolean);
-  return labels.length > 0 ? labels.join(", ") : "";
+  return labels.length > 0 ? "Supports: " + labels.join(" \u00b7 ") : "";
+}
+
+function buildCapBadges(device) {
+  if (!device.connected) return "";
+  const badges = [];
+  // Bearer type (BR/EDR, LE)
+  if (device.bearers) {
+    for (const b of device.bearers) {
+      badges.push(`<span class="cap-badge bg-secondary" title="${b === "BR/EDR" ? "Classic Bluetooth" : "Bluetooth Low Energy"}">${escapeHtml(b)}</span>`);
+    }
+  }
+  // A2DP transport active
+  if (device.has_transport) {
+    badges.push('<span class="cap-badge bg-success" title="Audio streaming active">A2DP</span>');
+  }
+  // AVRCP (check UUIDs for controller/target)
+  const uuids = (device.uuids || []).map((u) => u.toLowerCase());
+  const hasAvrcp = uuids.some((u) => u.startsWith("0000110c") || u.startsWith("0000110e"));
+  if (hasAvrcp) {
+    if (device.avrcp_enabled !== false) {
+      badges.push('<span class="cap-badge bg-success" title="Media buttons enabled">AVRCP \u2713</span>');
+    } else {
+      badges.push('<span class="cap-badge bg-warning text-dark" title="Media buttons disabled">AVRCP \u2717</span>');
+    }
+  }
+  // HFP
+  const hasHfp = uuids.some((u) => u.startsWith("0000111e"));
+  if (hasHfp) {
+    badges.push('<span class="cap-badge bg-info" title="Hands-Free Profile">HFP</span>');
+  }
+  return badges.length > 0
+    ? `<div class="d-flex flex-wrap gap-1 mb-1">${badges.join("")}</div>`
+    : "";
+}
+
+function buildFeatureBadges(device) {
+  const badges = [];
+  const im = device.idle_mode || "default";
+  if (im === "power_save") {
+    badges.push('<span class="feature-badge border-info text-info"><i class="fas fa-moon me-1"></i>Power Save</span>');
+  } else if (im === "keep_alive" && device.keep_alive_active) {
+    badges.push('<span class="feature-badge border-danger text-danger"><i class="fas fa-heartbeat me-1"></i>Stay Awake</span>');
+  } else if (im === "auto_disconnect") {
+    badges.push('<span class="feature-badge border-warning text-warning"><i class="fas fa-plug me-1"></i>Auto-Disconnect</span>');
+  }
+  if (device.mpd_enabled) {
+    badges.push(`<span class="feature-badge border-primary text-primary"><i class="fas fa-music me-1"></i>MPD :${device.mpd_port || "?"}</span>`);
+  }
+  return badges.join("");
 }
 
 // ============================================
@@ -347,8 +396,6 @@ function renderDevices(devices) {
 
       // Kebab dropdown for paired/stored devices (Settings + Forget)
       const idleMode = (d.stored || d.paired) ? (d.idle_mode || "default") : "default";
-      const keepAliveActive = (d.stored || d.paired) && d.keep_alive_active;
-      const mpdActive = (d.stored || d.paired) && d.mpd_enabled;
       let kebab = "";
       if (d.stored || d.paired) {
         const kaMethod = d.keep_alive_method || "infrasound";
@@ -385,15 +432,6 @@ function renderDevices(devices) {
       const rssiDisplay = d.rssi ? ` (${d.rssi} dBm)` : "";
       const profiles = profileLabels(d.uuids);
 
-      // Connection detail: bearer type + transport
-      let connDetail = "";
-      if (d.connected) {
-        const parts = [];
-        if (d.bearers && d.bearers.length > 0) parts.push(d.bearers.join(" + "));
-        if (d.has_transport) parts.push("A2DP");
-        if (parts.length > 0) connDetail = parts.join(" / ");
-      }
-
       // Merge sink info for connected devices
       let sinkInfo = "";
       if (d.connected) {
@@ -426,19 +464,16 @@ function renderDevices(devices) {
               <div class="d-flex justify-content-between align-items-start mb-2">
                 <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
                 <div class="d-flex align-items-center gap-1">
-                  ${idleMode === "keep_alive" && keepAliveActive ? '<i class="fas fa-heartbeat text-danger" title="Stay Awake active"></i>' : ""}
-                  ${idleMode === "power_save" ? '<i class="fas fa-moon text-info" title="Power Save"></i>' : ""}
-                  ${idleMode === "auto_disconnect" ? '<i class="fas fa-plug text-warning" title="Auto-Disconnect"></i>' : ""}
-                  ${mpdActive ? `<i class="fas fa-music text-primary" title="MPD: port ${d.mpd_port || '?'}"></i>` : ""}
                   <span class="badge ${badgeClass}">${statusText}</span>
                   ${kebab}
                 </div>
               </div>
-              ${connDetail ? `<div class="small text-muted mb-1">${escapeHtml(connDetail)}</div>` : ""}
+              ${buildCapBadges(d)}
               <div class="font-monospace small text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
-              ${profiles ? `<div class="small mt-1" style="color: var(--accent-primary)">${escapeHtml(profiles)}</div>` : ""}
+              ${profiles ? `<div class="small mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
               ${sinkInfo}
               <div class="device-actions d-flex gap-2 flex-wrap">
+                ${buildFeatureBadges(d)}
                 ${actions}
               </div>
             </div>
