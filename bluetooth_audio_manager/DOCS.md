@@ -16,6 +16,7 @@ media playback, and automations.
 - Pair and connect with one click from the web UI
 - Auto-reconnect when devices disconnect or after reboots
 - Optional keep-alive audio to prevent speaker auto-shutdown
+- Per-device MPD instances for HA media_player integration and volume control
 - Custom AppArmor security profile (principle of least privilege)
 
 ## Coexistence with Home Assistant Bluetooth
@@ -53,6 +54,28 @@ Two methods are available:
   from entering standby.
 - **silence**: Streams PCM zeros. Lower CPU usage but some speakers still
   detect this as silence and shut down.
+
+### Per-device MPD (Music Player Daemon)
+
+Each connected speaker can optionally run its own MPD instance, exposing it as
+a `media_player` entity in Home Assistant. This lets you use HA automations
+(TTS, media playback, `media_player.volume_set`, etc.) to control the speaker.
+
+Enable MPD per-device in the web UI: open the device's menu (three-dot icon),
+select **Settings**, and toggle **Enable MPD**. A TCP port from the 6600–6609
+pool is assigned automatically (or you can pick one manually).
+
+**Hardware Volume** (1–100%, default 100%) controls the speaker's volume level
+when MPD starts. MPD's software volume then acts as the single volume knob — so
+`media_player.volume_set 0.5` in an automation means 50% perceived loudness.
+
+| Scenario | Behavior |
+| ---------- | ---------- |
+| **MPD starts, no audio playing** | Speaker hardware set to configured %, MPD becomes the single volume knob |
+| **MPD starts, audio already playing** | Hardware left alone, MPD synced to current hardware level |
+| **Speaker button press** | Hardware volume change is synced to MPD → HA entity updates |
+| **HA automation** `media_player.volume_set` | MPD software volume changes → effective output = that % |
+| **TTS with volume preset** | Automation sets volume then speaks → plays at that level |
 
 ## Usage
 
