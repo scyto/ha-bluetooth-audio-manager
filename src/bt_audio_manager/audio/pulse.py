@@ -404,8 +404,8 @@ class PulseAudioManager:
                     return True
                 except Exception as exc:
                     logger.warning(
-                        "card_profile_set %s %s failed: %s",
-                        card_name, pa_profile, exc,
+                        "card_profile_set %s %s failed: %s: %s",
+                        card_name, pa_profile, type(exc).__name__, exc or "(no detail)",
                     )
                     break  # correct profile found, activation failed
 
