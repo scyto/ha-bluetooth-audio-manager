@@ -337,8 +337,13 @@ class BluetoothAudioManager:
                     logger.info("Device %s already connected at startup", addr)
                     self._last_signaled_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
-                    # Disconnect any pre-existing HFP (null handler blocks new ones)
-                    if self._should_disconnect_hfp(addr):
+                    audio_profile = self._get_audio_profile(addr)
+                    if audio_profile == "hfp":
+                        # Activate HFP PA card profile (PA defaults to a2dp
+                        # after reboot even if device was using HFP before)
+                        if self.pulse:
+                            await self.pulse.activate_bt_card_profile(addr, profile="hfp")
+                    elif self._should_disconnect_hfp(addr):
                         await self._disconnect_hfp(addr)
             except DBusError as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
@@ -780,10 +785,41 @@ class BluetoothAudioManager:
                 profile_label = "HFP" if audio_profile == "hfp" else "A2DP"
                 self._broadcast_status(f"Waiting for {profile_label} sink for {address}...")
                 # Set the PA card to the desired profile
-                await self.pulse.activate_bt_card_profile(address, profile=audio_profile)
-                sink_name = await self.pulse.wait_for_bt_sink(
-                    address, timeout=15, connected_check=device.is_connected
-                )
+                activated = await self.pulse.activate_bt_card_profile(address, profile=audio_profile)
+
+                # HFP fallback: if PA card doesn't have headset-head-unit,
+                # explicitly ask BlueZ to connect the HFP profile and retry.
+                if not activated and audio_profile == "hfp":
+                    from .bluez.constants import HFP_UUID
+                    logger.info("HFP PA profile not available — trying ConnectProfile(HFP)...")
+                    self._broadcast_status(f"Connecting HFP profile for {address}...")
+                    try:
+                        await device.connect_profile(HFP_UUID)
+                        await asyncio.sleep(3)
+                        activated = await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                    except Exception as e:
+                        logger.warning("ConnectProfile(HFP) failed for %s: %s", address, e)
+
+                    if not activated:
+                        # Last resort: reload PA bluetooth module and retry
+                        logger.info("HFP still not available — reloading PA bluetooth module...")
+                        self._broadcast_status(f"Reloading audio subsystem for {address}...")
+                        await self._reload_pa_bluetooth_module()
+                        # Reconnect the device (module reload drops BT cards)
+                        try:
+                            await device.connect()
+                            await device.wait_for_services(timeout=10)
+                            await asyncio.sleep(2)
+                            activated = await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                        except Exception as e:
+                            logger.warning("Reconnect after PA reload failed for %s: %s", address, e)
+
+                sink_name = None
+                if activated:
+                    self._broadcast_status(f"Waiting for {profile_label} sink for {address}...")
+                    sink_name = await self.pulse.wait_for_bt_sink(
+                        address, timeout=15, connected_check=device.is_connected
+                    )
                 if sink_name:
                     # Disconnect HFP only for A2DP devices — doing it earlier
                     # can cause the speaker to drop the entire connection when
@@ -1358,8 +1394,20 @@ class BluetoothAudioManager:
         if self._should_disconnect_hfp(address):
             await self._disconnect_hfp(address)
 
-        # Check/activate A2DP transport (may need ConnectProfile)
-        await self._ensure_a2dp_transport(address)
+        audio_profile = self._get_audio_profile(address)
+        if audio_profile == "hfp":
+            # For HFP devices: activate headset-head-unit PA profile and
+            # apply idle mode / MPD (the auto-reconnect signal handler
+            # doesn't go through connect_device's setup path).
+            if self.pulse:
+                await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                sink_name = await self.pulse.get_sink_for_address(address)
+                if sink_name:
+                    await self._apply_idle_mode(address)
+                    await self._start_mpd_if_enabled(address)
+        else:
+            # Check/activate A2DP transport (may need ConnectProfile)
+            await self._ensure_a2dp_transport(address)
 
     async def _log_transport_properties(self, address: str) -> bool:
         """Enumerate BlueZ objects to find and log MediaTransport1 for a device.
@@ -1701,7 +1749,11 @@ class BluetoothAudioManager:
             logger.warning("Unexpected error registering null HFP handler: %s", e)
 
     async def _unregister_null_hfp_handler(self) -> None:
-        """Unregister the null HFP handler so real HFP connections can proceed."""
+        """Unregister the null HFP handler so real HFP connections can proceed.
+
+        Also reloads PulseAudio's Bluetooth module so it re-registers its
+        own HFP/HSP profile handler (our null handler displaced it).
+        """
         if not self._null_hfp_registered:
             return
         from .bluez.constants import BLUEZ_SERVICE
@@ -1715,6 +1767,68 @@ class BluetoothAudioManager:
             logger.info("Null HFP handler unregistered — HFP connections now allowed")
         except Exception as e:
             logger.debug("Could not unregister null HFP handler: %s", e)
+
+        # Reload PA's Bluetooth module so it re-registers its HFP handler
+        await self._reload_pa_bluetooth_module()
+
+    async def _reload_pa_bluetooth_module(self) -> None:
+        """Reload PulseAudio's module-bluez5-discover to restore HFP/HSP handling.
+
+        Our null HFP handler displaced PulseAudio's native HFP profile
+        registration.  Unregistering ours doesn't restore PA's — the only
+        way is to unload/reload the module so PA re-registers with BlueZ.
+
+        Side-effect: all Bluetooth PA cards/sinks are briefly destroyed
+        and recreated.  Active audio on other BT devices will glitch for
+        ~2 seconds.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "list", "modules", "short",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            module_index = None
+            for line in stdout.decode().splitlines():
+                if "module-bluez5-discover" in line:
+                    module_index = line.split()[0]
+                    break
+
+            if not module_index:
+                logger.warning("module-bluez5-discover not found — cannot restore PA HFP handler")
+                return
+
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "unload-module", module_index,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            logger.info("Unloaded module-bluez5-discover (index %s)", module_index)
+
+            await asyncio.sleep(1)
+
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "load-module", "module-bluez5-discover",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                logger.info("Reloaded module-bluez5-discover — PA HFP/HSP handler restored")
+            else:
+                logger.warning(
+                    "Failed to reload module-bluez5-discover: %s",
+                    stderr.decode(errors="replace").strip(),
+                )
+
+            # Give PA time to re-register handlers and re-discover devices
+            await asyncio.sleep(2)
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning("pactl not available for module reload: %s", exc)
+        except Exception as e:
+            logger.warning("PA Bluetooth module reload failed: %s", e)
 
     async def _disconnect_hfp(self, address: str) -> bool:
         """Disconnect HFP profile so the speaker uses AVRCP for volume control.

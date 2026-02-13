@@ -281,27 +281,32 @@ function buildCapBadges(device) {
       badges.push(`<span class="cap-badge bg-secondary" title="${b === "BR/EDR" ? "Classic Bluetooth" : "Bluetooth Low Energy"}">${escapeHtml(b)}</span>`);
     }
   }
-  // A2DP transport active
-  if (device.has_transport) {
-    badges.push('<span class="cap-badge bg-success" title="Audio streaming active">A2DP</span>');
-  }
-  // AVRCP (check UUIDs for controller/target)
+  // Audio profile badges — show selected profile with checkmark
   const uuids = (device.uuids || []).map((u) => u.toLowerCase());
+  const activeProfile = device.audio_profile || "a2dp";
+  const hasA2dpSink = uuids.some((u) => u.startsWith("0000110b"));
+  const hasHfpHsp = uuids.some((u) => u.startsWith("0000111e") || u.startsWith("00001108"));
+  if (hasA2dpSink) {
+    if (activeProfile === "a2dp") {
+      badges.push('<span class="cap-badge bg-success" title="A2DP stereo audio (active)">A2DP \u2713</span>');
+    } else {
+      badges.push('<span class="cap-badge bg-info" title="A2DP stereo audio available">A2DP</span>');
+    }
+  }
+  if (hasHfpHsp) {
+    if (activeProfile === "hfp") {
+      badges.push('<span class="cap-badge bg-success" title="HFP/HSP mono + mic (active)">HFP \u2713</span>');
+    } else {
+      badges.push('<span class="cap-badge bg-info" title="Hands-Free / Headset Profile available">HFP</span>');
+    }
+  }
+  // AVRCP
   const hasAvrcp = uuids.some((u) => u.startsWith("0000110c") || u.startsWith("0000110e"));
   if (hasAvrcp) {
     if (device.avrcp_enabled !== false) {
       badges.push('<span class="cap-badge bg-success" title="Media buttons enabled">AVRCP \u2713</span>');
     } else {
       badges.push('<span class="cap-badge bg-warning text-dark" title="Media buttons disabled">AVRCP \u2717</span>');
-    }
-  }
-  // HFP / HSP
-  const hasHfpHsp = uuids.some((u) => u.startsWith("0000111e") || u.startsWith("00001108"));
-  if (hasHfpHsp) {
-    if (device.audio_profile === "hfp") {
-      badges.push('<span class="cap-badge bg-success" title="HFP/HSP audio profile active (mono + mic)">HFP \u2713</span>');
-    } else {
-      badges.push('<span class="cap-badge bg-info" title="Hands-Free / Headset Profile available">HFP</span>');
     }
   }
   return badges.length > 0
@@ -395,6 +400,9 @@ function renderDevices(devices) {
         actions = `
           <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${d.address}')">
             <i class="fas fa-handshake me-1"></i>Pair
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="dismissDevice('${d.address}')" title="Dismiss">
+            <i class="fas fa-times"></i>
           </button>
         `;
       }
@@ -858,6 +866,14 @@ async function forceReconnectDevice(address) {
     await apiPost("/api/force-reconnect", { address });
   } catch (e) {
     showToast(`Force reconnect failed: ${e.message}`, "error");
+  }
+}
+
+async function dismissDevice(address) {
+  try {
+    await apiPost("/api/forget", { address });
+  } catch (e) {
+    showToast(`Dismiss failed: ${e.message}`, "error");
   }
 }
 

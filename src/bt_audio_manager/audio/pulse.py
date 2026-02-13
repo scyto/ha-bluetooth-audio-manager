@@ -262,10 +262,10 @@ class PulseAudioManager:
         timeout: float = 15.0,
         connected_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> str | None:
-        """Wait for PulseAudio to register the A2DP sink for a given address.
+        """Wait for PulseAudio to register a Bluetooth sink for a given address.
 
-        PulseAudio sink names use the MAC with underscores:
-            bluez_sink.XX_XX_XX_XX_XX_XX.a2dp_sink
+        Matches both A2DP (``bluez_sink.XX.a2dp_sink``) and HFP
+        (``bluez_sink.XX.headset_head_unit``) sinks.
 
         If *connected_check* is provided, it is awaited each iteration to
         bail out early when the device disconnects mid-wait.
@@ -278,17 +278,17 @@ class PulseAudioManager:
             sinks = await self._pulse.sink_list()
             for sink in sinks:
                 if expected_pattern in sink.name:
-                    logger.info("A2DP sink ready: %s", sink.name)
+                    logger.info("BT sink ready: %s", sink.name)
                     return sink.name
             if connected_check and not await connected_check():
                 logger.warning(
-                    "Device %s disconnected while waiting for A2DP sink", address
+                    "Device %s disconnected while waiting for BT sink", address
                 )
                 return None
             await asyncio.sleep(1.0)
 
         logger.warning(
-            "A2DP sink for %s did not appear within %ss", address, timeout
+            "BT sink for %s did not appear within %ss", address, timeout
         )
         return None
 
@@ -335,28 +335,39 @@ class PulseAudioManager:
                     card_name, pa_profile, stderr.decode(errors="replace").strip(),
                 )
 
-            # Profile might already be set — cycle off → target to force recreation
-            logger.info("Cycling PA card profile for %s (off -> %s)...", card_name, profile)
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "set-card-profile", card_name, "off",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.communicate()
-            await asyncio.sleep(1)
-
-            for pa_profile in candidates:
+            if profile == "hfp":
+                # For HFP: cycling to "off" destroys the card and the
+                # headset-head-unit profile won't come back (PA needs its
+                # HFP handler registered with BlueZ).  Fail fast so the
+                # caller can retry after ensuring HFP is connected.
+                logger.warning(
+                    "PA card %s has no HFP profile — PulseAudio's HFP handler "
+                    "may not be registered with BlueZ",
+                    card_name,
+                )
+            else:
+                # A2DP: cycle off → target to force recreation
+                logger.info("Cycling PA card profile for %s (off -> %s)...", card_name, profile)
                 proc = await asyncio.create_subprocess_exec(
-                    "pactl", "set-card-profile", card_name, pa_profile,
+                    "pactl", "set-card-profile", card_name, "off",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                _, stderr = await proc.communicate()
-                if proc.returncode == 0:
-                    logger.info("PA card profile cycled: %s -> %s", card_name, pa_profile)
-                    return True
+                await proc.communicate()
+                await asyncio.sleep(1)
 
-            logger.warning("PA card %s not found or profile activation failed", card_name)
+                for pa_profile in candidates:
+                    proc = await asyncio.create_subprocess_exec(
+                        "pactl", "set-card-profile", card_name, pa_profile,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    _, stderr = await proc.communicate()
+                    if proc.returncode == 0:
+                        logger.info("PA card profile cycled: %s -> %s", card_name, pa_profile)
+                        return True
+
+                logger.warning("PA card %s not found or profile activation failed", card_name)
             return False
         except (FileNotFoundError, OSError) as exc:
             logger.warning("pactl not available: %s", exc)

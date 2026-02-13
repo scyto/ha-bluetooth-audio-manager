@@ -10,9 +10,7 @@ from dbus_next.errors import DBusError
 
 from .constants import (
     A2DP_SINK_UUID,
-    A2DP_SOURCE_UUID,
     ADAPTER_INTERFACE,
-    AUDIO_UUIDS,
     BLUEZ_SERVICE,
     DEFAULT_ADAPTER_PATH,
     DEVICE_INTERFACE,
@@ -20,6 +18,7 @@ from .constants import (
     HSP_UUID,
     OBJECT_MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
+    SINK_UUIDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,7 +76,7 @@ class BluezAdapter:
         """
         await self._adapter_iface.call_set_discovery_filter(
             {
-                "UUIDs": Variant("as", [A2DP_SINK_UUID, A2DP_SOURCE_UUID, HFP_UUID, HSP_UUID]),
+                "UUIDs": Variant("as", [A2DP_SINK_UUID, HFP_UUID, HSP_UUID]),
                 "Transport": Variant("s", "bredr"),
             }
         )
@@ -103,10 +102,12 @@ class BluezAdapter:
         logger.info("A2DP device discovery stopped")
 
     async def get_audio_devices(self) -> list[dict]:
-        """Enumerate discovered devices that have audio UUIDs.
+        """Enumerate discovered devices that can receive/play audio.
 
         Uses ObjectManager to list all /org/bluez/hci0/dev_* objects
-        and filters for those with A2DP capabilities.
+        and filters for those with a sink-capable profile (A2DP Sink,
+        HFP, or HSP).  Devices that only advertise A2DP Source (e.g.
+        phones) are excluded since this add-on manages speakers.
         """
         introspection = await self._bus.introspect(BLUEZ_SERVICE, "/")
         proxy = self._bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
@@ -122,7 +123,7 @@ class BluezAdapter:
             uuids_variant = props.get("UUIDs")
             uuids = set(uuids_variant.value) if uuids_variant else set()
 
-            if not uuids.intersection(AUDIO_UUIDS):
+            if not uuids.intersection(SINK_UUIDS):
                 continue
 
             address_variant = props.get("Address")
