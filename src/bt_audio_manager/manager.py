@@ -2281,11 +2281,25 @@ class BluetoothAudioManager:
         # React to idle mode changes if device is connected
         idle_keys = {"idle_mode", "keep_alive_method", "power_save_delay", "auto_disconnect_minutes"}
         if address in self._device_connect_time and idle_keys.intersection(settings):
-            # Stop old handler and apply new one
-            await self._stop_idle_handler(address)
-            await self._apply_idle_mode(address)
-            # If switching TO power_save and sink is currently idle → schedule suspend
             new_mode = self.store.get_device_settings(address).get("idle_mode", "default")
+
+            # Stop old handlers — but skip the sink resume when staying in
+            # power_save, otherwise resume + immediate re-suspend race and
+            # the suspend can silently fail (delay=0 case).
+            staying_in_power_save = new_mode == "power_save"
+            await self._stop_keepalive(address)
+            self._cancel_pending_suspend(address)
+            self._cancel_auto_disconnect_timer(address)
+            if not staying_in_power_save and address in self._suspended_sinks and self.pulse:
+                sink_name = await self.pulse.get_sink_for_address(address)
+                if sink_name:
+                    await self.pulse.resume_sink(sink_name)
+                self._suspended_sinks.discard(address)
+
+            # Apply new idle mode
+            await self._apply_idle_mode(address)
+
+            # If in power_save and sink is currently idle → schedule suspend
             if new_mode == "power_save" and self.pulse:
                 sink_name = await self.pulse.get_sink_for_address(address)
                 if sink_name:
