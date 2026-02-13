@@ -16,6 +16,7 @@ DEFAULT_STORE_PATH = "/data/paired_devices.json"
 # Per-device settings with their default values.
 # Existing device records without these keys get defaults automatically.
 DEFAULT_DEVICE_SETTINGS = {
+    "audio_profile": "a2dp",           # "a2dp" | "hfp"
     "idle_mode": "default",           # "default" | "power_save" | "keep_alive" | "auto_disconnect"
     "keep_alive_method": "infrasound",  # only used when idle_mode="keep_alive"
     "power_save_delay": 0,             # seconds before suspending (0-300)

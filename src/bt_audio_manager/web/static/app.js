@@ -261,6 +261,7 @@ const BT_PROFILES = {
   "0000110c-0000-1000-8000-00805f9b34fb": "AVRCP Target",
   "0000110e-0000-1000-8000-00805f9b34fb": "AVRCP Controller",
   "0000111e-0000-1000-8000-00805f9b34fb": "HFP",
+  "00001108-0000-1000-8000-00805f9b34fb": "HSP",
 };
 
 function profileLabels(uuids) {
@@ -294,10 +295,14 @@ function buildCapBadges(device) {
       badges.push('<span class="cap-badge bg-warning text-dark" title="Media buttons disabled">AVRCP \u2717</span>');
     }
   }
-  // HFP
-  const hasHfp = uuids.some((u) => u.startsWith("0000111e"));
-  if (hasHfp) {
-    badges.push('<span class="cap-badge bg-info" title="Hands-Free Profile">HFP</span>');
+  // HFP / HSP
+  const hasHfpHsp = uuids.some((u) => u.startsWith("0000111e") || u.startsWith("00001108"));
+  if (hasHfpHsp) {
+    if (device.audio_profile === "hfp") {
+      badges.push('<span class="cap-badge bg-success" title="HFP/HSP audio profile active (mono + mic)">HFP \u2713</span>');
+    } else {
+      badges.push('<span class="cap-badge bg-info" title="Hands-Free / Headset Profile available">HFP</span>');
+    }
   }
   return badges.length > 0
     ? `<div class="d-flex flex-wrap gap-1 mb-1">${badges.join("")}</div>`
@@ -398,6 +403,7 @@ function renderDevices(devices) {
       const idleMode = (d.stored || d.paired) ? (d.idle_mode || "default") : "default";
       let kebab = "";
       if (d.stored || d.paired) {
+        const audioProfile = d.audio_profile || "a2dp";
         const kaMethod = d.keep_alive_method || "infrasound";
         const powerSaveDelay = d.power_save_delay ?? 0;
         const autoDisconnectMinutes = d.auto_disconnect_minutes ?? 30;
@@ -414,7 +420,7 @@ function renderDevices(devices) {
               <i class="fas fa-ellipsis-v"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
+              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
               ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
@@ -962,10 +968,35 @@ async function saveSettings() {
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson) {
+function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
+
+  // Audio Profile
+  const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
+  const lowerUuids = uuids.map(u => u.toLowerCase());
+  const HFP_UUID = "0000111e-0000-1000-8000-00805f9b34fb";
+  const HSP_UUID = "00001108-0000-1000-8000-00805f9b34fb";
+  const hasHfp = lowerUuids.includes(HFP_UUID) || lowerUuids.includes(HSP_UUID);
+  const profileSelect = $("#setting-audio-profile");
+  profileSelect.value = audioProfile || "a2dp";
+  // Disable HFP option if device doesn't support it
+  const hfpOption = profileSelect.querySelector('option[value="hfp"]');
+  if (hfpOption) hfpOption.disabled = !hasHfp;
+  const profileHelp = $("#audio-profile-help");
+  if ((audioProfile || "a2dp") === "hfp") {
+    profileHelp.textContent = "Mono audio with microphone input. Use with Wyoming Satellite for voice assistant.";
+  } else {
+    profileHelp.textContent = "Stereo high-quality audio for music and media playback.";
+  }
+  profileSelect.onchange = () => {
+    const v = profileSelect.value;
+    $("#audio-profile-help").textContent = v === "hfp"
+      ? "Mono audio with microphone input. Use with Wyoming Satellite for voice assistant."
+      : "Stereo high-quality audio for music and media playback.";
+  };
+
   $("#setting-idle-mode").value = idleMode || "default";
   $("#setting-keep-alive-method").value = kaMethod || "infrasound";
   $("#setting-power-save-delay").value = String(powerSaveDelay ?? 0);
@@ -982,10 +1013,8 @@ function openDeviceSettings(address, name, idleMode, kaMethod, powerSaveDelay, a
     $("#mpd-connection-info").style.display = "none";
   }
   // AVRCP toggle — disable if device lacks AVRCP UUIDs
-  const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
   const AVRCP_TARGET = "0000110c-0000-1000-8000-00805f9b34fb";
   const AVRCP_CONTROLLER = "0000110e-0000-1000-8000-00805f9b34fb";
-  const lowerUuids = uuids.map(u => u.toLowerCase());
   const hasAvrcp = lowerUuids.includes(AVRCP_TARGET) || lowerUuids.includes(AVRCP_CONTROLLER);
   const avrcpToggle = $("#setting-avrcp-enabled");
   const avrcpHelp = $("#avrcp-help-text");
@@ -1024,6 +1053,7 @@ async function saveDeviceSettings() {
   if (!_settingsAddress) return;
   const idleMode = $("#setting-idle-mode").value;
   const settings = {
+    audio_profile: $("#setting-audio-profile").value,
     idle_mode: idleMode,
     keep_alive_method: $("#setting-keep-alive-method").value,
     power_save_delay: parseInt($("#setting-power-save-delay").value, 10) || 0,

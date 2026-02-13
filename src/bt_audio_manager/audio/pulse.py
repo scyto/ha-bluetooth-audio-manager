@@ -297,36 +297,46 @@ class PulseAudioManager:
         await self._pulse.sink_default_set(sink_name)
         logger.info("Default audio output set to %s", sink_name)
 
-    async def activate_bt_card_profile(self, address: str) -> bool:
-        """Activate the A2DP sink profile on a specific Bluetooth PA card.
+    async def activate_bt_card_profile(self, address: str, profile: str = "a2dp") -> bool:
+        """Activate a Bluetooth PA card profile for a specific device.
 
         Uses ``pactl set-card-profile`` to tell PulseAudio to create a sink
         for a specific device.  Per-device safe — does not affect other
         Bluetooth audio connections.
 
+        Args:
+            address: Bluetooth MAC address.
+            profile: ``"a2dp"`` for stereo music, ``"hfp"`` for mono + mic.
+
         Returns True if the profile was activated successfully.
         """
         card_name = "bluez_card." + address.replace(":", "_")
+
+        if profile == "hfp":
+            # HFP/HSP: BlueZ uses "headset-head-unit", PipeWire may use "headset_head_unit"
+            candidates = ("headset-head-unit", "headset_head_unit")
+        else:
+            # A2DP: PA uses "a2dp-sink", PipeWire may use "a2dp_sink"
+            candidates = ("a2dp-sink", "a2dp_sink")
+
         try:
-            # Try setting a2dp profile directly.
-            # PA uses "a2dp-sink", PipeWire may use "a2dp_sink".
-            for profile in ("a2dp-sink", "a2dp_sink"):
+            for pa_profile in candidates:
                 proc = await asyncio.create_subprocess_exec(
-                    "pactl", "set-card-profile", card_name, profile,
+                    "pactl", "set-card-profile", card_name, pa_profile,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 _, stderr = await proc.communicate()
                 if proc.returncode == 0:
-                    logger.info("PA card profile set: %s -> %s", card_name, profile)
+                    logger.info("PA card profile set: %s -> %s", card_name, pa_profile)
                     return True
                 logger.debug(
                     "set-card-profile %s %s failed: %s",
-                    card_name, profile, stderr.decode(errors="replace").strip(),
+                    card_name, pa_profile, stderr.decode(errors="replace").strip(),
                 )
 
-            # Profile might already be set — cycle off → a2dp to force recreation
-            logger.info("Cycling PA card profile for %s (off -> a2dp)...", card_name)
+            # Profile might already be set — cycle off → target to force recreation
+            logger.info("Cycling PA card profile for %s (off -> %s)...", card_name, profile)
             proc = await asyncio.create_subprocess_exec(
                 "pactl", "set-card-profile", card_name, "off",
                 stdout=asyncio.subprocess.PIPE,
@@ -335,15 +345,15 @@ class PulseAudioManager:
             await proc.communicate()
             await asyncio.sleep(1)
 
-            for profile in ("a2dp-sink", "a2dp_sink"):
+            for pa_profile in candidates:
                 proc = await asyncio.create_subprocess_exec(
-                    "pactl", "set-card-profile", card_name, profile,
+                    "pactl", "set-card-profile", card_name, pa_profile,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 _, stderr = await proc.communicate()
                 if proc.returncode == 0:
-                    logger.info("PA card profile cycled: %s -> %s", card_name, profile)
+                    logger.info("PA card profile cycled: %s -> %s", card_name, pa_profile)
                     return True
 
             logger.warning("PA card %s not found or profile activation failed", card_name)

@@ -12,6 +12,9 @@ AVRCP_UUID = AVRCP_CONTROLLER_UUID  # backwards compat
 # Hands-Free Profile (HFP)
 HFP_UUID = "0000111e-0000-1000-8000-00805f9b34fb"
 
+# Headset Profile (HSP) — older mono profile, BlueZ treats same as HFP
+HSP_UUID = "00001108-0000-1000-8000-00805f9b34fb"
+
 # BlueZ D-Bus service and interface names
 BLUEZ_SERVICE = "org.bluez"
 ADAPTER_INTERFACE = "org.bluez.Adapter1"
@@ -34,4 +37,4 @@ MEDIA_INTERFACE = "org.bluez.Media1"
 PLAYER_PATH = "/org/ha/bluetooth_audio/player"
 
 # Audio-capable device UUIDs (any of these indicate audio support)
-AUDIO_UUIDS = frozenset({A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID})
+AUDIO_UUIDS = frozenset({A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID, HFP_UUID, HSP_UUID})
