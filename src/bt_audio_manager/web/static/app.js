@@ -357,7 +357,7 @@ function renderDevices(devices) {
         const mpdHwVolume = d.mpd_hw_volume ?? 100;
         const avrcpEnabled = d.avrcp_enabled ?? true;
         const safeName = escapeHtml(d.name).replace(/'/g, "\\'");
-        const uuidsJson = JSON.stringify(d.uuids || []).replace(/'/g, "\\'");
+        const uuidsJson = JSON.stringify(d.uuids || []).replace(/"/g, '&quot;').replace(/'/g, "\\'");
         kebab = `
           <div class="dropdown">
             <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
