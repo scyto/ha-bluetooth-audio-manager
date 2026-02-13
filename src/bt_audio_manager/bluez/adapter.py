@@ -16,6 +16,7 @@ from .constants import (
     BLUEZ_SERVICE,
     DEFAULT_ADAPTER_PATH,
     DEVICE_INTERFACE,
+    HFP_UUID,
     OBJECT_MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
 )
@@ -67,7 +68,7 @@ class BluezAdapter:
         logger.info("Adapter %s initialized at %s", address.value, self._adapter_path)
 
     async def start_discovery(self) -> None:
-        """Start A2DP-filtered discovery on Classic Bluetooth only.
+        """Start audio-filtered discovery on Classic Bluetooth only.
 
         Sets a discovery filter BEFORE starting discovery. BlueZ merges
         filters from multiple D-Bus clients, so our filter narrows only
@@ -75,13 +76,13 @@ class BluezAdapter:
         """
         await self._adapter_iface.call_set_discovery_filter(
             {
-                "UUIDs": Variant("as", [A2DP_SINK_UUID, A2DP_SOURCE_UUID]),
+                "UUIDs": Variant("as", [A2DP_SINK_UUID, A2DP_SOURCE_UUID, HFP_UUID]),
                 "Transport": Variant("s", "bredr"),
             }
         )
         await self._adapter_iface.call_start_discovery()
         self._discovering = True
-        logger.info("A2DP device discovery started (Transport=bredr)")
+        logger.info("Audio device discovery started (A2DP + HFP, Transport=bredr)")
 
     async def stop_discovery(self) -> None:
         """Stop our discovery session.

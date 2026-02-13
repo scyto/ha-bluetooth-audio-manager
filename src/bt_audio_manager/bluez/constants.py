@@ -34,4 +34,4 @@ MEDIA_INTERFACE = "org.bluez.Media1"
 PLAYER_PATH = "/org/ha/bluetooth_audio/player"
 
 # Audio-capable device UUIDs (any of these indicate audio support)
-AUDIO_UUIDS = frozenset({A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID})
+AUDIO_UUIDS = frozenset({A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID, HFP_UUID})
