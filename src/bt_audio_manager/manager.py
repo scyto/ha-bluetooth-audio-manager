@@ -310,9 +310,10 @@ class BluetoothAudioManager:
         # 3c. Register null HFP handler to prevent HFP from being established
         #     Speakers like Bose send volume buttons as HFP AT+VGS commands
         #     instead of AVRCP.  Blocking HFP forces AVRCP volume.
-        #     Skipped when any device uses HFP audio profile (it would block
-        #     legitimate HFP connections).
-        if self._has_hfp_profile_devices():
+        #     Skipped when HFP switching is enabled and a device uses HFP
+        #     audio profile (it would block legitimate HFP connections).
+        from .bluez.constants import HFP_SWITCHING_ENABLED
+        if HFP_SWITCHING_ENABLED and self._has_hfp_profile_devices():
             logger.info("HFP audio profile device(s) found — skipping null HFP handler")
         else:
             await self._register_null_hfp_handler()
@@ -342,13 +343,14 @@ class BluetoothAudioManager:
                     logger.info("Device %s already connected at startup", addr)
                     self._last_signaled_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
-                    audio_profile = self._get_audio_profile(addr)
-                    if audio_profile == "hfp":
-                        # Activate HFP PA card profile (PA defaults to a2dp
-                        # after reboot even if device was using HFP before)
-                        if self.pulse:
-                            await self.pulse.activate_bt_card_profile(addr, profile="hfp")
-                    elif self._should_disconnect_hfp(addr):
+                    if HFP_SWITCHING_ENABLED:
+                        audio_profile = self._get_audio_profile(addr)
+                        if audio_profile == "hfp":
+                            # Activate HFP PA card profile (PA defaults to a2dp
+                            # after reboot even if device was using HFP before)
+                            if self.pulse:
+                                await self.pulse.activate_bt_card_profile(addr, profile="hfp")
+                    if self._should_disconnect_hfp(addr):
                         await self._disconnect_hfp(addr)
             except Exception as e:
                 logger.debug("Could not initialize stored device %s: %s", addr, e)
@@ -1400,19 +1402,24 @@ class BluetoothAudioManager:
             if self._should_disconnect_hfp(address):
                 await self._disconnect_hfp(address)
 
-            audio_profile = self._get_audio_profile(address)
-            if audio_profile == "hfp":
-                # For HFP devices: activate headset-head-unit PA profile and
-                # apply idle mode / MPD (the auto-reconnect signal handler
-                # doesn't go through connect_device's setup path).
-                if self.pulse:
-                    await self.pulse.activate_bt_card_profile(address, profile="hfp")
-                    sink_name = await self.pulse.get_sink_for_address(address)
-                    if sink_name:
-                        await self._apply_idle_mode(address)
-                        await self._start_mpd_if_enabled(address)
+            from .bluez.constants import HFP_SWITCHING_ENABLED
+            if HFP_SWITCHING_ENABLED:
+                audio_profile = self._get_audio_profile(address)
+                if audio_profile == "hfp":
+                    # For HFP devices: activate headset-head-unit PA profile and
+                    # apply idle mode / MPD (the auto-reconnect signal handler
+                    # doesn't go through connect_device's setup path).
+                    if self.pulse:
+                        await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                        sink_name = await self.pulse.get_sink_for_address(address)
+                        if sink_name:
+                            await self._apply_idle_mode(address)
+                            await self._start_mpd_if_enabled(address)
+                else:
+                    # Check/activate A2DP transport (may need ConnectProfile)
+                    await self._ensure_a2dp_transport(address)
             else:
-                # Check/activate A2DP transport (may need ConnectProfile)
+                # HFP switching disabled — just ensure A2DP transport
                 await self._ensure_a2dp_transport(address)
         except Exception as e:
             logger.warning("Post-connect setup failed for %s: %s", address, e)
@@ -2232,6 +2239,9 @@ class BluetoothAudioManager:
 
     def _should_disconnect_hfp(self, address: str) -> bool:
         """Check if HFP should be disconnected for this device (A2DP mode only)."""
+        from .bluez.constants import HFP_SWITCHING_ENABLED
+        if not HFP_SWITCHING_ENABLED:
+            return True
         return self._get_audio_profile(address) != "hfp"
 
     def _has_hfp_profile_devices(self) -> bool:
@@ -2608,7 +2618,9 @@ class BluetoothAudioManager:
 
         # React to audio profile changes — fire as background task so
         # the settings API returns immediately and the modal can close.
-        if "audio_profile" in settings:
+        # Gated behind HFP_SWITCHING_ENABLED feature flag (issue #98).
+        from .bluez.constants import HFP_SWITCHING_ENABLED
+        if HFP_SWITCHING_ENABLED and "audio_profile" in settings:
             new_profile = settings["audio_profile"]
             if new_profile == "hfp" and self._null_hfp_registered:
                 await self._unregister_null_hfp_handler()

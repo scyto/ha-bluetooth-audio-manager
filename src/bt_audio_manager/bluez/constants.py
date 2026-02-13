@@ -42,3 +42,7 @@ AUDIO_UUIDS = frozenset({A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_TARGET_UUID, AV
 # UUIDs that indicate a device can receive/play audio (used to filter discovery)
 # Excludes A2DP Source (phone sending audio) and AVRCP-only devices.
 SINK_UUIDS = frozenset({A2DP_SINK_UUID, HFP_UUID, HSP_UUID})
+
+# Feature flag: HFP profile switching is disabled until the HAOS audio
+# container supports SCO sockets (AF_BLUETOOTH).  See issue #98.
+HFP_SWITCHING_ENABLED = False

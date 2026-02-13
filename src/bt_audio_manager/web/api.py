@@ -71,6 +71,7 @@ def create_api_routes(
     async def info(request: web.Request) -> web.Response:
         """Return app version and adapter info for the UI."""
         import os
+        from ..bluez.constants import HFP_SWITCHING_ENABLED
         path = manager._adapter_path or "/org/bluez/hci0"
         adapter_name = path.rsplit("/", 1)[-1]
         return web.json_response({
@@ -79,6 +80,7 @@ def create_api_routes(
             "adapter_path": path,
             "adapter_mac": manager.config.bt_adapter
             if manager.config.bt_adapter_is_mac else None,
+            "hfp_switching_enabled": HFP_SWITCHING_ENABLED,
         })
 
     @routes.get("/api/adapters")
@@ -305,7 +307,11 @@ def create_api_routes(
                     {"error": "No valid settings provided"}, status=400
                 )
             if "audio_profile" in settings:
-                if settings["audio_profile"] not in ("a2dp", "hfp"):
+                from ..bluez.constants import HFP_SWITCHING_ENABLED
+                if not HFP_SWITCHING_ENABLED:
+                    # HFP switching disabled (SCO unavailable) — ignore silently
+                    del settings["audio_profile"]
+                elif settings["audio_profile"] not in ("a2dp", "hfp"):
                     return web.json_response(
                         {"error": "audio_profile must be 'a2dp' or 'hfp'"}, status=400
                     )

@@ -287,13 +287,13 @@ function buildCapBadges(device) {
   const hasA2dpSink = uuids.some((u) => u.startsWith("0000110b"));
   const hasHfpHsp = uuids.some((u) => u.startsWith("0000111e") || u.startsWith("00001108"));
   if (hasA2dpSink) {
-    if (activeProfile === "a2dp") {
-      badges.push('<span class="cap-badge bg-success" title="A2DP stereo audio (active)">A2DP \u2713</span>');
-    } else {
+    if (window._hfpSwitchingEnabled && activeProfile !== "a2dp") {
       badges.push('<span class="cap-badge bg-info" title="A2DP stereo audio available">A2DP</span>');
+    } else {
+      badges.push('<span class="cap-badge bg-success" title="A2DP stereo audio (active)">A2DP \u2713</span>');
     }
   }
-  if (hasHfpHsp) {
+  if (window._hfpSwitchingEnabled && hasHfpHsp) {
     if (activeProfile === "hfp") {
       badges.push('<span class="cap-badge bg-success" title="HFP/HSP mono + mic (active)">HFP \u2713</span>');
     } else {
@@ -990,29 +990,36 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
 
-  // Audio Profile
+  // Parse UUIDs once — used by both Audio Profile and AVRCP sections
   const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
   const lowerUuids = uuids.map(u => u.toLowerCase());
-  const HFP_UUID = "0000111e-0000-1000-8000-00805f9b34fb";
-  const HSP_UUID = "00001108-0000-1000-8000-00805f9b34fb";
-  const hasHfp = lowerUuids.includes(HFP_UUID) || lowerUuids.includes(HSP_UUID);
-  const profileSelect = $("#setting-audio-profile");
-  profileSelect.value = audioProfile || "a2dp";
-  // Disable HFP option if device doesn't support it
-  const hfpOption = profileSelect.querySelector('option[value="hfp"]');
-  if (hfpOption) hfpOption.disabled = !hasHfp;
-  const profileHelp = $("#audio-profile-help");
-  if ((audioProfile || "a2dp") === "hfp") {
-    profileHelp.textContent = "Mono audio with microphone input. Use with Wyoming Satellite for voice assistant.";
+
+  // Audio Profile — hidden when HFP switching is disabled (SCO unavailable)
+  const profileSection = $("#setting-audio-profile").closest(".mb-3");
+  if (window._hfpSwitchingEnabled) {
+    profileSection.style.display = "";
+    const HFP_UUID = "0000111e-0000-1000-8000-00805f9b34fb";
+    const HSP_UUID = "00001108-0000-1000-8000-00805f9b34fb";
+    const hasHfp = lowerUuids.includes(HFP_UUID) || lowerUuids.includes(HSP_UUID);
+    const profileSelect = $("#setting-audio-profile");
+    profileSelect.value = audioProfile || "a2dp";
+    const hfpOption = profileSelect.querySelector('option[value="hfp"]');
+    if (hfpOption) hfpOption.disabled = !hasHfp;
+    const profileHelp = $("#audio-profile-help");
+    if ((audioProfile || "a2dp") === "hfp") {
+      profileHelp.textContent = "Mono audio with microphone input. Use with Wyoming Satellite for voice assistant.";
+    } else {
+      profileHelp.textContent = "Stereo high-quality audio for music and media playback.";
+    }
+    profileSelect.onchange = () => {
+      const v = profileSelect.value;
+      $("#audio-profile-help").textContent = v === "hfp"
+        ? "Mono audio with microphone input. Use with Wyoming Satellite for voice assistant."
+        : "Stereo high-quality audio for music and media playback.";
+    };
   } else {
-    profileHelp.textContent = "Stereo high-quality audio for music and media playback.";
+    profileSection.style.display = "none";
   }
-  profileSelect.onchange = () => {
-    const v = profileSelect.value;
-    $("#audio-profile-help").textContent = v === "hfp"
-      ? "Mono audio with microphone input. Use with Wyoming Satellite for voice assistant."
-      : "Stereo high-quality audio for music and media playback.";
-  };
 
   $("#setting-idle-mode").value = idleMode || "default";
   $("#setting-keep-alive-method").value = kaMethod || "infrasound";
@@ -1073,7 +1080,6 @@ async function saveDeviceSettings() {
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
   const idleMode = $("#setting-idle-mode").value;
   const settings = {
-    audio_profile: $("#setting-audio-profile").value,
     idle_mode: idleMode,
     keep_alive_method: $("#setting-keep-alive-method").value,
     power_save_delay: parseInt($("#setting-power-save-delay").value, 10) || 0,
@@ -1085,6 +1091,10 @@ async function saveDeviceSettings() {
     settings.mpd_hw_volume = parseInt($("#setting-mpd-hw-volume").value, 10) || 100;
     const portVal = $("#setting-mpd-port").value;
     if (portVal) settings.mpd_port = parseInt(portVal, 10);
+  }
+  // Include audio profile only when HFP switching is enabled
+  if (window._hfpSwitchingEnabled) {
+    settings.audio_profile = $("#setting-audio-profile").value;
   }
   // Include AVRCP setting only if toggle is not disabled (device supports AVRCP)
   const avrcpToggle = $("#setting-avrcp-enabled");
@@ -1274,12 +1284,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // Load adapter info (once at startup)
   loadAdapters();
 
-  // Show version in header pill and footer
+  // Show version in header pill and footer; store feature flags
   apiGet("/api/info")
     .then((data) => {
       const ver = data.version;
       $("#build-version").textContent = ver;
       $("#version-label").textContent = `${ver} (${data.adapter})`;
+      window._hfpSwitchingEnabled = !!data.hfp_switching_enabled;
     })
     .catch(() => {
       $("#build-version").textContent = "unknown";
