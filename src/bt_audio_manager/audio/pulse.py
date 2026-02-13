@@ -380,9 +380,13 @@ class PulseAudioManager:
                 if proc.returncode == 0:
                     logger.info("PA card profile set: %s -> %s", card_name, pa_profile)
                     return True
-                logger.debug(
+                err_msg = stderr.decode(errors="replace").strip()
+                # Log at WARNING for the first (most likely) candidate so we
+                # can see why it fails; DEBUG for the rest.
+                log_fn = logger.warning if pa_profile == candidates[0] else logger.debug
+                log_fn(
                     "set-card-profile %s %s failed: %s",
-                    card_name, pa_profile, stderr.decode(errors="replace").strip(),
+                    card_name, pa_profile, err_msg or "(no stderr)",
                 )
 
             if profile == "hfp":
@@ -425,7 +429,10 @@ class PulseAudioManager:
             return False
 
     async def _list_card_profiles(self, card_name: str) -> list[str]:
-        """Return profile names available on a PA card (for diagnostics)."""
+        """Return profile names on a PA card with availability (for diagnostics).
+
+        Each entry is ``"name (available: yes)"`` or ``"name (available: no)"``.
+        """
         try:
             proc = await asyncio.create_subprocess_exec(
                 "pactl", "list", "cards",
@@ -447,9 +454,16 @@ class PulseAudioManager:
                     continue
                 if in_card and in_profiles:
                     if line.startswith("\t\t") and ":" in line:
-                        # Profile line: "\t\tprofile_name: Description ..."
-                        name = line.strip().split(":")[0]
-                        profiles.append(name)
+                        # Profile line: "\t\tname: Description (available: yes)"
+                        stripped = line.strip()
+                        name = stripped.split(":")[0]
+                        # Extract availability from the line
+                        avail = "?"
+                        if "available: yes" in stripped:
+                            avail = "yes"
+                        elif "available: no" in stripped:
+                            avail = "no"
+                        profiles.append(f"{name} (available: {avail})")
                     else:
                         in_profiles = False
             return profiles
