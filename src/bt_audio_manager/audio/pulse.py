@@ -193,8 +193,8 @@ class PulseAudioManager:
         (e.g. after a module-bluez5-discover reload).
         """
         retry_delay = 2
+        bt_sink_states: dict[str, str] = {}
         while True:
-            bt_sink_states: dict[str, str] = {}
             try:
                 _pe = PulseAsync("bt-audio-events")
                 with _capture_stderr():

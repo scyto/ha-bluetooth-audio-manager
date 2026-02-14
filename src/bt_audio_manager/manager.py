@@ -83,6 +83,8 @@ class BluetoothAudioManager:
         # Ring buffers so WebSocket clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
+        self._running_sinks: set[str] = set()  # sink names currently in 'running' state
+        self._device_lifecycle_locks: dict[str, asyncio.Lock] = {}  # per-device lifecycle lock
         # Scanning state
         self._scanning: bool = False
         self._scan_task: asyncio.Task | None = None
@@ -557,6 +559,14 @@ class BluetoothAudioManager:
 
     # -- Device lifecycle operations --
 
+    def _device_lock(self, address: str) -> asyncio.Lock:
+        """Get or create a per-device lifecycle lock."""
+        lock = self._device_lifecycle_locks.get(address)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._device_lifecycle_locks[address] = lock
+        return lock
+
     async def _find_device_adapter(self, address: str) -> str | None:
         """Query BlueZ ObjectManager to find which adapter a device is on.
 
@@ -975,8 +985,7 @@ class BluetoothAudioManager:
                 logger.warning("clear_all: BlueZ remove %s failed: %s", addr, exc)
 
         # 7. Clear persistent store (single write instead of N individual removes)
-        self.store._devices.clear()
-        await self.store.save()
+        await self.store.clear_all()
 
         # 8. Clear internal tracking state
         self._device_connect_time.clear()
@@ -1356,8 +1365,10 @@ class BluetoothAudioManager:
         """Handle device disconnection event."""
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
-        asyncio.ensure_future(self._stop_idle_handler(address))
-        asyncio.ensure_future(self._stop_mpd(address))
+        # Clean up running sink tracking for this device
+        addr_underscored = address.replace(":", "_")
+        self._running_sinks = {s for s in self._running_sinks if addr_underscored not in s}
+        asyncio.ensure_future(self._on_device_disconnected_async(address))
 
         if address in self._connecting:
             # Active pair/connect flow in progress — don't start competing reconnect
@@ -1370,6 +1381,16 @@ class BluetoothAudioManager:
             self.reconnect_service.handle_disconnect(address)
         asyncio.ensure_future(self._broadcast_all())
 
+    async def _on_device_disconnected_async(self, address: str) -> None:
+        """Async handler for device disconnect — stops MPD and idle handlers.
+
+        Serialized via per-device lock to prevent racing with a concurrent
+        connect handler (e.g. rapid disconnect/reconnect from signal drop).
+        """
+        async with self._device_lock(address):
+            await self._stop_idle_handler(address)
+            await self._stop_mpd(address)
+
     def _on_device_connected(self, address: str) -> None:
         """Handle device connection event (D-Bus signal)."""
         self._device_connect_time[address] = time.time()
@@ -1377,7 +1398,11 @@ class BluetoothAudioManager:
         asyncio.ensure_future(self._on_device_connected_async(address))
 
     async def _on_device_connected_async(self, address: str) -> None:
-        """Async handler for device connection — broadcasts state and starts AVRCP."""
+        """Async handler for device connection — broadcasts state and starts AVRCP.
+
+        Serialized via per-device lock to prevent racing with a concurrent
+        disconnect handler (e.g. rapid disconnect/reconnect from signal drop).
+        """
         try:
             await self._broadcast_all()
 
@@ -1386,39 +1411,40 @@ class BluetoothAudioManager:
                 logger.debug("Skipping auto setup for %s (connect/cycle in progress)", address)
                 return
 
-            # Try to subscribe to AVRCP after reconnection
-            try:
-                device = await self._get_or_create_device(address)
+            async with self._device_lock(address):
+                # Try to subscribe to AVRCP after reconnection
                 try:
-                    await device.watch_media_player()
+                    device = await self._get_or_create_device(address)
+                    try:
+                        await device.watch_media_player()
+                    except Exception as e:
+                        logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
                 except Exception as e:
-                    logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
-            except Exception as e:
-                logger.debug("Cannot access reconnected device %s: %s", address, e)
+                    logger.debug("Cannot access reconnected device %s: %s", address, e)
 
-            # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
-            if self._should_disconnect_hfp(address):
-                await self._disconnect_hfp(address)
+                # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
+                if self._should_disconnect_hfp(address):
+                    await self._disconnect_hfp(address)
 
-            from .bluez.constants import HFP_SWITCHING_ENABLED
-            if HFP_SWITCHING_ENABLED:
-                audio_profile = self._get_audio_profile(address)
-                if audio_profile == "hfp":
-                    # For HFP devices: activate headset-head-unit PA profile and
-                    # apply idle mode / MPD (the auto-reconnect signal handler
-                    # doesn't go through connect_device's setup path).
-                    if self.pulse:
-                        await self.pulse.activate_bt_card_profile(address, profile="hfp")
-                        sink_name = await self.pulse.get_sink_for_address(address)
-                        if sink_name:
-                            await self._apply_idle_mode(address)
-                            await self._start_mpd_if_enabled(address)
+                from .bluez.constants import HFP_SWITCHING_ENABLED
+                if HFP_SWITCHING_ENABLED:
+                    audio_profile = self._get_audio_profile(address)
+                    if audio_profile == "hfp":
+                        # For HFP devices: activate headset-head-unit PA profile and
+                        # apply idle mode / MPD (the auto-reconnect signal handler
+                        # doesn't go through connect_device's setup path).
+                        if self.pulse:
+                            await self.pulse.activate_bt_card_profile(address, profile="hfp")
+                            sink_name = await self.pulse.get_sink_for_address(address)
+                            if sink_name:
+                                await self._apply_idle_mode(address)
+                                await self._start_mpd_if_enabled(address)
+                    else:
+                        # Check/activate A2DP transport (may need ConnectProfile)
+                        await self._ensure_a2dp_transport(address)
                 else:
-                    # Check/activate A2DP transport (may need ConnectProfile)
+                    # HFP switching disabled — just ensure A2DP transport
                     await self._ensure_a2dp_transport(address)
-            else:
-                # HFP switching disabled — just ensure A2DP transport
-                await self._ensure_a2dp_transport(address)
         except Exception as e:
             logger.warning("Post-connect setup failed for %s: %s", address, e)
 
@@ -2260,6 +2286,7 @@ class BluetoothAudioManager:
         Cancels any pending power-save suspend or auto-disconnect timer.
         """
         addr = self._addr_from_sink_name(sink_name)
+        self._running_sinks.add(sink_name)
         # Cancel pending power-save suspend
         self._cancel_pending_suspend(addr)
         # Cancel auto-disconnect timer
@@ -2277,17 +2304,22 @@ class BluetoothAudioManager:
     def _on_pa_sink_idle(self, sink_name: str) -> None:
         """Handle BT sink transition from 'running' to idle — audio stopped.
 
-        Sets PlaybackStatus='Stopped' so the speaker knows nothing is playing
-        (if AVRCP is enabled for this device — auto-tracking mode).
+        Only sets PlaybackStatus='Stopped' when NO other BT sink is still
+        running (prevents one device going idle from disabling AVRCP volume
+        buttons on another device that's still playing).
         Then applies idle mode behaviour (power-save suspend, auto-disconnect).
         """
         addr = self._addr_from_sink_name(sink_name)
+        self._running_sinks.discard(sink_name)
         if self.media_player:
-            if self._is_avrcp_enabled(addr):
+            if not self._running_sinks:
                 self.media_player.set_playback_status("Stopped")
-                logger.info("Sink idle for %s — set PlaybackStatus=Stopped", addr)
+                logger.info("Sink idle for %s (no active sinks) — set PlaybackStatus=Stopped", addr)
             else:
-                logger.info("AVRCP disabled for %s — skipping PlaybackStatus=Stopped on sink idle", addr)
+                logger.info(
+                    "Sink idle for %s but %d other sink(s) still running — keeping Playing",
+                    addr, len(self._running_sinks),
+                )
         # Apply idle mode behaviour
         if addr and self.store:
             settings = self.store.get_device_settings(addr)

@@ -709,6 +709,10 @@ def create_api_routes(
             logger.warning("WS unexpected error: %s: %s", type(e).__name__, e)
         finally:
             sender.cancel()
+            try:
+                await sender
+            except asyncio.CancelledError:
+                pass
             bus.unsubscribe(queue)
             logger.info("WS client disconnected")
         return ws
