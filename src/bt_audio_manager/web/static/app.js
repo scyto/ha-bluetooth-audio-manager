@@ -467,7 +467,7 @@ function renderDevices(devices) {
               ${sinkInfo}
               <div class="device-actions d-flex gap-2 flex-wrap">
                 ${buildFeatureBadges(d)}
-                ${actions}
+                <span class="ms-auto">${actions}</span>
               </div>
             </div>
           </div>
