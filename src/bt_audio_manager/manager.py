@@ -2659,17 +2659,18 @@ class BluetoothAudioManager:
                         delay = s.get("power_save_delay", 0)
                         self._schedule_sink_suspend(address, sink_name, delay)
 
-        # React to MPD changes if device is connected
-        if address in self._device_connect_time:
-            mpd_changed = {"mpd_enabled", "mpd_port", "mpd_hw_volume"}.intersection(settings)
-            if mpd_changed:
-                if device_info.get("mpd_enabled", False):
-                    # Restart to pick up any config changes (port, name)
+        # React to MPD changes
+        mpd_changed = {"mpd_enabled", "mpd_port", "mpd_hw_volume"}.intersection(settings)
+        if mpd_changed:
+            if device_info.get("mpd_enabled", False):
+                # Restart to pick up config changes (port, name) — only if connected
+                if address in self._device_connect_time:
                     await self._stop_mpd(address)
                     await self._start_mpd_if_enabled(address)
-                else:
-                    await self._stop_mpd(address)
-                    await self.store.release_mpd_port(address)
+            else:
+                # Always stop + release port, even if disconnected
+                await self._stop_mpd(address)
+                await self.store.release_mpd_port(address)
 
         # Eagerly allocate a port when MPD is enabled so the UI shows it
         # immediately (even if the device isn't connected yet / no PA sink)
