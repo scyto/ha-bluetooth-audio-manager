@@ -244,6 +244,17 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
+          <!-- Device Discovery -->
+          <div class="mb-3">
+            <label for="setting-scan-duration" class="form-label">Scan Duration (seconds)</label>
+            <input type="number" class="form-control" id="setting-scan-duration" min="5" max="60" step="1">
+            <div class="form-text">
+              How long to scan for discoverable Bluetooth audio devices (5&ndash;60).
+            </div>
+          </div>
+
+          <hr>
+
           <!-- Auto Reconnect -->
           <div class="mb-3">
             <div class="form-check form-switch">
@@ -272,15 +283,6 @@
             <input type="number" class="form-control" id="setting-reconnect-max-backoff" min="60" max="3600" step="1">
             <div class="form-text">
               Maximum delay between reconnection attempts with exponential backoff (60&ndash;3600).
-            </div>
-          </div>
-
-          <!-- Scan Duration -->
-          <div class="mb-3">
-            <label for="setting-scan-duration" class="form-label">Scan Duration (seconds)</label>
-            <input type="number" class="form-control" id="setting-scan-duration" min="5" max="60" step="1">
-            <div class="form-text">
-              How long to scan for discoverable Bluetooth audio devices (5&ndash;60).
             </div>
           </div>
         </div>
