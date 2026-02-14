@@ -420,10 +420,14 @@ h1, h2, h3, h4, h5, h6 {
   min-height: 200px;
 }
 
+.device-card .device-feature-badges {
+  margin-top: 0.5rem;
+}
+
 .device-card .device-actions {
   margin-top: auto;
   padding-top: 0.5rem;
-  align-items: center;
+  text-align: center;
 }
 
 /* Status badges */
