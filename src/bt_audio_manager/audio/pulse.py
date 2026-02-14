@@ -54,8 +54,7 @@ class PulseAudioManager:
             )
             return
 
-        # Try fallback addresses
-        logger.info("PULSE_SERVER not set, probing known HAOS audio paths...")
+        # PULSE_SERVER not set — probe known HAOS audio socket paths
         for server in _FALLBACK_SERVERS:
             try:
                 os.environ["PULSE_SERVER"] = server

@@ -319,8 +319,6 @@ class BluetoothAudioManager:
             await self._register_null_hfp_handler()
 
         # 5. Initialize PulseAudio manager
-        pulse_server = os.environ.get("PULSE_SERVER", "<unset>")
-        logger.info("PULSE_SERVER=%s", pulse_server)
         self.pulse = PulseAudioManager()
         try:
             await self.pulse.connect()
