@@ -523,7 +523,7 @@ function renderAdaptersModal(adapters) {
       const displayLabel = friendlyName || a.name;
       const selectBtn =
         !a.selected && a.powered
-          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.address}', '${escapeHtml(displayLabel)}')">
+          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.address}', '${escapeHtml(displayLabel).replace(/'/g, "\\'")}')">
                <i class="fas fa-check me-1"></i>Select
              </button>`
           : "";
