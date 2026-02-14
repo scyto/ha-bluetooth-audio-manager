@@ -204,12 +204,6 @@ h1, h2, h3, h4, h5, h6 {
   transform: translateY(-1px);
 }
 
-/* Connection status badge consistent width */
-#connection-status {
-  min-width: 85px;
-  text-align: center;
-}
-
 /* Server unavailable — dims device cards and disables interaction */
 .server-unavailable .device-card {
   opacity: 0.45;
