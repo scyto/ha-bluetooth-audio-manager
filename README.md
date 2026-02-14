@@ -14,6 +14,11 @@ Home Assistant has no built-in way to manage Bluetooth audio devices. Without th
 
 This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, connect, done — and it reconnects automatically when things drop.
 
+## Use Cases
+- **Use to just manage connections** - this app makes it easy to manage BT connectiosn, let your other apps use the BT device as normal
+- **Self contained TTS solution** - includes optional Music Player Daemon support to allow use of BT devices for TTS without additional app
+
+
 ## Features
 
 - **One-click device management** — scan, pair, connect, and disconnect from the web UI
@@ -30,7 +35,14 @@ This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, 
 - **Safe BLE coexistence** — uses Classic Bluetooth (BR/EDR) only; HA's BLE integrations (sensors, beacons, ESPHome proxies) continue working without interference
 - **Security-first** — custom AppArmor profile enforcing least-privilege access, all Bluetooth operations go through BlueZ D-Bus (no raw HCI)
 
-<!-- TODO: Add screenshot of the device cards / events view -->
+
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/da5e60d5-69ef-41e2-8d8b-27af8fdac120" width="300" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="https://github.com/user-attachments/assets/64a12aae-c423-49a1-9e2e-48ff310dc9b0" width="550" />
+</p>
+
 
 ## Supported Platforms
 
