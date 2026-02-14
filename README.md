@@ -6,7 +6,7 @@
 
 A Home Assistant add-on that lets you manage Bluetooth audio devices (A2DP speakers and receivers) from a web UI — with persistent pairing, automatic reconnection, and volume control.
 
-<img width="1338" height="435" alt="image" src="https://github.com/user-attachments/assets/5b485fcb-c03f-45a3-97c7-3b882324bc21" />
+<img width="1330" height="446" alt="image" src="https://github.com/user-attachments/assets/45cb568f-9d12-47bc-bcf0-6b34eb15f7c0" />
 
 ## Why This Exists
 
