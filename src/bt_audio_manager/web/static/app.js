@@ -462,8 +462,8 @@ function renderDevices(devices) {
                 </div>
               </div>
               ${buildCapBadges(d)}
-              <div class="font-monospace small text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
-              ${profiles ? `<div class="small mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
+              <div class="device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
+              ${profiles ? `<div class="device-meta-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
               ${sinkInfo}
               <div class="device-actions d-flex gap-2 flex-wrap">
                 ${buildFeatureBadges(d)}

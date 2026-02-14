@@ -401,6 +401,10 @@ h1, h2, h3, h4, h5, h6 {
   flex-direction: column;
 }
 
+.device-meta-text {
+  font-size: 0.75rem;
+}
+
 /* Container minimum height to prevent collapse during loading */
 #devices-grid {
   min-height: 200px;
