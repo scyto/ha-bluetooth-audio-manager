@@ -337,7 +337,7 @@ function buildFeatureBadges(device) {
 // Cached sinks for merging into device cards
 let currentSinks = [];
 
-function renderAddDeviceTile() {
+function addDeviceTileHtml() {
   const scanLabel = isScanning
     ? (scanSecondsRemaining > 0 ? `Scanning\u2026 ${scanSecondsRemaining}s` : "Finishing\u2026")
     : "Add Device";
@@ -345,10 +345,9 @@ function renderAddDeviceTile() {
     ? '<i class="fas fa-spinner fa-spin"></i>'
     : '<i class="fas fa-plus"></i>';
   const scanClass = isScanning ? " scanning" : "";
-  const wrapper = $("#add-device-wrapper");
-  if (wrapper) {
-    wrapper.innerHTML = `
-      <div class="card add-device-tile${scanClass}" id="add-device-tile"
+  return `
+    <div class="col-md-6 col-lg-4">
+      <div class="card add-device-tile h-100${scanClass}" id="add-device-tile"
            onclick="scanDevices()" role="button" tabindex="0"
            title="Scan for nearby Bluetooth audio devices">
         <div class="card-body">
@@ -356,20 +355,20 @@ function renderAddDeviceTile() {
           <span>${scanLabel}</span>
         </div>
       </div>
-    `;
-  }
+    </div>
+  `;
 }
 
 function renderDevices(devices) {
   const grid = $("#devices-grid");
-  renderAddDeviceTile();
+  const tileHtml = addDeviceTileHtml();
 
   if (!devices || devices.length === 0) {
-    grid.innerHTML = "";
+    grid.innerHTML = tileHtml;
     return;
   }
 
-  grid.innerHTML = devices
+  grid.innerHTML = tileHtml + devices
     .map((d) => {
       const badgeClass = d.connected
         ? "badge-connected"
