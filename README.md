@@ -30,7 +30,6 @@ This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, 
 - **Safe BLE coexistence** — uses Classic Bluetooth (BR/EDR) only; HA's BLE integrations (sensors, beacons, ESPHome proxies) continue working without interference
 - **Security-first** — custom AppArmor profile enforcing least-privilege access, all Bluetooth operations go through BlueZ D-Bus (no raw HCI)
 
-
 <!-- TODO: Add screenshot of the device cards / events view -->
 
 ## Supported Platforms
@@ -51,12 +50,11 @@ This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, 
 ## Limitations
 
 - **Single active adapter** — one Bluetooth adapter active at a time (switchable in settings, requires add-on restart)
-  - recommended to use a dedicated adapater that is left unmanaged by HAOS, however combined adapter should work, YMMV 
+  - recommended to use a dedicated adapater that is left unmanaged by HAOS, however combined adapter should work, YMMV
 - **No multiroom sync** — each speaker is an independent PulseAudio sink; synchronized grouped playback is outside the scope of this add-on, if you want something that does this please consider [Multiroom Audio App for HAOS](https://github.com/chrisuthe/Multi-SendSpin-Player-Container)
 - **No audio receiving** — streams audio *to* speakers only. Cannot receive audio *from* Bluetooth devices (e.g., a phone streaming music to HA)
 - **No LE Audio / LC3** — Classic A2DP only; Bluetooth Low Energy audio is not supported
 - **No HFP/HSP yet** — Hands-Free Profile support is planned but waiting on HAOS audio container changes
-
 
 ## Installation
 
