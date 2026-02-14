@@ -499,9 +499,6 @@ function renderAdaptersModal(adapters) {
       const selectedBadge = a.selected
         ? '<span class="badge bg-success ms-2">In Use</span>'
         : "";
-      const bleBadge = a.ble
-        ? '<span class="badge bg-info ms-2">BLE</span>'
-        : "";
       const bleScanBadge = a.ble_scanning
         ? '<span class="badge bg-warning ms-2">HA BLE Scanning</span>'
         : "";
@@ -540,7 +537,7 @@ function renderAdaptersModal(adapters) {
               <div class="font-monospace small text-muted">${escapeHtml(a.address)}</div>
             </div>
             <div class="d-flex align-items-center gap-2">
-              ${poweredBadge}${selectedBadge}${haManagedBadge}${bleBadge}${bleScanBadge}
+              ${poweredBadge}${selectedBadge}${haManagedBadge}${bleScanBadge}
               ${selectBtn}
             </div>
           </div>

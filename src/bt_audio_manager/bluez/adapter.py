@@ -330,7 +330,6 @@ class BluezAdapter:
             if not hw_model and modalias:
                 hw_model = modalias
 
-            roles = _val("Roles") or []
             adapters.append({
                 "path": path,
                 "name": hci_name,
@@ -341,7 +340,6 @@ class BluezAdapter:
                 "usb_id": usb_id or "",
                 "powered": bool(_val("Powered")),
                 "discovering": bool(_val("Discovering")),
-                "ble": len(roles) > 0,
             })
 
         # Sort by path so hci0 comes first
