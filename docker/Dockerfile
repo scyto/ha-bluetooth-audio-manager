@@ -34,6 +34,12 @@ RUN chmod +x /init \
 
 ENV PYTHONPATH="/usr/src"
 
+# Keep add-on in STARTUP state until the web server is listening.
+# The Supervisor only transitions to STARTED (showing "Open Web UI")
+# once Docker reports the container as healthy.
+HEALTHCHECK --interval=5s --timeout=2s --start-period=10s --retries=3 \
+  CMD curl -sf http://127.0.0.1:8099/api/health || exit 1
+
 ARG BUILD_ARCH
 ARG BUILD_DATE
 ARG BUILD_VERSION
