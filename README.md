@@ -38,9 +38,9 @@ This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, 
 
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/da5e60d5-69ef-41e2-8d8b-27af8fdac120" width="300" />
+  <img src="https://github.com/user-attachments/assets/da5e60d5-69ef-41e2-8d8b-27af8fdac120" width="250" />
   &nbsp;&nbsp;&nbsp;
-  <img src="https://github.com/user-attachments/assets/64a12aae-c423-49a1-9e2e-48ff310dc9b0" width="550" />
+  <img src="https://github.com/user-attachments/assets/64a12aae-c423-49a1-9e2e-48ff310dc9b0" width="450" />
 </p>
 
 
