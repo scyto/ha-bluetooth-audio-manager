@@ -405,6 +405,16 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 0.75rem;
 }
 
+.device-profiles-text {
+  line-height: 1.25;
+  min-height: 2.5em;
+  max-height: 2.5em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 /* Container minimum height to prevent collapse during loading */
 #devices-grid {
   min-height: 200px;
