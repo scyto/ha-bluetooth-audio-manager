@@ -252,12 +252,14 @@ class BluezAdapter:
                 mfr_file = os.path.join(path, "manufacturer")
                 prod_file = os.path.join(path, "product")
                 if os.path.isfile(prod_file):
-                    prod = open(prod_file).read().strip()
+                    with open(prod_file) as f:
+                        prod = f.read().strip()
                     if not prod:
                         continue
                     # Include manufacturer only if non-empty
                     if os.path.isfile(mfr_file):
-                        mfr = open(mfr_file).read().strip()
+                        with open(mfr_file) as f:
+                            mfr = f.read().strip()
                         if mfr:
                             return f"{mfr} {prod}"
                     return prod
@@ -284,8 +286,10 @@ class BluezAdapter:
                 vid_file = os.path.join(path, "idVendor")
                 pid_file = os.path.join(path, "idProduct")
                 if os.path.isfile(vid_file) and os.path.isfile(pid_file):
-                    vid = open(vid_file).read().strip().lower()
-                    pid = open(pid_file).read().strip().lower()
+                    with open(vid_file) as f:
+                        vid = f.read().strip().lower()
+                    with open(pid_file) as f:
+                        pid = f.read().strip().lower()
                     if vid and pid:
                         return f"{vid}:{pid}"
         except OSError:

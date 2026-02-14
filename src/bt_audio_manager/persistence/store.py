@@ -6,6 +6,7 @@ container restarts, app updates, and is included in HA backups.
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,9 +55,11 @@ class PersistenceStore:
             self._devices = []
 
     async def save(self) -> None:
-        """Write current device list to disk."""
+        """Write current device list to disk (atomic via temp + rename)."""
         data = {"devices": self._devices}
-        self._path.write_text(json.dumps(data, indent=2))
+        tmp = self._path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(tmp, self._path)
         logger.debug("Saved %d device(s) to store", len(self._devices))
 
     async def add_device(
@@ -84,6 +87,13 @@ class PersistenceStore:
         self._devices = [d for d in self._devices if d["address"] != address]
         await self.save()
         logger.info("Removed device %s from store", address)
+
+    async def clear_all(self) -> None:
+        """Remove all devices from the store."""
+        count = len(self._devices)
+        self._devices.clear()
+        await self.save()
+        logger.info("Cleared all %d device(s) from store", count)
 
     def get_device(self, address: str) -> dict | None:
         """Get a device by address."""
