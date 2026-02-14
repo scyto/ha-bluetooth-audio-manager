@@ -9,6 +9,7 @@ RUN apk add --no-cache \
     bluez-libs \
     && apk add --no-cache \
     dbus-libs \
+    mpd \
     pulseaudio-utils \
     python3 \
     py3-pip
@@ -28,9 +29,16 @@ RUN chmod +x /init \
     && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/finish \
     && chmod +x /etc/cont-init.d/01-verify-dbus.sh \
-    && chmod +x /etc/cont-init.d/02-init-storage.sh
+    && chmod +x /etc/cont-init.d/02-init-storage.sh \
+    && chmod +x /etc/cont-init.d/03-init-mpd.sh
 
 ENV PYTHONPATH="/usr/src"
+
+# Keep add-on in STARTUP state until the web server is listening.
+# The Supervisor only transitions to STARTED (showing "Open Web UI")
+# once Docker reports the container as healthy.
+HEALTHCHECK --interval=5s --timeout=2s --start-period=10s --retries=3 \
+  CMD curl -sf http://127.0.0.1:8099/api/health || exit 1
 
 ARG BUILD_ARCH
 ARG BUILD_DATE

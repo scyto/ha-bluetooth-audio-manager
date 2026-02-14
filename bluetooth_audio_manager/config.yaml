@@ -1,5 +1,5 @@
 name: "Bluetooth Audio Manager"
-version: "0.2.5"
+version: "1.0.0"
 slug: bluetooth_audio_manager
 description: "Manage Bluetooth audio device connections (A2DP) with persistent pairing, auto-reconnect, and AppArmor security."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
@@ -16,6 +16,8 @@ boot: auto
 # Permissions (least privilege)
 host_dbus: true
 hassio_api: true
+hassio_role: manager
+homeassistant_api: true
 audio: true
 privileged:
   - NET_ADMIN
@@ -32,12 +34,14 @@ map:
   - type: data
     read_only: false
 
-# User options (runtime settings are managed in the add-on UI)
+# User options (runtime settings are managed in the app UI)
 options:
   log_level: "info"
+  mpd_password: ""
 
 schema:
   log_level: "list(debug|info|warning|error)"
+  mpd_password: "str?"
 
 apparmor: true
 watchdog: "http://[HOST]:[PORT:8099]/api/health"

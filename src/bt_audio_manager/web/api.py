@@ -69,13 +69,18 @@ def create_api_routes(
 
     @routes.get("/api/info")
     async def info(request: web.Request) -> web.Response:
-        """Return add-on version and adapter info for the UI."""
+        """Return app version and adapter info for the UI."""
         import os
-        adapter_name = manager._adapter_path.rsplit("/", 1)[-1]
+        from ..bluez.constants import HFP_SWITCHING_ENABLED
+        path = manager._adapter_path or "/org/bluez/hci0"
+        adapter_name = path.rsplit("/", 1)[-1]
         return web.json_response({
             "version": os.environ.get("BUILD_VERSION", "dev"),
             "adapter": adapter_name,
-            "adapter_path": manager._adapter_path,
+            "adapter_path": path,
+            "adapter_mac": manager.config.bt_adapter
+            if manager.config.bt_adapter_is_mac else None,
+            "hfp_switching_enabled": HFP_SWITCHING_ENABLED,
         })
 
     @routes.get("/api/adapters")
@@ -92,7 +97,9 @@ def create_api_routes(
     async def set_adapter(request: web.Request) -> web.Response:
         """Set the Bluetooth adapter. Persists to settings.json.
 
-        Accepts {"adapter": "hci1"}. Requires a restart to take effect.
+        Accepts {"adapter": "hci1", "clean": true}.
+        When clean=true, disconnects and removes all devices before saving.
+        Requires a restart to take effect.
         """
         try:
             body = await request.json()
@@ -102,13 +109,21 @@ def create_api_routes(
                     {"error": "adapter is required"}, status=400
                 )
 
+            clean = body.get("clean", False)
+            if clean:
+                await manager.clear_all_devices()
+
             manager.config.bt_adapter = adapter_name
             manager.config.save_settings()
 
-            logger.info("Adapter selection changed to %s (restart required)", adapter_name)
+            logger.info(
+                "Adapter selection changed to %s (restart required, clean=%s)",
+                adapter_name, clean,
+            )
             return web.json_response({
                 "adapter": adapter_name,
                 "restart_required": True,
+                "cleaned": clean,
             })
         except Exception as e:
             logger.error("Failed to set adapter: %s", e)
@@ -116,7 +131,7 @@ def create_api_routes(
 
     @routes.post("/api/restart")
     async def restart_addon(request: web.Request) -> web.Response:
-        """Restart this add-on via the HA Supervisor API."""
+        """Restart this app via the HA Supervisor API."""
         import aiohttp
         try:
             supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
@@ -139,7 +154,7 @@ def create_api_routes(
 
             return web.json_response({"restarting": True})
         except Exception as e:
-            logger.error("Failed to restart add-on: %s", e)
+            logger.error("Failed to restart app: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
     @routes.get("/api/devices")
@@ -265,30 +280,102 @@ def create_api_routes(
         """Update per-device settings (keep-alive, etc.)."""
         address = request.match_info["address"]
         try:
+            # Auto-store paired devices not yet in the persistence store
+            # (can happen when BlueZ paired a device before the add-on tracked it)
+            if manager.store.get_device(address) is None:
+                bluez_dev = manager.managed_devices.get(address)
+                if bluez_dev:
+                    name = await bluez_dev.get_name()
+                    await manager.store.add_device(address, name)
+                    logger.info("Auto-stored BlueZ device %s (%s)", address, name)
+                else:
+                    return web.json_response(
+                        {"error": f"Device {address} not found"}, status=404
+                    )
+
             body = await request.json()
-            allowed_keys = {"keep_alive_enabled", "keep_alive_method"}
+            allowed_keys = {
+                "audio_profile",
+                "idle_mode", "keep_alive_method",
+                "power_save_delay", "auto_disconnect_minutes",
+                "mpd_enabled", "mpd_port", "mpd_hw_volume",
+                "avrcp_enabled",
+            }
             settings = {k: v for k, v in body.items() if k in allowed_keys}
             if not settings:
                 return web.json_response(
                     {"error": "No valid settings provided"}, status=400
                 )
+            if "audio_profile" in settings:
+                from ..bluez.constants import HFP_SWITCHING_ENABLED
+                if not HFP_SWITCHING_ENABLED:
+                    # HFP switching disabled (SCO unavailable) — ignore silently
+                    del settings["audio_profile"]
+                elif settings["audio_profile"] not in ("a2dp", "hfp"):
+                    return web.json_response(
+                        {"error": "audio_profile must be 'a2dp' or 'hfp'"}, status=400
+                    )
+            if "idle_mode" in settings:
+                valid_modes = ("default", "power_save", "keep_alive", "auto_disconnect")
+                if settings["idle_mode"] not in valid_modes:
+                    return web.json_response(
+                        {"error": f"idle_mode must be one of {valid_modes}"}, status=400
+                    )
             if "keep_alive_method" in settings:
                 if settings["keep_alive_method"] not in ("silence", "infrasound"):
                     return web.json_response(
                         {"error": "keep_alive_method must be 'silence' or 'infrasound'"},
                         status=400,
                     )
-            if "keep_alive_enabled" in settings:
-                if not isinstance(settings["keep_alive_enabled"], bool):
+            if "power_save_delay" in settings:
+                val = settings["power_save_delay"]
+                if not isinstance(val, int) or val < 0 or val > 300:
                     return web.json_response(
-                        {"error": "keep_alive_enabled must be a boolean"}, status=400
+                        {"error": "power_save_delay must be 0-300 seconds"}, status=400
+                    )
+            if "auto_disconnect_minutes" in settings:
+                val = settings["auto_disconnect_minutes"]
+                if not isinstance(val, int) or val < 5 or val > 60:
+                    return web.json_response(
+                        {"error": "auto_disconnect_minutes must be 5-60"}, status=400
+                    )
+            if "mpd_enabled" in settings:
+                if not isinstance(settings["mpd_enabled"], bool):
+                    return web.json_response(
+                        {"error": "mpd_enabled must be a boolean"}, status=400
+                    )
+            if "avrcp_enabled" in settings:
+                if not isinstance(settings["avrcp_enabled"], bool):
+                    return web.json_response(
+                        {"error": "avrcp_enabled must be a boolean"}, status=400
+                    )
+            if "mpd_port" in settings:
+                port = settings["mpd_port"]
+                if not isinstance(port, int) or port < 6600 or port > 6609:
+                    return web.json_response(
+                        {"error": "mpd_port must be an integer 6600-6609"}, status=400
+                    )
+                used = manager.store._used_mpd_ports()
+                if port in used and used[port] != address:
+                    return web.json_response(
+                        {"error": f"Port {port} is already in use by another device"},
+                        status=409,
+                    )
+                await manager.store.set_mpd_port(address, port)
+            if "mpd_hw_volume" in settings:
+                v = settings["mpd_hw_volume"]
+                if not isinstance(v, int) or v < 1 or v > 100:
+                    return web.json_response(
+                        {"error": "mpd_hw_volume must be an integer 1-100"}, status=400
                     )
             result = await manager.update_device_settings(address, settings)
             if result is None:
                 return web.json_response(
                     {"error": f"Device {address} not found"}, status=404
                 )
-            return web.json_response({"address": address, "settings": settings})
+            # Return current settings (includes auto-allocated port, etc.)
+            current = manager.store.get_device_settings(address)
+            return web.json_response({"address": address, "settings": current})
         except Exception as e:
             logger.error("Failed to update settings for %s: %s", address, e)
             return web.json_response({"error": str(e)}, status=500)
@@ -590,7 +677,11 @@ def create_api_routes(
         try:
             # Send initial state so UI renders immediately
             devices = await manager.get_all_devices()
-            sinks = await manager.get_audio_sinks()
+            try:
+                sinks = await manager.get_audio_sinks()
+            except Exception:
+                logger.warning("PA unavailable during WS init — sending empty sinks")
+                sinks = []
             await ws.send_json({"type": "devices_changed", "devices": devices})
             await ws.send_json({"type": "sinks_changed", "sinks": sinks})
             await ws.send_json({
@@ -618,6 +709,10 @@ def create_api_routes(
             logger.warning("WS unexpected error: %s: %s", type(e).__name__, e)
         finally:
             sender.cancel()
+            try:
+                await sender
+            except asyncio.CancelledError:
+                pass
             bus.unsubscribe(queue)
             logger.info("WS client disconnected")
         return ws

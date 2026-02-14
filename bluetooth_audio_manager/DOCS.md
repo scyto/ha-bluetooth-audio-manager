@@ -5,7 +5,7 @@ persistent pairing, automatic reconnection, and a web-based management UI.
 
 ## How it works
 
-This add-on uses BlueZ (the Linux Bluetooth stack) via D-Bus to discover,
+This app uses BlueZ (the Linux Bluetooth stack) via D-Bus to discover,
 pair, and connect Bluetooth audio devices. Once connected, the device appears
 as a PulseAudio sink that Home Assistant's audio system can use for TTS,
 media playback, and automations.
@@ -16,11 +16,12 @@ media playback, and automations.
 - Pair and connect with one click from the web UI
 - Auto-reconnect when devices disconnect or after reboots
 - Optional keep-alive audio to prevent speaker auto-shutdown
+- Per-device MPD instances for HA media_player integration and volume control
 - Custom AppArmor security profile (principle of least privilege)
 
 ## Coexistence with Home Assistant Bluetooth
 
-This add-on is designed to coexist safely with Home Assistant's built-in
+This app is designed to coexist safely with Home Assistant's built-in
 Bluetooth integration (used for BLE sensors, beacons, etc.):
 
 - Discovery uses `Transport=bredr` (Classic Bluetooth only), while HA scans
@@ -54,9 +55,31 @@ Two methods are available:
 - **silence**: Streams PCM zeros. Lower CPU usage but some speakers still
   detect this as silence and shut down.
 
+### Per-device MPD (Music Player Daemon)
+
+Each connected speaker can optionally run its own MPD instance, exposing it as
+a `media_player` entity in Home Assistant. This lets you use HA automations
+(TTS, media playback, `media_player.volume_set`, etc.) to control the speaker.
+
+Enable MPD per-device in the web UI: open the device's menu (three-dot icon),
+select **Settings**, and toggle **Enable MPD**. A TCP port from the 6600–6609
+pool is assigned automatically (or you can pick one manually).
+
+**Hardware Volume** (1–100%, default 100%) controls the speaker's volume level
+when MPD starts. MPD's software volume then acts as the single volume knob — so
+`media_player.volume_set 0.5` in an automation means 50% perceived loudness.
+
+| Scenario | Behavior |
+| ---------- | ---------- |
+| **MPD starts, no audio playing** | Speaker hardware set to configured %, MPD becomes the single volume knob |
+| **MPD starts, audio already playing** | Hardware left alone, MPD synced to current hardware level |
+| **Speaker button press** | Hardware volume change is synced to MPD → HA entity updates |
+| **HA automation** `media_player.volume_set` | MPD software volume changes → effective output = that % |
+| **TTS with volume preset** | Automation sets volume then speaks → plays at that level |
+
 ## Usage
 
-1. Open the add-on from the Home Assistant sidebar ("BT Audio")
+1. Open the app from the Home Assistant sidebar ("BT Audio")
 2. Click **Scan for Devices** (make sure your speaker is in pairing mode)
 3. Click **Pair** next to your device
 4. Click **Connect** — the device will appear as a PulseAudio audio sink
@@ -66,7 +89,7 @@ Two methods are available:
 ## Requirements
 
 - A Bluetooth adapter (built-in or USB dongle) accessible to HAOS
-- The Bluetooth adapter must be powered on (managed by HAOS, not this add-on)
+- The Bluetooth adapter must be powered on (managed by HAOS, not this app)
 - The target device must support A2DP (Advanced Audio Distribution Profile)
 
 ## Troubleshooting
@@ -85,15 +108,15 @@ UI (device menu > Settings). Try the `infrasound` method if `silence` doesn't
 work.
 
 **`br-connection-key-missing` error when connecting**: The pairing keys stored
-by BlueZ are out of sync with the speaker. Click **Forget** in the add-on UI,
+by BlueZ are out of sync with the speaker. Click **Forget** in the app UI,
 then clear the pairing on the speaker itself (usually hold the Bluetooth button
 for ~10 seconds until the speaker announces "ready to pair" or the LED enters
-pairing mode). Then scan and pair again from the add-on.
+pairing mode). Then scan and pair again from the app.
 
 **`Authentication Rejected` when pairing**: The speaker still has old pairing
 keys for your system's Bluetooth address and is refusing the new pairing
 attempt. Clear the speaker's paired-device list (hold the Bluetooth button for
-~10 seconds) so both sides start fresh, then re-pair from the add-on.
+~10 seconds) so both sides start fresh, then re-pair from the app.
 
 **Existing BLE integrations stopped working**: This should not happen by
-design. Check the add-on logs for errors and file an issue on GitHub.
+design. Check the app logs for errors and file an issue on GitHub.

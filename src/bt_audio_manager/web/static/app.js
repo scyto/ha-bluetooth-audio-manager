@@ -2,7 +2,7 @@
  * Bluetooth Audio Manager — Ingress UI
  *
  * Vanilla JS interface with Bootstrap 5.3 components.
- * Communicates with the add-on's REST API via WebSocket for real-time updates.
+ * Communicates with the app's REST API via WebSocket for real-time updates.
  */
 
 // ============================================
@@ -125,18 +125,11 @@ function showBanner(text) {
     <span>${escapeHtml(text)}</span>
   `;
   container.prepend(el);
-  setButtonsEnabled(false);
 }
 
 function hideBanner() {
   const existing = $("#operation-alert");
   if (existing) existing.remove();
-  setButtonsEnabled(true);
-}
-
-function setButtonsEnabled(enabled) {
-  const btn = $("#btn-refresh");
-  if (btn) btn.disabled = !enabled;
 }
 
 // ============================================
@@ -237,20 +230,6 @@ function hideReconnectBanner() {
   reconnectStartTime = null;
 }
 
-function setConnectionStatus(state) {
-  const badge = $("#connection-status");
-  if (!badge) return;
-  const map = {
-    connecting: { text: "Connecting...", cls: "bg-secondary" },
-    connected: { text: "Connected", cls: "bg-success" },
-    reconnecting: { text: "Reconnecting...", cls: "bg-warning text-dark" },
-    disconnected: { text: "Disconnected", cls: "bg-danger" },
-  };
-  const info = map[state] || map.connecting;
-  badge.textContent = info.text;
-  badge.className = `badge ${info.cls}`;
-}
-
 // ============================================
 // Section 6: BT Profile UUID Labels
 // ============================================
@@ -261,6 +240,7 @@ const BT_PROFILES = {
   "0000110c-0000-1000-8000-00805f9b34fb": "AVRCP Target",
   "0000110e-0000-1000-8000-00805f9b34fb": "AVRCP Controller",
   "0000111e-0000-1000-8000-00805f9b34fb": "HFP",
+  "00001108-0000-1000-8000-00805f9b34fb": "HSP",
 };
 
 function profileLabels(uuids) {
@@ -268,7 +248,65 @@ function profileLabels(uuids) {
   const labels = uuids
     .map((u) => BT_PROFILES[u.toLowerCase()])
     .filter(Boolean);
-  return labels.length > 0 ? labels.join(", ") : "";
+  return labels.length > 0 ? "Supports: " + labels.join(" \u00b7 ") : "";
+}
+
+function buildCapBadges(device) {
+  if (!device.connected) return "";
+  const badges = [];
+  // Bearer type (BR/EDR, LE)
+  if (device.bearers) {
+    for (const b of device.bearers) {
+      badges.push(`<span class="cap-badge bg-secondary" title="${b === "BR/EDR" ? "Classic Bluetooth" : "Bluetooth Low Energy"}">${escapeHtml(b)}</span>`);
+    }
+  }
+  // Audio profile badges — show selected profile with checkmark
+  const uuids = (device.uuids || []).map((u) => u.toLowerCase());
+  const activeProfile = device.audio_profile || "a2dp";
+  const hasA2dpSink = uuids.some((u) => u.startsWith("0000110b"));
+  const hasHfpHsp = uuids.some((u) => u.startsWith("0000111e") || u.startsWith("00001108"));
+  if (hasA2dpSink) {
+    if (window._hfpSwitchingEnabled && activeProfile !== "a2dp") {
+      badges.push('<span class="cap-badge bg-info" title="A2DP stereo audio available">A2DP</span>');
+    } else {
+      badges.push('<span class="cap-badge bg-success" title="A2DP stereo audio (active)">A2DP \u2713</span>');
+    }
+  }
+  if (window._hfpSwitchingEnabled && hasHfpHsp) {
+    if (activeProfile === "hfp") {
+      badges.push('<span class="cap-badge bg-success" title="HFP/HSP mono + mic (active)">HFP \u2713</span>');
+    } else {
+      badges.push('<span class="cap-badge bg-info" title="Hands-Free / Headset Profile available">HFP</span>');
+    }
+  }
+  // AVRCP
+  const hasAvrcp = uuids.some((u) => u.startsWith("0000110c") || u.startsWith("0000110e"));
+  if (hasAvrcp) {
+    if (device.avrcp_enabled !== false) {
+      badges.push('<span class="cap-badge bg-success" title="Media buttons enabled">AVRCP \u2713</span>');
+    } else {
+      badges.push('<span class="cap-badge bg-warning text-dark" title="Media buttons disabled">AVRCP \u2717</span>');
+    }
+  }
+  return badges.length > 0
+    ? `<div class="d-flex flex-wrap gap-1 mb-1">${badges.join("")}</div>`
+    : "";
+}
+
+function buildFeatureBadges(device) {
+  const badges = [];
+  const im = device.idle_mode || "default";
+  if (im === "power_save") {
+    badges.push('<span class="feature-badge border-info text-info"><i class="fas fa-moon me-1"></i>Power Save</span>');
+  } else if (im === "keep_alive" && device.keep_alive_active) {
+    badges.push('<span class="feature-badge border-danger text-danger"><i class="fas fa-heartbeat me-1"></i>Stay Awake</span>');
+  } else if (im === "auto_disconnect") {
+    badges.push('<span class="feature-badge border-warning text-warning"><i class="fas fa-plug me-1"></i>Auto-Disconnect</span>');
+  }
+  if (device.mpd_enabled) {
+    badges.push(`<span class="feature-badge border-primary text-primary"><i class="fas fa-music me-1"></i>MPD :${device.mpd_port || "?"}</span>`);
+  }
+  return badges.join("");
 }
 
 // ============================================
@@ -342,16 +380,26 @@ function renderDevices(devices) {
           <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${d.address}')">
             <i class="fas fa-handshake me-1"></i>Pair
           </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="dismissDevice('${d.address}')" title="Dismiss">
+            <i class="fas fa-times"></i>
+          </button>
         `;
       }
 
       // Kebab dropdown for paired/stored devices (Settings + Forget)
-      const keepAliveActive = (d.stored || d.paired) && d.keep_alive_active;
+      const idleMode = (d.stored || d.paired) ? (d.idle_mode || "default") : "default";
       let kebab = "";
       if (d.stored || d.paired) {
-        const kaEnabled = d.keep_alive_enabled || false;
+        const audioProfile = d.audio_profile || "a2dp";
         const kaMethod = d.keep_alive_method || "infrasound";
+        const powerSaveDelay = d.power_save_delay ?? 0;
+        const autoDisconnectMinutes = d.auto_disconnect_minutes ?? 30;
+        const mpdEnabled = d.mpd_enabled || false;
+        const mpdPort = d.mpd_port || "";
+        const mpdHwVolume = d.mpd_hw_volume ?? 100;
+        const avrcpEnabled = d.avrcp_enabled ?? true;
         const safeName = escapeHtml(d.name).replace(/'/g, "\\'");
+        const uuidsJson = JSON.stringify(d.uuids || []).replace(/"/g, '&quot;').replace(/'/g, "\\'");
         kebab = `
           <div class="dropdown">
             <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
@@ -359,7 +407,7 @@ function renderDevices(devices) {
               <i class="fas fa-ellipsis-v"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', ${kaEnabled}, '${kaMethod}'); return false;">
+              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
                 <i class="fas fa-cog me-2"></i>Settings
               </a></li>
               ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
@@ -377,15 +425,6 @@ function renderDevices(devices) {
       const rssiDisplay = d.rssi ? ` (${d.rssi} dBm)` : "";
       const profiles = profileLabels(d.uuids);
 
-      // Connection detail: bearer type + transport
-      let connDetail = "";
-      if (d.connected) {
-        const parts = [];
-        if (d.bearers && d.bearers.length > 0) parts.push(d.bearers.join(" + "));
-        if (d.has_transport) parts.push("A2DP");
-        if (parts.length > 0) connDetail = parts.join(" / ");
-      }
-
       // Merge sink info for connected devices
       let sinkInfo = "";
       if (d.connected) {
@@ -400,7 +439,8 @@ function renderDevices(devices) {
             matchedSink.format || null,
           ].filter(Boolean);
           const vol = matchedSink.mute ? "Muted" : `${matchedSink.volume}%`;
-          const stateLabel = matchedSink.state === "running" ? "Streaming" : matchedSink.state;
+          const stateMap = { running: "Streaming", idle: "Idle", suspended: "Suspended" };
+          const stateLabel = stateMap[matchedSink.state] || matchedSink.state;
           sinkInfo = `
             <div class="mt-2 small text-muted">
               <i class="fas fa-music me-1"></i>${audioParts.length ? escapeHtml(audioParts.join(" / ")) + " &middot; " : ""}${escapeHtml(vol)}
@@ -417,16 +457,16 @@ function renderDevices(devices) {
               <div class="d-flex justify-content-between align-items-start mb-2">
                 <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
                 <div class="d-flex align-items-center gap-1">
-                  ${keepAliveActive ? '<i class="fas fa-heartbeat text-danger keep-alive-indicator" title="Keep-alive active"></i>' : ""}
                   <span class="badge ${badgeClass}">${statusText}</span>
                   ${kebab}
                 </div>
               </div>
-              ${connDetail ? `<div class="small text-muted mb-1">${escapeHtml(connDetail)}</div>` : ""}
-              <div class="font-monospace small text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
-              ${profiles ? `<div class="small mt-1" style="color: var(--accent-primary)">${escapeHtml(profiles)}</div>` : ""}
+              ${buildCapBadges(d)}
+              <div class="device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
+              ${profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
               ${sinkInfo}
-              <div class="device-actions d-flex gap-2 flex-wrap">
+              ${(() => { const fb = buildFeatureBadges(d); return fb ? `<div class="device-feature-badges d-flex gap-2 flex-wrap">${fb}</div>` : ""; })()}
+              <div class="device-actions">
                 ${actions}
               </div>
             </div>
@@ -459,8 +499,11 @@ function renderAdaptersModal(adapters) {
       const selectedBadge = a.selected
         ? '<span class="badge bg-success ms-2">In Use</span>'
         : "";
-      const bleBadge = a.ble_scanning
+      const bleScanBadge = a.ble_scanning
         ? '<span class="badge bg-warning ms-2">HA BLE Scanning</span>'
+        : "";
+      const haManagedBadge = a.ha_managed
+        ? '<span class="badge bg-info ms-2">HA Bluetooth</span>'
         : "";
       const poweredBadge = a.powered
         ? '<span class="badge bg-success">Powered</span>'
@@ -477,9 +520,10 @@ function renderAdaptersModal(adapters) {
       if (a.modalias) techParts.push(a.modalias);
       const techLine = techParts.join(" \u2014 ");
 
+      const displayLabel = friendlyName || a.name;
       const selectBtn =
         !a.selected && a.powered
-          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.name}')">
+          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.address}', '${escapeHtml(displayLabel).replace(/'/g, "\\'")}')">
                <i class="fas fa-check me-1"></i>Select
              </button>`
           : "";
@@ -493,7 +537,7 @@ function renderAdaptersModal(adapters) {
               <div class="font-monospace small text-muted">${escapeHtml(a.address)}</div>
             </div>
             <div class="d-flex align-items-center gap-2">
-              ${poweredBadge}${selectedBadge}${bleBadge}
+              ${poweredBadge}${selectedBadge}${haManagedBadge}${bleScanBadge}
               ${selectBtn}
             </div>
           </div>
@@ -567,9 +611,11 @@ function deviceNameTag(address) {
 }
 
 function appendMprisCommand(data) {
-  // MPRIS player is global — show connected device name if exactly one
+  // Use resolved address from backend if available, else infer from single connected device
   let nameHtml = "";
-  if (lastDevices) {
+  if (data.address) {
+    nameHtml = deviceNameTag(data.address);
+  } else if (lastDevices) {
     const connected = lastDevices.filter((d) => d.connected);
     if (connected.length === 1) {
       nameHtml = ` <span class="text-muted">[${escapeHtml(connected[0].name)}]</span>`;
@@ -590,6 +636,13 @@ function appendMprisCommand(data) {
 const _lastVolumeEvent = {};  // address → {value, ts}
 const VOLUME_DEDUP_MS = 1500;
 
+function _deviceHasAvrcp(address) {
+  if (!address || !lastDevices) return false;
+  const dev = lastDevices.find((d) => d.address === address);
+  if (!dev || !dev.uuids) return false;
+  return dev.uuids.some((u) => u.startsWith("0000110c") || u.startsWith("0000110e"));
+}
+
 function appendAvrcpEvent(data) {
   // Deduplicate volume events (D-Bus, PulseAudio, and AVRCP can all fire)
   if (data.property === "Volume" && data.address) {
@@ -605,10 +658,15 @@ function appendAvrcpEvent(data) {
     ? JSON.stringify(data.value)
     : String(data.value);
 
+  // Label as "Transport" for devices without AVRCP UUIDs (e.g. initial A2DP volume)
+  const isAvrcp = _deviceHasAvrcp(data.address);
+  const label = isAvrcp ? "AVRCP" : "Transport";
+  const cssClass = isAvrcp ? "avrcp" : "transport";
+
   appendEventEntry(
-    "avrcp",
+    cssClass,
     `<span class="event-time">${escapeHtml(eventTime(data))}</span>`
-    + `<span class="event-type avrcp">AVRCP</span>`
+    + `<span class="event-type ${cssClass}">${label}</span>`
     + `<span class="event-content"><strong>${escapeHtml(data.property)}</strong> = `
     + `<span class="text-success">${escapeHtml(valueStr)}</span>`
     + deviceNameTag(data.address)
@@ -678,7 +736,8 @@ function renderSingleLogEntry(entry, isNew) {
   const el = document.createElement("div");
   el.className = `log-entry${isNew ? " new" : ""}`;
 
-  const ts = new Date(entry.ts * 1000).toLocaleTimeString();
+  const d = new Date(entry.ts * 1000);
+  const ts = d.toLocaleTimeString() + "." + String(d.getMilliseconds()).padStart(3, "0");
   const levelClass = entry.level.toLowerCase();
   const logger = (entry.logger || "").split(".").pop();
 
@@ -744,19 +803,6 @@ function updateLogsCount() {
 // Section 11: Actions
 // ============================================
 
-async function refreshDevices() {
-  try {
-    const [devResult, sinkResult] = await Promise.all([
-      apiGet("/api/devices"),
-      apiGet("/api/audio/sinks"),
-    ]);
-    currentSinks = sinkResult.sinks || [];
-    renderDevices(devResult.devices);
-  } catch (e) {
-    showToast(`Refresh failed: ${e.message}`, "error");
-  }
-}
-
 async function scanDevices() {
   if (isScanning) return;
   try {
@@ -801,8 +847,27 @@ async function forceReconnectDevice(address) {
   }
 }
 
-async function forgetDevice(address) {
-  if (!confirm(`Forget device ${address}? This will unpair it.`)) return;
+async function dismissDevice(address) {
+  try {
+    await apiPost("/api/forget", { address });
+  } catch (e) {
+    showToast(`Dismiss failed: ${e.message}`, "error");
+  }
+}
+
+let _pendingForgetAddress = null;
+
+function forgetDevice(address) {
+  _pendingForgetAddress = address;
+  $("#forget-device-address").textContent = address;
+  new bootstrap.Modal("#forgetDeviceModal").show();
+}
+
+async function doForgetDevice() {
+  if (!_pendingForgetAddress) return;
+  const address = _pendingForgetAddress;
+  _pendingForgetAddress = null;
+  bootstrap.Modal.getInstance($("#forgetDeviceModal"))?.hide();
   try {
     await apiPost("/api/forget", { address });
   } catch (e) {
@@ -810,14 +875,48 @@ async function forgetDevice(address) {
   }
 }
 
-async function selectAdapter(adapterName) {
-  if (!confirm(`Switch to adapter ${adapterName}? The add-on will restart.`)) return;
+let _pendingAdapterMac = null;
+let _pendingAdapterLabel = null;
+
+async function selectAdapter(adapterMac, displayLabel) {
+  // If no devices are stored/paired, skip the warning — nothing to lose
+  const hasDevices = lastDevices && lastDevices.some((d) => d.stored || d.paired);
+  if (!hasDevices) {
+    await doAdapterSwitch(adapterMac, displayLabel, false);
+    return;
+  }
+
+  // Show confirmation modal with pairing-loss warning
+  _pendingAdapterMac = adapterMac;
+  _pendingAdapterLabel = displayLabel;
+  $("#switch-adapter-name").textContent = displayLabel;
+  new bootstrap.Modal("#adapterSwitchModal").show();
+}
+
+async function doAdapterSwitch(adapterMac, displayLabel, clean) {
   try {
-    showBanner(`Switching to adapter ${adapterName}...`);
-    const result = await apiPost("/api/set-adapter", { adapter: adapterName });
+    // Close both modals — they will have stale data until the server returns
+    bootstrap.Modal.getInstance($("#adapterSwitchModal"))?.hide();
+    bootstrap.Modal.getInstance($("#adaptersModal"))?.hide();
+    showBanner(
+      clean
+        ? `Cleaning devices and switching to ${displayLabel}...`
+        : `Switching to adapter ${displayLabel}...`
+    );
+
+    // Backend handles disconnect-all + forget-all when clean=true,
+    // and pushes live progress via WebSocket status messages.
+    // adapter value is now the MAC address (stable across reboots).
+    const result = await apiPost("/api/set-adapter", {
+      adapter: adapterMac,
+      clean: clean,
+    });
     if (result.restart_required) {
-      showBanner("Restarting add-on with new adapter...");
-      await apiPost("/api/restart");
+      showBanner("Restarting app with new adapter...");
+      // Fire-and-forget: the server will die during restart, so the
+      // response will never arrive (expected 502). The WebSocket
+      // reconnect loop will detect when the server is back.
+      apiPost("/api/restart").catch(() => {});
     }
   } catch (e) {
     hideBanner();
@@ -826,43 +925,7 @@ async function selectAdapter(adapterName) {
 }
 
 // ============================================
-// Section 11b: Device Settings Modal
-// ============================================
-
-let _settingsAddress = null;
-
-function openDeviceSettings(address, name, kaEnabled, kaMethod) {
-  _settingsAddress = address;
-  $("#device-settings-name").textContent = name;
-  $("#device-settings-address").textContent = address;
-  $("#setting-keep-alive-enabled").checked = kaEnabled;
-  $("#setting-keep-alive-method").value = kaMethod || "infrasound";
-  toggleKeepAliveMethodVisibility();
-  new bootstrap.Modal("#deviceSettingsModal").show();
-}
-
-function toggleKeepAliveMethodVisibility() {
-  const enabled = $("#setting-keep-alive-enabled").checked;
-  $("#keep-alive-method-group").style.display = enabled ? "" : "none";
-}
-
-async function saveDeviceSettings() {
-  if (!_settingsAddress) return;
-  const settings = {
-    keep_alive_enabled: $("#setting-keep-alive-enabled").checked,
-    keep_alive_method: $("#setting-keep-alive-method").value,
-  };
-  try {
-    await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
-    showToast("Device settings saved", "success");
-    bootstrap.Modal.getInstance($("#deviceSettingsModal"))?.hide();
-  } catch (e) {
-    showToast(`Failed to save settings: ${e.message}`, "error");
-  }
-}
-
-// ============================================
-// Section 11c: Add-on Settings Modal
+// Section 11b: Add-on Settings Modal
 // ============================================
 
 async function openSettingsModal() {
@@ -895,11 +958,168 @@ async function saveSettings() {
 }
 
 // ============================================
+// Section 11c: Device Settings Modal
+// ============================================
+
+let _settingsAddress = null;
+
+function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson) {
+  _settingsAddress = address;
+  $("#device-settings-name").textContent = name;
+  $("#device-settings-address").textContent = address;
+
+  // Parse UUIDs once — used by both Audio Profile and AVRCP sections
+  const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
+  const lowerUuids = uuids.map(u => u.toLowerCase());
+
+  // Audio Profile — hidden when HFP switching is disabled (SCO unavailable)
+  const profileSection = $("#setting-audio-profile").closest(".mb-3");
+  if (window._hfpSwitchingEnabled) {
+    profileSection.style.display = "";
+    const HFP_UUID = "0000111e-0000-1000-8000-00805f9b34fb";
+    const HSP_UUID = "00001108-0000-1000-8000-00805f9b34fb";
+    const hasHfp = lowerUuids.includes(HFP_UUID) || lowerUuids.includes(HSP_UUID);
+    const profileSelect = $("#setting-audio-profile");
+    profileSelect.value = audioProfile || "a2dp";
+    const hfpOption = profileSelect.querySelector('option[value="hfp"]');
+    if (hfpOption) hfpOption.disabled = !hasHfp;
+    const profileHelp = $("#audio-profile-help");
+    if ((audioProfile || "a2dp") === "hfp") {
+      profileHelp.textContent = "Mono audio with microphone input. Use with Wyoming Satellite for voice assistant.";
+    } else {
+      profileHelp.textContent = "Stereo high-quality audio for music and media playback.";
+    }
+    profileSelect.onchange = () => {
+      const v = profileSelect.value;
+      $("#audio-profile-help").textContent = v === "hfp"
+        ? "Mono audio with microphone input. Use with Wyoming Satellite for voice assistant."
+        : "Stereo high-quality audio for music and media playback.";
+    };
+  } else {
+    profileSection.style.display = "none";
+  }
+
+  $("#setting-idle-mode").value = idleMode || "default";
+  $("#setting-keep-alive-method").value = kaMethod || "infrasound";
+  $("#setting-power-save-delay").value = String(powerSaveDelay ?? 0);
+  $("#setting-auto-disconnect-minutes").value = String(autoDisconnectMinutes ?? 30);
+  $("#setting-mpd-enabled").checked = mpdEnabled || false;
+  $("#setting-mpd-hw-volume").value = mpdHwVolume ?? 100;
+  $("#setting-mpd-port").value = mpdPort || "";
+  // Show connection info if port is assigned
+  if (mpdPort) {
+    $("#mpd-port-display").textContent = mpdPort;
+    $("#mpd-hostname").textContent = location.hostname;
+    $("#mpd-connection-info").style.display = "";
+  } else {
+    $("#mpd-connection-info").style.display = "none";
+  }
+  // AVRCP toggle — disable if device lacks AVRCP UUIDs
+  const AVRCP_TARGET = "0000110c-0000-1000-8000-00805f9b34fb";
+  const AVRCP_CONTROLLER = "0000110e-0000-1000-8000-00805f9b34fb";
+  const hasAvrcp = lowerUuids.includes(AVRCP_TARGET) || lowerUuids.includes(AVRCP_CONTROLLER);
+  const avrcpToggle = $("#setting-avrcp-enabled");
+  const avrcpHelp = $("#avrcp-help-text");
+  avrcpToggle.checked = hasAvrcp ? (avrcpEnabled ?? true) : false;
+  avrcpToggle.disabled = !hasAvrcp;
+  if (hasAvrcp) {
+    avrcpHelp.textContent = "Track playback state and accept media-button commands from the speaker. Media buttons may or may not work reliably depending on hardware.";
+  } else {
+    avrcpHelp.textContent = "Device does not support AVRCP media buttons.";
+  }
+  toggleIdleModeOptions();
+  toggleMpdConfigVisibility();
+  new bootstrap.Modal("#deviceSettingsModal").show();
+}
+
+function toggleIdleModeOptions() {
+  const mode = $("#setting-idle-mode").value;
+  $("#power-save-options").style.display = mode === "power_save" ? "" : "none";
+  $("#keep-alive-options").style.display = mode === "keep_alive" ? "" : "none";
+  $("#auto-disconnect-options").style.display = mode === "auto_disconnect" ? "" : "none";
+  const helpTexts = {
+    default: "No action taken when audio stops. Whether the speaker sleeps depends on its own hardware idle timer.",
+    power_save: "Suspends the audio sink after the delay to release the A2DP transport. The speaker's own internal sleep timer determines when it actually powers down.",
+    keep_alive: "Streams inaudible audio to prevent the speaker from auto-shutting down during silence.",
+    auto_disconnect: "Fully disconnects the Bluetooth device after the specified idle timeout.",
+  };
+  $("#idle-mode-help").textContent = helpTexts[mode] || "";
+}
+
+function toggleMpdConfigVisibility() {
+  const enabled = $("#setting-mpd-enabled").checked;
+  $("#mpd-config-group").style.display = enabled ? "" : "none";
+  // Pre-fill port with next available when enabling MPD for the first time
+  if (enabled && !$("#setting-mpd-port").value && lastDevices) {
+    const usedPorts = new Set(
+      lastDevices
+        .filter((d) => d.mpd_port != null && d.address !== _settingsAddress)
+        .map((d) => d.mpd_port)
+    );
+    for (let p = 6600; p <= 6609; p++) {
+      if (!usedPorts.has(p)) {
+        $("#setting-mpd-port").value = p;
+        $("#mpd-port-display").textContent = p;
+        $("#mpd-hostname").textContent = location.hostname;
+        $("#mpd-connection-info").style.display = "";
+        break;
+      }
+    }
+  }
+}
+
+async function saveDeviceSettings() {
+  if (!_settingsAddress) return;
+  const btn = $("#btnSaveSettings");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+  const idleMode = $("#setting-idle-mode").value;
+  const settings = {
+    idle_mode: idleMode,
+    keep_alive_method: $("#setting-keep-alive-method").value,
+    power_save_delay: parseInt($("#setting-power-save-delay").value, 10) || 0,
+    auto_disconnect_minutes: parseInt($("#setting-auto-disconnect-minutes").value, 10) || 30,
+    mpd_enabled: $("#setting-mpd-enabled").checked,
+  };
+  // Include MPD config when enabled
+  if (settings.mpd_enabled) {
+    settings.mpd_hw_volume = parseInt($("#setting-mpd-hw-volume").value, 10) || 100;
+    const portVal = $("#setting-mpd-port").value;
+    if (portVal) settings.mpd_port = parseInt(portVal, 10);
+  }
+  // Include audio profile only when HFP switching is enabled
+  if (window._hfpSwitchingEnabled) {
+    settings.audio_profile = $("#setting-audio-profile").value;
+  }
+  // Include AVRCP setting only if toggle is not disabled (device supports AVRCP)
+  const avrcpToggle = $("#setting-avrcp-enabled");
+  if (!avrcpToggle.disabled) {
+    settings.avrcp_enabled = avrcpToggle.checked;
+  }
+  try {
+    const resp = await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
+    const port = resp.settings?.mpd_port;
+    if (settings.mpd_enabled && port) {
+      showToast(`Settings saved — MPD on port ${port}`, "success");
+    } else {
+      showToast("Device settings saved", "success");
+    }
+    bootstrap.Modal.getInstance($("#deviceSettingsModal"))?.hide();
+  } catch (e) {
+    showToast(`Failed to save settings: ${e.message}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-save me-1"></i>Save';
+  }
+}
+
+// ============================================
 // Section 12: WebSocket (Real-time Updates)
 // ============================================
 
 let ws = null;
 let wsReconnectDelay = 1000;
+let _wsConnected = false;
 const WS_MAX_DELAY = 30000;
 const WS_BACKOFF = 1.5;
 
@@ -911,13 +1131,17 @@ function connectWebSocket() {
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    console.log("[WS] Connected");
-    wsReconnectDelay = 1000;
-    hideReconnectBanner();
-    setConnectionStatus("connected");
+    console.log("[WS] Open (waiting for first message)");
   };
 
   ws.onmessage = (e) => {
+    // Mark connected on first real message (not just TCP open)
+    if (wsReconnectDelay !== 1000 || !_wsConnected) {
+      _wsConnected = true;
+      hideReconnectBanner();
+      hideBanner(); // Clear any pending operation banner (e.g. adapter restart)
+    }
+    wsReconnectDelay = 1000; // Reset backoff on successful data
     const msg = JSON.parse(e.data);
     switch (msg.type) {
       case "devices_changed":
@@ -927,6 +1151,9 @@ function connectWebSocket() {
         renderSinks(msg.sinks);
         // Re-render devices to update merged sink info
         refreshDevicesFromCache();
+        break;
+      case "settings_changed":
+        // Settings updated by another client — no action needed unless modal is open
         break;
       case "mpris_command":
         appendMprisCommand(msg);
@@ -972,6 +1199,9 @@ function connectWebSocket() {
           hideBanner();
         }
         break;
+      case "toast":
+        showToast(msg.message, msg.level || "info");
+        break;
       default:
         console.log("[WS] Unknown message type:", msg.type);
     }
@@ -980,8 +1210,8 @@ function connectWebSocket() {
   ws.onclose = () => {
     console.log("[WS] Closed, reconnecting in", wsReconnectDelay, "ms");
     ws = null;
+    _wsConnected = false;
     showReconnectBanner();
-    setConnectionStatus("reconnecting");
     setTimeout(connectWebSocket, wsReconnectDelay);
     wsReconnectDelay = Math.min(wsReconnectDelay * WS_BACKOFF, WS_MAX_DELAY);
   };
@@ -1019,12 +1249,28 @@ const _origRenderDevices = renderDevices;
 // ============================================
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Set initial connection state
-  setConnectionStatus("connecting");
+  // Wire up idle mode dropdown in device settings modal
+  const idleModeSelect = $("#setting-idle-mode");
+  if (idleModeSelect) idleModeSelect.addEventListener("change", toggleIdleModeOptions);
 
-  // Wire up keep-alive toggle in device settings modal
-  const kaToggle = $("#setting-keep-alive-enabled");
-  if (kaToggle) kaToggle.addEventListener("change", toggleKeepAliveMethodVisibility);
+  // Wire up forget-device confirmation button
+  const confirmForgetBtn = $("#btn-confirm-forget");
+  if (confirmForgetBtn) {
+    confirmForgetBtn.addEventListener("click", () => doForgetDevice());
+  }
+
+  // Wire up adapter-switch confirmation button
+  const confirmSwitchBtn = $("#btn-confirm-adapter-switch");
+  if (confirmSwitchBtn) {
+    confirmSwitchBtn.addEventListener("click", async () => {
+      if (!_pendingAdapterMac) return;
+      const mac = _pendingAdapterMac;
+      const label = _pendingAdapterLabel;
+      _pendingAdapterMac = null;
+      _pendingAdapterLabel = null;
+      await doAdapterSwitch(mac, label, true);
+    });
+  }
 
   // WebSocket provides real-time updates (initial state sent on connect)
   connectWebSocket();
@@ -1032,12 +1278,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // Load adapter info (once at startup)
   loadAdapters();
 
-  // Show version in header pill and footer
+  // Show version in header pill and footer; store feature flags
   apiGet("/api/info")
     .then((data) => {
       const ver = data.version;
       $("#build-version").textContent = ver;
       $("#version-label").textContent = `${ver} (${data.adapter})`;
+      window._hfpSwitchingEnabled = !!data.hfp_switching_enabled;
     })
     .catch(() => {
       $("#build-version").textContent = "unknown";

@@ -1,11 +1,11 @@
-"""Configuration loader for the Bluetooth Audio Manager add-on.
+"""Configuration loader for the Bluetooth Audio Manager app.
 
 Reads user options from /data/options.json which is injected by
 the HA Supervisor based on the schema defined in config.yaml.
 
 Runtime settings (auto_reconnect, reconnect intervals, scan duration,
 bt_adapter) are stored in /data/settings.json and managed via the
-add-on's web UI.
+app's web UI.
 """
 
 import json
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 OPTIONS_PATH = "/data/options.json"
 SETTINGS_PATH = "/data/settings.json"
 
-# Keys that live in settings.json (managed via add-on UI)
+# Keys that live in settings.json (managed via app UI)
 _SETTINGS_KEYS = {
     "bt_adapter",
     "auto_reconnect",
@@ -30,12 +30,12 @@ _SETTINGS_KEYS = {
 
 @dataclass
 class AppConfig:
-    """Application configuration loaded from HA add-on options + settings."""
+    """Application configuration loaded from HA app options + settings."""
 
     # From options.json (HAOS config page — requires restart)
     log_level: str = "info"
 
-    # From settings.json (add-on UI)
+    # From settings.json (app UI)
     bt_adapter: str = "auto"
     auto_reconnect: bool = True
     reconnect_interval_seconds: int = 30
@@ -43,18 +43,14 @@ class AppConfig:
     scan_duration_seconds: int = 30
 
     @property
-    def adapter_path(self) -> str:
-        """Resolve the bt_adapter setting to a BlueZ D-Bus adapter path.
+    def bt_adapter_is_mac(self) -> bool:
+        """True when bt_adapter stores a MAC address (new format)."""
+        return ":" in self.bt_adapter
 
-        "auto" → "/org/bluez/hci0" (default first adapter).
-        "hci1" → "/org/bluez/hci1", etc.
-        """
-        if self.bt_adapter == "auto":
-            return "/org/bluez/hci0"
-        name = self.bt_adapter
-        if name.startswith("/org/bluez/"):
-            return name
-        return f"/org/bluez/{name}"
+    @property
+    def bt_adapter_is_legacy_hci(self) -> bool:
+        """True when bt_adapter stores a legacy HCI name like 'hci1'."""
+        return self.bt_adapter != "auto" and ":" not in self.bt_adapter
 
     @property
     def runtime_settings(self) -> dict:

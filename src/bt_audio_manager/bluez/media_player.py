@@ -5,7 +5,7 @@ commands, BlueZ forwards them as D-Bus method calls to a registered MPRIS
 player.  This module exports that player and registers it with BlueZ via
 org.bluez.Media1.RegisterPlayer().
 
-The speaker buttons then appear as events in the add-on's UI.
+The speaker buttons then appear as events in the app's UI.
 """
 
 import logging
