@@ -19,14 +19,17 @@ This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, 
 - **One-click device management** — scan, pair, connect, and disconnect from the web UI
 - **Auto-reconnect** — reconnects after disconnects or reboots with configurable exponential backoff
 - **Per-device idle modes** — Power Save (let speaker sleep), Stay Awake (inaudible keep-alive audio), or Auto-Disconnect (timed full disconnect)
-- **Per-device MPD instances** — each speaker gets its own Music Player Daemon, exposing it as a `media_player` entity in HA for TTS, automations, and volume control
+- **Per-device MPD instances**:
+  -  each BT device gets its own Music Player Daemon
+  -  use the MPD integration to expose it as a `media_player` entity in HA for TTS, automations, and volume control
+  -  this is not designed for multiroom audio, please use [Multiroom Audio App for HAOS](https://github.com/chrisuthe/Multi-SendSpin-Player-Container)
 - **AVRCP media buttons** — per-device toggle for hardware volume buttons and play/pause/skip tracking
 - **Multi-adapter support** — detects all Bluetooth adapters with friendly USB device names; switch between them from the UI
 - **Real-time monitoring** — live Events view for AVRCP/MPRIS/Transport events, plus a filterable Logs viewer with regex search
 - **Dark mode** — automatic system theme detection
 - **Safe BLE coexistence** — uses Classic Bluetooth (BR/EDR) only; HA's BLE integrations (sensors, beacons, ESPHome proxies) continue working without interference
 - **Security-first** — custom AppArmor profile enforcing least-privilege access, all Bluetooth operations go through BlueZ D-Bus (no raw HCI)
-- **Watchdog** — built-in health endpoint for automatic restart on failure
+
 
 <!-- TODO: Add screenshot of the device cards / events view -->
 
@@ -34,25 +37,26 @@ This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, 
 
 | Architecture | Examples |
 | --- | --- |
-| aarch64 | Raspberry Pi 4, Raspberry Pi 5 |
 | amd64 | Intel NUCs, x86-64 VMs |
-| armv7 | Raspberry Pi 3 |
-| armhf | Older ARM devices |
+| aarch64 (not tested) | Raspberry Pi 4, Raspberry Pi 5 |
+| armv7 (not tested) | Raspberry Pi 3 |
+| armhf (not tested)| Older ARM devices |
 
 **Requirements:**
 
 - Home Assistant OS (or a setup with D-Bus, PulseAudio, and BlueZ)
 - A Bluetooth adapter with BR/EDR (Classic Bluetooth) support — built-in or USB dongle
-- The adapter must be powered on (managed by HAOS, not this add-on)
 - Target devices must support A2DP (Advanced Audio Distribution Profile)
 
 ## Limitations
 
+- **Single active adapter** — one Bluetooth adapter active at a time (switchable in settings, requires add-on restart)
+  - recommended to use a dedicated adapater that is left unmanaged by HAOS, however combined adapter should work, YMMV 
+- **No multiroom sync** — each speaker is an independent PulseAudio sink; synchronized grouped playback is outside the scope of this add-on, if you want something that does this please consider [Multiroom Audio App for HAOS](https://github.com/chrisuthe/Multi-SendSpin-Player-Container)
 - **No audio receiving** — streams audio *to* speakers only. Cannot receive audio *from* Bluetooth devices (e.g., a phone streaming music to HA)
 - **No LE Audio / LC3** — Classic A2DP only; Bluetooth Low Energy audio is not supported
 - **No HFP/HSP yet** — Hands-Free Profile support is planned but waiting on HAOS audio container changes
-- **Single active adapter** — one Bluetooth adapter active at a time (switchable in settings, requires add-on restart)
-- **No multiroom sync** — each speaker is an independent PulseAudio sink; synchronized grouped playback is outside the scope of this add-on
+
 
 ## Installation
 
