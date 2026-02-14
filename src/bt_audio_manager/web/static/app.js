@@ -125,18 +125,11 @@ function showBanner(text) {
     <span>${escapeHtml(text)}</span>
   `;
   container.prepend(el);
-  setButtonsEnabled(false);
 }
 
 function hideBanner() {
   const existing = $("#operation-alert");
   if (existing) existing.remove();
-  setButtonsEnabled(true);
-}
-
-function setButtonsEnabled(enabled) {
-  const btn = $("#btn-refresh");
-  if (btn) btn.disabled = !enabled;
 }
 
 // ============================================
@@ -809,19 +802,6 @@ function updateLogsCount() {
 // ============================================
 // Section 11: Actions
 // ============================================
-
-async function refreshDevices() {
-  try {
-    const [devResult, sinkResult] = await Promise.all([
-      apiGet("/api/devices"),
-      apiGet("/api/audio/sinks"),
-    ]);
-    currentSinks = sinkResult.sinks || [];
-    renderDevices(devResult.devices);
-  } catch (e) {
-    showToast(`Refresh failed: ${e.message}`, "error");
-  }
-}
 
 async function scanDevices() {
   if (isScanning) return;

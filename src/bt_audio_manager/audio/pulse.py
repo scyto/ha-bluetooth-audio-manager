@@ -6,6 +6,7 @@ When BlueZ connects an A2DP device, PulseAudio's module-bluez5-discover
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -27,6 +28,28 @@ _SPEC_SUFFIX_HZ = "Hz"
 _SPEC_SUFFIX_CH = "ch"
 
 
+@contextlib.contextmanager
+def _capture_stderr():
+    """Capture stderr from libpulse and re-emit at debug level.
+
+    libpulse prints 'lock: Permission denied' to stderr during connect —
+    harmless but noisy at the default log level.
+    """
+    r_fd, w_fd = os.pipe()
+    old_stderr = os.dup(2)
+    os.dup2(w_fd, 2)
+    try:
+        yield
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(old_stderr)
+        os.close(w_fd)
+        captured = os.read(r_fd, 4096).decode(errors="replace").strip()
+        os.close(r_fd)
+        if captured:
+            logger.debug("libpulse stderr: %s", captured)
+
+
 class PulseAudioManager:
     """Manages PulseAudio sinks for Bluetooth audio devices."""
 
@@ -46,7 +69,8 @@ class PulseAudioManager:
         # If PULSE_SERVER is set, try it directly
         if os.environ.get("PULSE_SERVER"):
             self._pulse = PulseAsync("bt-audio-manager")
-            await self._pulse.connect()
+            with _capture_stderr():
+                await self._pulse.connect()
             self._server = os.environ["PULSE_SERVER"]
             logger.info(
                 "Connected to PulseAudio via PULSE_SERVER=%s",
@@ -54,13 +78,13 @@ class PulseAudioManager:
             )
             return
 
-        # Try fallback addresses
-        logger.info("PULSE_SERVER not set, probing known HAOS audio paths...")
+        # PULSE_SERVER not set — probe known HAOS audio socket paths
         for server in _FALLBACK_SERVERS:
             try:
                 os.environ["PULSE_SERVER"] = server
                 self._pulse = PulseAsync("bt-audio-manager")
-                await self._pulse.connect()
+                with _capture_stderr():
+                    await self._pulse.connect()
                 self._server = server
                 logger.info("Connected to PulseAudio via %s", server)
                 return
@@ -172,10 +196,13 @@ class PulseAudioManager:
         while True:
             bt_sink_states: dict[str, str] = {}
             try:
-                async with PulseAsync("bt-audio-events") as pulse_events:
+                _pe = PulseAsync("bt-audio-events")
+                with _capture_stderr():
+                    await _pe.connect()
+                try:
                     retry_delay = 2  # reset on successful connection
                     logger.info("PA event subscription started (sink events)")
-                    async for event in pulse_events.subscribe_events("sink", "server"):
+                    async for event in _pe.subscribe_events("sink", "server"):
                         if event.t == "change" and self._pulse:
                             try:
                                 sink = await self._pulse.sink_info(event.index)
@@ -203,6 +230,8 @@ class PulseAudioManager:
                                 logger.debug("PA event handler error: %s", e)
                         elif event.t in ("new", "remove"):
                             logger.info("PA sink %s: index=%d", event.t, event.index)
+                finally:
+                    _pe.close()
             except asyncio.CancelledError:
                 return  # clean shutdown
             except Exception as e:
