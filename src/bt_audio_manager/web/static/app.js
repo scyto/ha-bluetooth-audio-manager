@@ -237,20 +237,6 @@ function hideReconnectBanner() {
   reconnectStartTime = null;
 }
 
-function setConnectionStatus(state) {
-  const badge = $("#connection-status");
-  if (!badge) return;
-  const map = {
-    connecting: { text: "Connecting...", cls: "bg-secondary" },
-    connected: { text: "Connected", cls: "bg-success" },
-    reconnecting: { text: "Reconnecting...", cls: "bg-warning text-dark" },
-    disconnected: { text: "Disconnected", cls: "bg-danger" },
-  };
-  const info = map[state] || map.connecting;
-  badge.textContent = info.text;
-  badge.className = `badge ${info.cls}`;
-}
-
 // ============================================
 // Section 6: BT Profile UUID Labels
 // ============================================
@@ -1083,6 +1069,23 @@ function toggleIdleModeOptions() {
 function toggleMpdConfigVisibility() {
   const enabled = $("#setting-mpd-enabled").checked;
   $("#mpd-config-group").style.display = enabled ? "" : "none";
+  // Pre-fill port with next available when enabling MPD for the first time
+  if (enabled && !$("#setting-mpd-port").value && lastDevices) {
+    const usedPorts = new Set(
+      lastDevices
+        .filter((d) => d.mpd_port != null && d.address !== _settingsAddress)
+        .map((d) => d.mpd_port)
+    );
+    for (let p = 6600; p <= 6609; p++) {
+      if (!usedPorts.has(p)) {
+        $("#setting-mpd-port").value = p;
+        $("#mpd-port-display").textContent = p;
+        $("#mpd-hostname").textContent = location.hostname;
+        $("#mpd-connection-info").style.display = "";
+        break;
+      }
+    }
+  }
 }
 
 async function saveDeviceSettings() {
@@ -1136,6 +1139,7 @@ async function saveDeviceSettings() {
 
 let ws = null;
 let wsReconnectDelay = 1000;
+let _wsConnected = false;
 const WS_MAX_DELAY = 30000;
 const WS_BACKOFF = 1.5;
 
@@ -1147,15 +1151,16 @@ function connectWebSocket() {
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    console.log("[WS] Connected");
-    // Don't reset backoff here — wait for first successful message
-    // (server may disconnect immediately if PA is unavailable)
-    hideReconnectBanner();
-    hideBanner(); // Clear any pending operation banner (e.g. adapter restart)
-    setConnectionStatus("connected");
+    console.log("[WS] Open (waiting for first message)");
   };
 
   ws.onmessage = (e) => {
+    // Mark connected on first real message (not just TCP open)
+    if (wsReconnectDelay !== 1000 || !_wsConnected) {
+      _wsConnected = true;
+      hideReconnectBanner();
+      hideBanner(); // Clear any pending operation banner (e.g. adapter restart)
+    }
     wsReconnectDelay = 1000; // Reset backoff on successful data
     const msg = JSON.parse(e.data);
     switch (msg.type) {
@@ -1225,8 +1230,8 @@ function connectWebSocket() {
   ws.onclose = () => {
     console.log("[WS] Closed, reconnecting in", wsReconnectDelay, "ms");
     ws = null;
+    _wsConnected = false;
     showReconnectBanner();
-    setConnectionStatus("reconnecting");
     setTimeout(connectWebSocket, wsReconnectDelay);
     wsReconnectDelay = Math.min(wsReconnectDelay * WS_BACKOFF, WS_MAX_DELAY);
   };
@@ -1264,9 +1269,6 @@ const _origRenderDevices = renderDevices;
 // ============================================
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Set initial connection state
-  setConnectionStatus("connecting");
-
   // Wire up idle mode dropdown in device settings modal
   const idleModeSelect = $("#setting-idle-mode");
   if (idleModeSelect) idleModeSelect.addEventListener("change", toggleIdleModeOptions);
