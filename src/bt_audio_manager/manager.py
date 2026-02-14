@@ -353,7 +353,7 @@ class BluetoothAudioManager:
                     if self._should_disconnect_hfp(addr):
                         await self._disconnect_hfp(addr)
             except Exception as e:
-                logger.debug("Could not initialize stored device %s: %s", addr, e)
+                logger.warning("Could not initialize stored device %s: %s", addr, e)
 
         # 6a. Clean up stale BlueZ device cache — remove unpaired, disconnected
         #     device objects that aren't in our persistent store.  These are
@@ -436,7 +436,7 @@ class BluetoothAudioManager:
                     if self._should_disconnect_hfp(addr):
                         await self._disconnect_hfp(addr)
                 except Exception as e:
-                    logger.debug("Could not initialize unmanaged device %s: %s", addr, e)
+                    logger.warning("Could not initialize unmanaged device %s: %s", addr, e)
         except Exception as e:
             logger.debug("Failed to enumerate connected BlueZ devices: %s", e)
 
