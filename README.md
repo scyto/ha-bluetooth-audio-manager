@@ -10,9 +10,9 @@ A Home Assistant add-on that lets you manage Bluetooth audio devices (A2DP speak
 
 ## Why This Exists
 
-Home Assistant has no built-in way to manage Bluetooth audio devices. Without this add-on, connecting a Bluetooth speaker means SSH-ing into the host, manually running `bluetoothctl` to scan, pair, and connect, setting up PulseAudio sinks by hand, and hoping it all survives a reboot. It usually doesn't.
+Home Assistant has no built-in way to manage Bluetooth audio devices. Without this app, connecting a Bluetooth speaker means SSH-ing into the host, manually running `bluetoothctl` to scan, pair, and connect, setting up PulseAudio sinks by hand, and hoping it all survives a reboot. It usually doesn't.
 
-This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, connect, done — and it reconnects automatically when things drop.
+This app gives you a point-and-click UI right in the HA sidebar. Scan, pair, connect, done — and it reconnects automatically when things drop.
 
 ## Use Cases
 - **Use to just manage connections** - this app makes it easy to manage BT connectiosn, let your other apps use the BT device as normal
@@ -79,10 +79,10 @@ This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, 
    ```
 
 4. Find **Bluetooth Audio Manager** in the store and click **Install**
-5. Start the add-on — it appears in the sidebar as **BT Audio**
+5. Start the app — it appears in the sidebar as **BT Audio**
 
 > **Dev channel:** To install the development build, enable *Show experimental
-> add-ons* in your HA profile settings, then install **Bluetooth Audio Manager
+> apps* in your HA profile settings, then install **Bluetooth Audio Manager
 > (Dev)** from the store. It tracks the `dev` branch and updates on every push.
 
 ## Quick Start
@@ -98,11 +98,11 @@ This add-on gives you a point-and-click UI right in the HA sidebar. Scan, pair, 
 ## Configuration
 
 Configuration options and per-device settings are documented in the
-[add-on documentation](bluetooth_audio_manager/DOCS.md).
+[App documentation](bluetooth_audio_manager/DOCS.md).
 
 ## Links
 
-- [Add-on Documentation](bluetooth_audio_manager/DOCS.md)
+- [App Documentation](bluetooth_audio_manager/DOCS.md)
 - [Dev Documentation](bluetooth_audio_manager_dev/DOCS.md)
 - [Report a Device Issue](https://github.com/scyto/ha-bluetooth-audio-manager/issues/new?template=device-issue.yml)
 - [All Issues](https://github.com/scyto/ha-bluetooth-audio-manager/issues)
