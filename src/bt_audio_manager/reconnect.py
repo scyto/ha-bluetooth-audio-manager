@@ -93,8 +93,8 @@ class ReconnectService:
                     logger.info("Device %s already connected, skipping reconnect", address)
                     self._tasks.pop(address, None)
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("is_connected check failed for %s: %s", address, e)
 
         # Quick first attempt — handles transient glitches (e.g. AVRCP bugs)
         logger.info(
