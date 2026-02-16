@@ -130,8 +130,8 @@ pairing mode). Then scan and pair again from the app.
 
 **`Authentication Rejected` when pairing**: The speaker still has old pairing
 keys for your system's Bluetooth address and is refusing the new pairing
-attempt. Clear the speaker's paired-device list (hold the Bluetooth button for
-~10 seconds) so both sides start fresh, then re-pair from the app.
+attempt. Clear the speaker's paired-device list (e.g hold the Bluetooth button for
+~10 seconds or more) so both sides start fresh, then re-pair from the app.
 
 **Existing BLE integrations stopped working**: This should not happen by
 design. Check the app logs for errors and file an issue on GitHub.
