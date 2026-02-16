@@ -77,7 +77,7 @@ when MPD starts. MPD's software volume then acts as the single volume knob — s
 | **HA automation** `media_player.volume_set` | MPD software volume changes → effective output = that % |
 | **TTS with volume preset** | Automation sets volume then speaks → plays at that level |
 
-## Usage
+## General Usage
 
 1. Open the app from the Home Assistant sidebar ("BT Audio")
 2. Click **Scan for Devices** (make sure your speaker is in pairing mode)
@@ -85,6 +85,16 @@ when MPD starts. MPD's software volume then acts as the single volume knob — s
 4. Click **Connect** — the device will appear as a PulseAudio audio sink
 5. Go to **Settings > System > Audio** to see/select the Bluetooth speaker
 6. Use TTS, media player, or automations to play audio through it
+
+## MPD Integration
+1. Get the hostname of the app from the app page in HAOS app manager (e.g. d4261985-bluetooth-audio-manager)
+2. In devices and integration click add integration
+3. Find the MPD integration
+4. fill in the fields:
+   - hostname (use the one you got in step one)
+   - password - leave blank
+   - port - the port shown in the config for the player 
+
 
 ## Requirements
 
