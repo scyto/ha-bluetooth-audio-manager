@@ -29,7 +29,7 @@ class EventBus:
         if not self._clients:
             return
         logger.debug("EventBus emit: %s → %d client(s)", event, len(self._clients))
-        for q in self._clients:
+        for q in list(self._clients):
             try:
                 q.put_nowait({"event": event, "data": data})
             except asyncio.QueueFull:
