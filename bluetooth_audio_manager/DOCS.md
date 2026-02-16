@@ -31,15 +31,20 @@ Bluetooth integration (used for BLE sensors, beacons, etc.):
   never affect HA's scanning
 - The adapter's power, discoverable, and pairable states are never modified
 
-## Configuration
+## App Configuration
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `log_level` | `info` | Logging verbosity (debug, info, warning, error) |
-| `auto_reconnect` | `true` | Automatically reconnect disconnected devices |
+| `audio device` | `default` | Do NOT touch this setting, it is not usedd |
+
+## In App Settings
+| Option | Default | Description |
+|--------|---------|-------------|
 | `reconnect_interval_seconds` | `30` | Initial reconnection delay |
 | `reconnect_max_backoff_seconds` | `300` | Maximum reconnection delay |
 | `scan_duration_seconds` | `15` | How long to scan for devices |
+
 
 ### Per-device keep-alive
 
