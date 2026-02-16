@@ -53,10 +53,11 @@ function escapeHtml(text) {
 
 function safeJsString(text) {
   // Escape for embedding in a JS single-quoted string inside an HTML attribute.
-  // Order matters: backslashes first, then quotes and HTML-significant chars.
+  // Order matters: backslashes first, then quotes, then HTML-significant chars.
   return (text || "")
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'")
+    .replace(/"/g, "\\x22")
     .replace(/</g, "\\x3c")
     .replace(/>/g, "\\x3e")
     .replace(/&/g, "\\x26");
