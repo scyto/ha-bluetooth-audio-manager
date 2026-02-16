@@ -55,7 +55,7 @@ This app gives you a point-and-click UI right in the HA sidebar. Scan, pair, con
 
 **Requirements:**
 
-- Home Assistant OS (or a setup with D-Bus, PulseAudio, and BlueZ)
+- Home Assistant OS 17.1 or later (or a setup with D-Bus, PulseAudio, and BlueZ)
 - A Bluetooth adapter with BR/EDR (Classic Bluetooth) support — built-in or USB dongle
 - Target devices must support A2DP (Advanced Audio Distribution Profile)
 
