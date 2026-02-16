@@ -1437,21 +1437,24 @@ class BluetoothAudioManager:
                 logger.debug("Skipping auto setup for %s (connect/cycle in progress)", address)
                 return
 
-            async with self._device_lock(address):
-                # Try to subscribe to AVRCP after reconnection
+            # AVRCP watch and HFP disconnect are slow (retries, D-Bus
+            # round-trips) but don't touch idle/MPD state, so run them
+            # outside the lock to avoid blocking disconnect handlers.
+            try:
+                device = await self._get_or_create_device(address)
                 try:
-                    device = await self._get_or_create_device(address)
-                    try:
-                        await device.watch_media_player()
-                    except Exception as e:
-                        logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
+                    await device.watch_media_player()
                 except Exception as e:
-                    logger.debug("Cannot access reconnected device %s: %s", address, e)
+                    logger.debug("AVRCP watch on reconnect failed for %s: %s", address, e)
+            except Exception as e:
+                logger.debug("Cannot access reconnected device %s: %s", address, e)
 
-                # Disconnect HFP to force AVRCP volume (speakers send AT+VGS otherwise)
-                if self._should_disconnect_hfp(address):
-                    await self._disconnect_hfp(address)
+            if self._should_disconnect_hfp(address):
+                await self._disconnect_hfp(address)
 
+            # Serialize idle/MPD/transport setup against concurrent
+            # disconnect handlers to prevent racing state changes.
+            async with self._device_lock(address):
                 from .bluez.constants import HFP_SWITCHING_ENABLED
                 if HFP_SWITCHING_ENABLED:
                     audio_profile = self._get_audio_profile(address)

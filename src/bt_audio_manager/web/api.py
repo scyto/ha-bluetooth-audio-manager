@@ -126,9 +126,9 @@ def create_api_routes(
         try:
             body = await request.json()
             adapter_name = body.get("adapter")
-            if not adapter_name:
+            if not adapter_name or not isinstance(adapter_name, str):
                 return web.json_response(
-                    {"error": "adapter is required"}, status=400
+                    {"error": "adapter is required and must be a string"}, status=400
                 )
             # Validate format: "auto", MAC address, or legacy hciN name
             valid = (
