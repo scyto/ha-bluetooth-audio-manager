@@ -252,7 +252,7 @@ class BluetoothAudioManager:
                             # Sync volume to the device's MPD instance
                             mpd = self._mpd_instances.get(transport_addr)
                             if mpd and mpd.is_running:
-                                asyncio.ensure_future(mpd.set_volume(vol_pct))
+                                self._fire_and_forget(mpd.set_volume(vol_pct))
                         if "State" in changed:
                             state = changed["State"].value
                             if self.media_player and state == "active":
@@ -557,6 +557,20 @@ class BluetoothAudioManager:
 
         logger.info("Bluetooth Audio Manager shut down")
 
+    # -- Helpers --
+
+    @staticmethod
+    def _log_task_exception(task: asyncio.Task) -> None:
+        """Log unhandled exceptions from fire-and-forget tasks."""
+        if not task.cancelled() and task.exception():
+            logger.error("Background task %s failed: %s", task.get_name(), task.exception())
+
+    def _fire_and_forget(self, coro) -> asyncio.Task:
+        """Create a task for a coroutine and log any unhandled exceptions."""
+        task = asyncio.create_task(coro)
+        task.add_done_callback(self._log_task_exception)
+        return task
+
     # -- Device lifecycle operations --
 
     def _device_lock(self, address: str) -> asyncio.Lock:
@@ -683,10 +697,10 @@ class BluetoothAudioManager:
             return
         if self._scan_debounce_handle and not self._scan_debounce_handle.cancelled():
             return  # already scheduled
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._scan_debounce_handle = loop.call_later(
             self.SCAN_DEBOUNCE_SECONDS,
-            lambda: asyncio.ensure_future(self._debounced_scan_broadcast()),
+            lambda: self._fire_and_forget(self._debounced_scan_broadcast()),
         )
 
     async def _debounced_scan_broadcast(self) -> None:
@@ -836,13 +850,16 @@ class BluetoothAudioManager:
                         address, timeout=15, connected_check=device.is_connected
                     )
                 if sink_name:
-                    # Disconnect HFP only for A2DP devices — doing it earlier
-                    # can cause the speaker to drop the entire connection when
-                    # HFP is the only active profile.
-                    if self._should_disconnect_hfp(address):
-                        await self._disconnect_hfp(address)
-                    await self._apply_idle_mode(address)
-                    await self._start_mpd_if_enabled(address)
+                    # Serialize post-connection setup against concurrent
+                    # disconnect handlers to prevent racing idle/MPD state.
+                    async with self._device_lock(address):
+                        # Disconnect HFP only for A2DP devices — doing it earlier
+                        # can cause the speaker to drop the entire connection when
+                        # HFP is the only active profile.
+                        if self._should_disconnect_hfp(address):
+                            await self._disconnect_hfp(address)
+                        await self._apply_idle_mode(address)
+                        await self._start_mpd_if_enabled(address)
                     await self._broadcast_all()
                     return True
                 logger.warning("%s sink for %s did not appear in PulseAudio", profile_label, address)
@@ -894,7 +911,13 @@ class BluetoothAudioManager:
     async def forget_device(self, address: str) -> None:
         """Unpair, remove from BlueZ, and delete from persistent store."""
         self._broadcast_status(f"Forgetting {address}...")
+        # Clean up all per-address tracking state
         self._a2dp_attempts.pop(address, None)
+        self._device_connect_time.pop(address, None)
+        self._last_signaled_volume.pop(address, None)
+        self._device_lifecycle_locks.pop(address, None)
+        self._connecting.discard(address)
+        self._suppress_reconnect.discard(address)
         # Cancel reconnection
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
@@ -918,6 +941,9 @@ class BluetoothAudioManager:
         # Remove from BlueZ (search all adapters — device may be on a
         # different adapter than the one this app is configured to use)
         await BluezAdapter.remove_device_any_adapter(self.bus, address)
+
+        # Stop idle handlers (keepalive, suspend timer, auto-disconnect)
+        await self._stop_idle_handler(address)
 
         # Stop MPD and release port before removing from store
         await self._stop_mpd(address)
@@ -1368,7 +1394,7 @@ class BluetoothAudioManager:
         # Clean up running sink tracking for this device
         addr_underscored = address.replace(":", "_")
         self._running_sinks = {s for s in self._running_sinks if addr_underscored not in s}
-        asyncio.ensure_future(self._on_device_disconnected_async(address))
+        self._fire_and_forget(self._on_device_disconnected_async(address))
 
         if address in self._connecting:
             # Active pair/connect flow in progress — don't start competing reconnect
@@ -1379,7 +1405,7 @@ class BluetoothAudioManager:
             logger.info("Skipping auto-reconnect for %s (user-initiated disconnect)", address)
         elif self.reconnect_service:
             self.reconnect_service.handle_disconnect(address)
-        asyncio.ensure_future(self._broadcast_all())
+        self._fire_and_forget(self._broadcast_all())
 
     async def _on_device_disconnected_async(self, address: str) -> None:
         """Async handler for device disconnect — stops MPD and idle handlers.
@@ -1395,7 +1421,7 @@ class BluetoothAudioManager:
         """Handle device connection event (D-Bus signal)."""
         self._device_connect_time[address] = time.time()
         self._last_signaled_volume.pop(address, None)
-        asyncio.ensure_future(self._on_device_connected_async(address))
+        self._fire_and_forget(self._on_device_connected_async(address))
 
     async def _on_device_connected_async(self, address: str) -> None:
         """Async handler for device connection — broadcasts state and starts AVRCP.
@@ -2239,7 +2265,7 @@ class BluetoothAudioManager:
         if addr:
             mpd = self._mpd_instances.get(addr)
             if mpd and mpd.is_running:
-                asyncio.ensure_future(mpd.set_volume(volume))
+                self._fire_and_forget(mpd.set_volume(volume))
 
     @staticmethod
     def _addr_from_sink_name(sink_name: str) -> str:
@@ -2360,7 +2386,7 @@ class BluetoothAudioManager:
         if target_addr:
             mpd = self._mpd_instances.get(target_addr)
             if mpd and mpd.is_running:
-                asyncio.ensure_future(mpd.handle_command(command, detail))
+                self._fire_and_forget(mpd.handle_command(command, detail))
         else:
             # Single-instance fallback: if only one MPD is running, route to it
             running = [(a, m) for a, m in self._mpd_instances.items() if m.is_running]
@@ -2371,7 +2397,7 @@ class BluetoothAudioManager:
                     return
                 logger.info("Single MPD instance — routing %s to %s", command, addr)
                 entry["address"] = addr
-                asyncio.ensure_future(mpd.handle_command(command, detail))
+                self._fire_and_forget(mpd.handle_command(command, detail))
             else:
                 logger.debug("Cannot determine source device for MPRIS command %s, ignoring", command)
 
@@ -2482,9 +2508,9 @@ class BluetoothAudioManager:
         """Schedule a delayed PA sink suspension for power-save mode."""
         self._cancel_pending_suspend(address)
         if delay <= 0:
-            task = asyncio.ensure_future(self._do_sink_suspend(address, sink_name))
+            task = self._fire_and_forget(self._do_sink_suspend(address, sink_name))
         else:
-            task = asyncio.ensure_future(self._delayed_sink_suspend(address, sink_name, delay))
+            task = self._fire_and_forget(self._delayed_sink_suspend(address, sink_name, delay))
         self._pending_suspends[address] = task
 
     async def _delayed_sink_suspend(self, address: str, sink_name: str, delay: int) -> None:
@@ -2516,7 +2542,7 @@ class BluetoothAudioManager:
         self._cancel_auto_disconnect_timer(address)
         minutes = settings.get("auto_disconnect_minutes", 30)
         logger.info("Auto-disconnect: will disconnect %s in %d minutes if idle", address, minutes)
-        task = asyncio.ensure_future(self._auto_disconnect_after(address, minutes * 60))
+        task = self._fire_and_forget(self._auto_disconnect_after(address, minutes * 60))
         self._auto_disconnect_tasks[address] = task
 
     async def _auto_disconnect_after(self, address: str, seconds: int) -> None:
