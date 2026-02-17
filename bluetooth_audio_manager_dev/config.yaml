@@ -3,7 +3,7 @@ version: "sha-6b00586"
 slug: bluetooth_audio_manager_dev
 description: "Development build - may be unstable. Bluetooth A2DP audio device management with persistent pairing and auto-reconnect."
 url: "https://github.com/scyto/ha-bluetooth-audio-manager"
-image: "ghcr.io/scyto/ha-bluetooth-audio-manager-dev/{arch}"
+image: "ghcr.io/scyto/ha-bluetooth-audio-manager-dev"
 arch:
   - aarch64
   - amd64
