@@ -364,4 +364,4 @@ jobs:
             --title "chore: update dev app version to sha-${SHORT_SHA}" \
             --body "Automated dev version bump after successful dev build."
 
-          gh pr merge "$BRANCH" --squash --auto --delete-branch
+          gh pr merge "$BRANCH" --squash --delete-branch
