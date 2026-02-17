@@ -7,9 +7,21 @@ on:
       - dev
     tags:
       - "v*"
+    paths-ignore:
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/FUNDING.yml"
+      - "repository.json"
+      - "LICENSE"
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/FUNDING.yml"
+      - "repository.json"
+      - "LICENSE"
 
 env:
   REGISTRY: ghcr.io
