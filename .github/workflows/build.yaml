@@ -3,7 +3,6 @@ name: Build and Publish
 on:
   push:
     branches:
-      - main
       - dev
     tags:
       - "v*"
