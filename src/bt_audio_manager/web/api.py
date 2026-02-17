@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -14,6 +15,9 @@ if TYPE_CHECKING:
     from .log_handler import WebSocketLogHandler
 
 logger = logging.getLogger(__name__)
+
+# Strict Bluetooth MAC address pattern (AA:BB:CC:DD:EE:FF)
+_MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 
 # Map common BlueZ D-Bus error strings to user-friendly messages
 _BLUEZ_ERROR_MAP = {
@@ -38,7 +42,25 @@ def _friendly_error(e: Exception) -> str:
         for pattern, friendly in _BLUEZ_ERROR_MAP.items():
             if pattern in msg:
                 return friendly
-    return msg
+    # Don't leak raw D-Bus internals to the client
+    logger.debug("Unmapped error returned to client: %s", msg)
+    return "Operation failed. Check add-on logs for details."
+
+
+def _get_validated_address(body: dict) -> tuple[str | None, web.Response | None]:
+    """Extract and validate a Bluetooth MAC address from a request body.
+
+    Returns (address, None) on success or (None, error_response) on failure.
+    """
+    address = body.get("address")
+    if not address:
+        return None, web.json_response({"error": "address is required"}, status=400)
+    if not isinstance(address, str) or not _MAC_RE.match(address):
+        return None, web.json_response(
+            {"error": "Invalid Bluetooth address format (expected XX:XX:XX:XX:XX:XX)"},
+            status=400,
+        )
+    return address, None
 
 
 async def _ws_sender(
@@ -104,9 +126,20 @@ def create_api_routes(
         try:
             body = await request.json()
             adapter_name = body.get("adapter")
-            if not adapter_name:
+            if not adapter_name or not isinstance(adapter_name, str):
                 return web.json_response(
-                    {"error": "adapter is required"}, status=400
+                    {"error": "adapter is required and must be a string"}, status=400
+                )
+            # Validate format: "auto", MAC address, or legacy hciN name
+            valid = (
+                adapter_name == "auto"
+                or _MAC_RE.match(adapter_name)
+                or re.match(r"^hci\d+$", adapter_name)
+            )
+            if not valid:
+                return web.json_response(
+                    {"error": "adapter must be 'auto', a MAC address, or an hciN name"},
+                    status=400,
                 )
 
             clean = body.get("clean", False)
@@ -196,11 +229,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response(
-                    {"error": "address is required"}, status=400
-                )
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             result = await manager.pair_device(address)
             return web.json_response(result)
         except Exception as e:
@@ -213,11 +244,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response(
-                    {"error": "address is required"}, status=400
-                )
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             success = await manager.connect_device(address)
             return web.json_response({"connected": success, "address": address})
         except Exception as e:
@@ -230,11 +259,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response(
-                    {"error": "address is required"}, status=400
-                )
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             await manager.disconnect_device(address)
             return web.json_response({"disconnected": True, "address": address})
         except Exception as e:
@@ -247,11 +274,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response(
-                    {"error": "address is required"}, status=400
-                )
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             success = await manager.force_reconnect_device(address)
             return web.json_response({"reconnected": success, "address": address})
         except Exception as e:
@@ -264,11 +289,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response(
-                    {"error": "address is required"}, status=400
-                )
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             await manager.forget_device(address)
             return web.json_response({"forgotten": True, "address": address})
         except Exception as e:
@@ -279,6 +302,11 @@ def create_api_routes(
     async def update_device_settings(request: web.Request) -> web.Response:
         """Update per-device settings (keep-alive, etc.)."""
         address = request.match_info["address"]
+        if not _MAC_RE.match(address):
+            return web.json_response(
+                {"error": "Invalid Bluetooth address format (expected XX:XX:XX:XX:XX:XX)"},
+                status=400,
+            )
         try:
             # Auto-store paired devices not yet in the persistence store
             # (can happen when BlueZ paired a device before the add-on tracked it)
@@ -476,9 +504,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response({"error": "address is required"}, status=400)
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             result = await manager.debug_avrcp_cycle(address)
             return web.json_response(result)
         except Exception as e:
@@ -491,9 +519,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response({"error": "address is required"}, status=400)
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             result = await manager.debug_mpris_reregister(address)
             return web.json_response(result)
         except Exception as e:
@@ -506,9 +534,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response({"error": "address is required"}, status=400)
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             result = await manager.debug_mpris_avrcp_cycle(address)
             return web.json_response(result)
         except Exception as e:
@@ -521,9 +549,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response({"error": "address is required"}, status=400)
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             result = await manager.debug_disconnect_hfp(address)
             return web.json_response(result)
         except Exception as e:
@@ -536,9 +564,9 @@ def create_api_routes(
         address = None
         try:
             body = await request.json()
-            address = body.get("address")
-            if not address:
-                return web.json_response({"error": "address is required"}, status=400)
+            address, err = _get_validated_address(body)
+            if err:
+                return err
             result = await manager.debug_hfp_reconnect_cycle(address)
             return web.json_response(result)
         except Exception as e:

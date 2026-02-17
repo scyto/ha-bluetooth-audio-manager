@@ -169,8 +169,8 @@ class MPDManager:
             pid_file=self._pid_file,
             port=self._port,
             password_line=password_line,
-            speaker_name=self._speaker_name,
-            sink=self._sink_name,
+            speaker_name=self._speaker_name.replace("\\", "\\\\").replace('"', '\\"'),
+            sink=self._sink_name.replace("\\", "\\\\").replace('"', '\\"'),
         )
 
         with open(self._conf_path, "w") as f:

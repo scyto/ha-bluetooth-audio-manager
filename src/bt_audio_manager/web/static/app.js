@@ -51,6 +51,18 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function safeJsString(text) {
+  // Escape for embedding in a JS single-quoted string inside an HTML attribute.
+  // Order matters: backslashes first, then quotes, then HTML-significant chars.
+  return (text || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/"/g, "\\x22")
+    .replace(/</g, "\\x3c")
+    .replace(/>/g, "\\x3e")
+    .replace(/&/g, "\\x26");
+}
+
 // ============================================
 // Section 2: Theme Detection
 // ============================================
@@ -398,8 +410,8 @@ function renderDevices(devices) {
         const mpdPort = d.mpd_port || "";
         const mpdHwVolume = d.mpd_hw_volume ?? 100;
         const avrcpEnabled = d.avrcp_enabled ?? true;
-        const safeName = escapeHtml(d.name).replace(/'/g, "\\'");
-        const uuidsJson = JSON.stringify(d.uuids || []).replace(/"/g, '&quot;').replace(/'/g, "\\'");
+        const safeName = safeJsString(d.name);
+        const uuidsJson = safeJsString(JSON.stringify(d.uuids || []));
         kebab = `
           <div class="dropdown">
             <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
@@ -523,7 +535,7 @@ function renderAdaptersModal(adapters) {
       const displayLabel = friendlyName || a.name;
       const selectBtn =
         !a.selected && a.powered
-          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.address}', '${escapeHtml(displayLabel).replace(/'/g, "\\'")}')">
+          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.address}', '${safeJsString(displayLabel)}')">
                <i class="fas fa-check me-1"></i>Select
              </button>`
           : "";
