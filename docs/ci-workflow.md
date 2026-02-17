@@ -36,7 +36,7 @@ push to dev
      tagged: sha-XXXXXXX + latest
   -> update-addon-version-dev: creates PR to update
      bluetooth_audio_manager_dev/config.yaml on main
-     with the new SHA version (auto-merged)
+     with the new SHA version (merged immediately)
 ```
 
 The dev image is published to `ghcr.io/scyto/ha-bluetooth-audio-manager-dev`.
@@ -81,7 +81,7 @@ Removing `main` from the push trigger means only publishing a GitHub release (wh
 creates the tag) triggers a stable build. The release is the single gate for when
 stable images are built and published.
 
-## Dev Version Bump (auto-merged PR)
+## Dev Version Bump (automatically merged PR)
 
 After each dev build, the `update-addon-version-dev` job updates
 `bluetooth_audio_manager_dev/config.yaml` on `main` with the new SHA version.
@@ -98,13 +98,19 @@ integration") when attempting to add it.
 
 The PR approach works with standard `GITHUB_TOKEN` permissions:
 
-1. Creates a temporary branch (`chore/dev-version-sha-XXXXXXX`)
-2. Opens a PR to main
-3. Auto-merges with `--squash --auto --delete-branch`
+1. Closes any stale dev-version PRs from previous runs
+2. Creates a temporary branch (`chore/dev-version-sha-XXXXXXX`)
+3. Opens a PR to main
+4. Immediately merges with `--squash --delete-branch`
+
+Note: `--auto` is not used because it requires the "Allow auto-merge" repo setting,
+which in turn requires required status checks. Since there are no checks to wait for
+(the PR only touches `bluetooth_audio_manager_dev/**` which is in `paths-ignore`),
+the merge executes immediately.
 
 ### Loop prevention
 
-The auto-merged PR does not create infinite build loops because:
+The automatically merged PR does not create infinite build loops because:
 
 1. The PR only changes `bluetooth_audio_manager_dev/config.yaml`, which is in the
    `pull_request` `paths-ignore` list — so no validation build triggers
