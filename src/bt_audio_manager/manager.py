@@ -181,7 +181,17 @@ class BluetoothAudioManager:
                     and isinstance(ifaces, dict)
                     and "org.bluez.Device1" in ifaces
                 ):
-                    logger.info("New device discovered during scan: %s", obj_path)
+                    dev_props = ifaces.get("org.bluez.Device1", {})
+                    dev_name_v = dev_props.get("Name")
+                    dev_uuids_v = dev_props.get("UUIDs")
+                    dev_name = dev_name_v.value if hasattr(dev_name_v, "value") else dev_name_v
+                    dev_uuids = dev_uuids_v.value if hasattr(dev_uuids_v, "value") else dev_uuids_v
+                    logger.info(
+                        "New device discovered during scan: %s name=%s UUIDs=%s",
+                        obj_path,
+                        dev_name or "unknown",
+                        sorted(dev_uuids) if dev_uuids else "(none)",
+                    )
                     self._schedule_scan_broadcast()
             elif (
                 msg.message_type == MessageType.SIGNAL

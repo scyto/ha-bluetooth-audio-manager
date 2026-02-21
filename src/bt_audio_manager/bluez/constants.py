@@ -36,11 +36,20 @@ AGENT_PATH = "/org/ha/bluetooth_audio/agent"
 MEDIA_INTERFACE = "org.bluez.Media1"
 PLAYER_PATH = "/org/ha/bluetooth_audio/player"
 
+# LE Audio (Bluetooth 5.2+) — not yet supported by this add-on
+PACS_UUID = "00001850-0000-1000-8000-00805f9b34fb"   # Published Audio Capabilities
+ASCS_UUID = "0000184e-0000-1000-8000-00805f9b34fb"   # Audio Stream Control
+LE_AUDIO_UUIDS = frozenset({PACS_UUID, ASCS_UUID})
+
 # Audio-capable device UUIDs (any of these indicate audio support)
-AUDIO_UUIDS = frozenset({A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID, HFP_UUID, HSP_UUID})
+AUDIO_UUIDS = frozenset({
+    A2DP_SINK_UUID, A2DP_SOURCE_UUID, AVRCP_TARGET_UUID,
+    AVRCP_CONTROLLER_UUID, HFP_UUID, HSP_UUID,
+    PACS_UUID, ASCS_UUID,
+})
 
 # UUIDs that indicate a device can receive/play audio (used to filter discovery)
-# Excludes A2DP Source (phone sending audio) and AVRCP-only devices.
+# Excludes A2DP Source (phone sending audio), AVRCP-only, and LE Audio devices.
 SINK_UUIDS = frozenset({A2DP_SINK_UUID, HFP_UUID, HSP_UUID})
 
 # Feature flag: HFP profile switching is disabled until the HAOS audio
