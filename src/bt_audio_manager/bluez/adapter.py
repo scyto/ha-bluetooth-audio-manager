@@ -140,6 +140,7 @@ class BluezAdapter:
         objects = await obj_manager.call_get_managed_objects()
 
         devices = []
+        skipped = 0
         for path, interfaces in objects.items():
             if DEVICE_INTERFACE not in interfaces:
                 continue
@@ -149,6 +150,7 @@ class BluezAdapter:
             uuids = set(uuids_variant.value) if uuids_variant else set()
 
             if not uuids.intersection(SINK_UUIDS):
+                skipped += 1
                 addr_v = props.get("Address")
                 addr = addr_v.value if addr_v else "??:??"
                 name_v = props.get("Name")
@@ -217,9 +219,10 @@ class BluezAdapter:
                 }
             )
 
-        logger.debug(
-            "get_audio_devices: %d BlueZ objects scanned, %d audio devices returned",
-            len(objects), len(devices),
+        logger.info(
+            "get_audio_devices: %d BlueZ objects scanned, "
+            "%d unsupported devices skipped, %d supported audio devices returned",
+            len(objects), skipped, len(devices),
         )
         return devices
 
