@@ -9,19 +9,36 @@ from dbus_next.aio import MessageBus
 from dbus_next.errors import DBusError
 
 from .constants import (
-    A2DP_SINK_UUID,
+    A2DP_SOURCE_UUID,
     ADAPTER_INTERFACE,
+    AVRCP_CONTROLLER_UUID,
+    AVRCP_TARGET_UUID,
     BLUEZ_SERVICE,
     DEFAULT_ADAPTER_PATH,
     DEVICE_INTERFACE,
-    HFP_UUID,
-    HSP_UUID,
+    LE_AUDIO_UUIDS,
     OBJECT_MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
     SINK_UUIDS,
 )
 
 logger = logging.getLogger(__name__)
+
+_AVRCP_ONLY = frozenset({AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID})
+_SOURCE_UUIDS = frozenset({A2DP_SOURCE_UUID})
+
+
+def _classify_rejection(uuids: set[str]) -> str:
+    """Return a human-readable reason why a device was not surfaced."""
+    if uuids.intersection(LE_AUDIO_UUIDS):
+        return "LE Audio device, not yet supported"
+    if uuids.intersection(_SOURCE_UUIDS) and not uuids.intersection(SINK_UUIDS):
+        return "audio source only (e.g. phone), not a speaker"
+    if uuids and uuids.issubset(_AVRCP_ONLY):
+        return "AVRCP remote control only, no audio playback"
+    if not uuids:
+        return "no UUIDs advertised (incomplete SDP)"
+    return "no audio sink profile"
 
 
 class AdapterNotPoweredError(Exception):
@@ -31,9 +48,9 @@ class AdapterNotPoweredError(Exception):
 class BluezAdapter:
     """Wraps org.bluez.Adapter1 for A2DP device discovery.
 
-    COEXISTENCE: Uses SetDiscoveryFilter(Transport="bredr") to restrict
-    scanning to Classic Bluetooth only. HA's passive BLE scanning uses
-    LE transport and is completely unaffected.
+    COEXISTENCE: BlueZ reference-counts StartDiscovery/StopDiscovery per
+    D-Bus client.  Our discovery session is independent of HA's passive
+    BLE scanning.
     """
 
     def __init__(self, bus: MessageBus, adapter_path: str = DEFAULT_ADAPTER_PATH):
@@ -42,6 +59,9 @@ class BluezAdapter:
         self._adapter_iface = None
         self._properties_iface = None
         self._discovering = False
+        # Tracks addresses already logged as rejected during this scan,
+        # so each rejection is logged at INFO only once per scan session.
+        self._rejected_log_cache: set[str] = set()
 
     async def initialize(self) -> None:
         """Connect to the adapter's D-Bus interfaces.
@@ -68,21 +88,25 @@ class BluezAdapter:
         logger.info("Adapter %s initialized at %s", address.value, self._adapter_path)
 
     async def start_discovery(self) -> None:
-        """Start audio-filtered discovery on Classic Bluetooth only.
+        """Start unfiltered discovery on all transports (BR/EDR + BLE).
 
-        Sets a discovery filter BEFORE starting discovery. BlueZ merges
-        filters from multiple D-Bus clients, so our filter narrows only
-        our own view without affecting HA's passive BLE scanning.
+        No UUID filter is set so BlueZ reports ALL nearby devices.  The
+        app-level filter in get_audio_devices() then decides which to
+        surface, logging every rejection at INFO so support can see
+        exactly what was discovered and why it was excluded.
+
+        BlueZ reference-counts discovery per D-Bus client, so our session
+        does not interfere with HA's passive BLE scanning.
         """
         await self._adapter_iface.call_set_discovery_filter(
             {
-                "UUIDs": Variant("as", [A2DP_SINK_UUID, HFP_UUID, HSP_UUID]),
-                "Transport": Variant("s", "bredr"),
+                "Transport": Variant("s", "auto"),
             }
         )
+        self._rejected_log_cache.clear()
         await self._adapter_iface.call_start_discovery()
         self._discovering = True
-        logger.info("Audio device discovery started (A2DP + HFP, Transport=bredr)")
+        logger.info("Device discovery started (all transports, no UUID filter)")
 
     async def stop_discovery(self) -> None:
         """Stop our discovery session.
@@ -99,7 +123,8 @@ class BluezAdapter:
                 raise
         finally:
             self._discovering = False
-        logger.info("A2DP device discovery stopped")
+            self._rejected_log_cache.clear()
+        logger.info("Device discovery stopped")
 
     async def get_audio_devices(self) -> list[dict]:
         """Enumerate discovered devices that can receive/play audio.
@@ -124,14 +149,19 @@ class BluezAdapter:
             uuids = set(uuids_variant.value) if uuids_variant else set()
 
             if not uuids.intersection(SINK_UUIDS):
-                addr = props.get("Address")
-                name = props.get("Name")
-                logger.debug(
-                    "Skipping non-sink device %s (%s) — UUIDs: %s",
-                    name.value if name else "unknown",
-                    addr.value if addr else "??:??",
-                    sorted(uuids) if uuids else "(none)",
-                )
+                addr_v = props.get("Address")
+                addr = addr_v.value if addr_v else "??:??"
+                name_v = props.get("Name")
+                name = name_v.value if name_v else "unknown"
+                # Log each rejection once per scan session at INFO
+                if addr not in self._rejected_log_cache:
+                    self._rejected_log_cache.add(addr)
+                    reason = _classify_rejection(uuids)
+                    logger.info(
+                        "Skipping device %s (%s) — %s. UUIDs: %s",
+                        name, addr, reason,
+                        sorted(uuids) if uuids else "(none)",
+                    )
                 continue
 
             address_variant = props.get("Address")
