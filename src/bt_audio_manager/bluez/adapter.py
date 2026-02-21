@@ -123,7 +123,6 @@ class BluezAdapter:
                 raise
         finally:
             self._discovering = False
-            self._rejected_log_cache.clear()
         logger.info("Device discovery stopped")
 
     async def get_audio_devices(self) -> list[dict]:
