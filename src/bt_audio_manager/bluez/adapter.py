@@ -124,6 +124,14 @@ class BluezAdapter:
             uuids = set(uuids_variant.value) if uuids_variant else set()
 
             if not uuids.intersection(SINK_UUIDS):
+                addr = props.get("Address")
+                name = props.get("Name")
+                logger.debug(
+                    "Skipping non-sink device %s (%s) — UUIDs: %s",
+                    name.value if name else "unknown",
+                    addr.value if addr else "??:??",
+                    sorted(uuids) if uuids else "(none)",
+                )
                 continue
 
             address_variant = props.get("Address")
@@ -179,6 +187,10 @@ class BluezAdapter:
                 }
             )
 
+        logger.debug(
+            "get_audio_devices: %d BlueZ objects scanned, %d audio devices returned",
+            len(objects), len(devices),
+        )
         return devices
 
     async def remove_device(self, device_path: str) -> None:
