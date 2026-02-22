@@ -200,9 +200,15 @@ class BluezAdapter:
                     f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
                     if cod_raw else "(none)"
                 )
+                if connected:
+                    state = "connected"
+                elif paired:
+                    state = "paired (offline)"
+                else:
+                    state = "unpaired"
                 logger.info(
-                    "Accepted device %s (%s) — matched %s. CoD: %s",
-                    name, addr, matched, cod_str,
+                    "Accepted device %s (%s) [%s] — matched %s. CoD: %s",
+                    name, addr, state, matched, cod_str,
                 )
 
             # Detect active bearers (BR/EDR vs LE)
@@ -257,7 +263,7 @@ class BluezAdapter:
                 parts.append(
                     f"{audio_class_no_uuid} audio-class device(s) with no UUIDs skipped"
                 )
-            parts.append(f"{len(devices)} supported audio devices returned")
+            parts.append(f"{len(devices)} supported audio devices matched")
             logger.info("get_audio_devices: %s", ", ".join(parts))
         return devices
 
