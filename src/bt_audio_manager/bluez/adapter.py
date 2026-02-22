@@ -218,11 +218,12 @@ class BluezAdapter:
                 }
             )
 
-        logger.info(
-            "get_audio_devices: %d BlueZ objects scanned, "
-            "%d unsupported devices skipped, %d supported audio devices returned",
-            len(objects), skipped, len(devices),
-        )
+        if not self._discovering:
+            logger.info(
+                "get_audio_devices: %d BlueZ objects scanned, "
+                "%d unsupported devices skipped, %d supported audio devices returned",
+                len(objects), skipped, len(devices),
+            )
         return devices
 
     async def remove_device(self, device_path: str) -> None:
