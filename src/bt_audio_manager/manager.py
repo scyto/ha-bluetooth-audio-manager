@@ -20,6 +20,7 @@ from .audio.mpd import MPDManager
 from .audio.pulse import PulseAudioManager
 from .bluez.adapter import BluezAdapter
 from .bluez.agent import PairingAgent
+from .bluez.constants import cod_major_label
 from .bluez.device import BluezDevice
 from .bluez.media_player import AVRCPMediaPlayer
 from .config import AppConfig
@@ -182,15 +183,36 @@ class BluetoothAudioManager:
                     and "org.bluez.Device1" in ifaces
                 ):
                     dev_props = ifaces.get("org.bluez.Device1", {})
-                    dev_name_v = dev_props.get("Name")
-                    dev_uuids_v = dev_props.get("UUIDs")
-                    dev_name = dev_name_v.value if hasattr(dev_name_v, "value") else dev_name_v
-                    dev_uuids = dev_uuids_v.value if hasattr(dev_uuids_v, "value") else dev_uuids_v
+
+                    def _v(key, _p=dev_props):
+                        raw = _p.get(key)
+                        return raw.value if hasattr(raw, "value") else raw
+
+                    dev_name = _v("Name")
+                    dev_uuids = _v("UUIDs")
+                    dev_cod = _v("Class") or 0
+                    dev_addr_type = _v("AddressType")  # "public" or "random"
+                    dev_appearance = _v("Appearance")   # BLE GAP appearance
+
+                    cod_str = (
+                        f"0x{dev_cod:06X}({cod_major_label(dev_cod)})"
+                        if dev_cod else "(none)"
+                    )
+                    extras = []
+                    if dev_addr_type:
+                        extras.append(f"addr_type={dev_addr_type}")
+                    if dev_appearance:
+                        extras.append(f"appearance=0x{dev_appearance:04X}")
+                    extra_str = f" {' '.join(extras)}" if extras else ""
+
                     logger.info(
-                        "New device discovered during scan: %s name=%s UUIDs=%s",
+                        "New device discovered during scan: %s name=%s "
+                        "UUIDs=%s CoD=%s%s",
                         obj_path,
                         dev_name or "unknown",
                         sorted(dev_uuids) if dev_uuids else "(none)",
+                        cod_str,
+                        extra_str,
                     )
                     self._schedule_scan_broadcast()
             elif (
