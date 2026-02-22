@@ -947,6 +947,7 @@ async function openSettingsModal() {
     $("#setting-reconnect-interval").value = data.reconnect_interval_seconds;
     $("#setting-reconnect-max-backoff").value = data.reconnect_max_backoff_seconds;
     $("#setting-scan-duration").value = data.scan_duration_seconds;
+    $("#setting-show-rejected").checked = !!data.show_rejected_devices;
     new bootstrap.Modal("#settingsModal").show();
   } catch (e) {
     showToast(`Failed to load settings: ${e.message}`, "error");
@@ -959,9 +960,12 @@ async function saveSettings() {
     reconnect_interval_seconds: parseInt($("#setting-reconnect-interval").value, 10),
     reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
     scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
+    show_rejected_devices: $("#setting-show-rejected").checked,
   };
   try {
     await apiPut("/api/settings", settings);
+    window._showRejectedDevices = settings.show_rejected_devices;
+    updateRejectedNavVisibility();
     showToast("Settings saved", "success");
     bootstrap.Modal.getInstance($("#settingsModal"))?.hide();
   } catch (e) {
@@ -1158,6 +1162,10 @@ function connectWebSocket() {
     switch (msg.type) {
       case "devices_changed":
         renderDevices(msg.devices);
+        if (msg.rejected_devices) {
+          lastRejectedDevices = msg.rejected_devices;
+          renderRejectedDevices(msg.rejected_devices);
+        }
         break;
       case "sinks_changed":
         renderSinks(msg.sinks);
@@ -1165,7 +1173,11 @@ function connectWebSocket() {
         refreshDevicesFromCache();
         break;
       case "settings_changed":
-        // Settings updated by another client — no action needed unless modal is open
+        // Sync rejected devices feature flag from other clients
+        if ("show_rejected_devices" in msg) {
+          window._showRejectedDevices = !!msg.show_rejected_devices;
+          updateRejectedNavVisibility();
+        }
         break;
       case "mpris_command":
         appendMprisCommand(msg);
@@ -1175,9 +1187,6 @@ function connectWebSocket() {
         break;
       case "log_entry":
         appendLogEntry(msg);
-        break;
-      case "settings_changed":
-        // Runtime settings updated by another client; no action needed
         break;
       case "keepalive_changed":
         // Devices list will be re-sent via devices_changed; toast for feedback
@@ -1235,6 +1244,98 @@ function connectWebSocket() {
 }
 
 // Cache last known devices for re-rendering when sinks change
+// ============================================
+// Section 12b: Rejected Devices View
+// ============================================
+
+let lastRejectedDevices = [];
+
+function updateRejectedNavVisibility() {
+  const nav = $("#nav-rejected");
+  if (nav) nav.style.display = window._showRejectedDevices ? "" : "none";
+  // If setting turned off while viewing rejected, go back to devices
+  if (!window._showRejectedDevices) {
+    const rejectedView = $("#view-rejected");
+    if (rejectedView && !rejectedView.classList.contains("d-none")) {
+      switchView("devices");
+    }
+  }
+}
+
+function renderRejectedDevices(devices) {
+  const container = $("#rejected-list");
+  const countBadge = $("#rejected-count");
+  if (!container) return;
+
+  countBadge.textContent = devices.length;
+
+  if (!devices.length) {
+    container.innerHTML = `
+      <div class="text-center py-4 text-muted">
+        <i class="fas fa-filter fa-2x mb-2 d-block opacity-50"></i>
+        Run a scan to see devices that were filtered out.
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = devices.map((d) => {
+    const rssiStr = d.rssi != null ? `${d.rssi} dBm` : "";
+    const codStr = d.cod_label || "";
+    const uuidStr = d.uuids && d.uuids.length
+      ? d.uuids.map((u) => u.substring(0, 8)).join(", ")
+      : "(none)";
+    const nameEsc = escapeHtml(d.name || "Unknown Device");
+    const reasonEsc = escapeHtml(d.rejection_reason || "unknown");
+    return `
+      <div class="list-group-item rejected-device-row">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <strong>${nameEsc}</strong>
+              <code class="text-muted small">${d.address}</code>
+              ${rssiStr ? `<span class="text-muted small">${rssiStr}</span>` : ""}
+            </div>
+            <div class="text-warning small mb-1">
+              <i class="fas fa-exclamation-triangle me-1"></i>${reasonEsc}
+            </div>
+            <div class="text-muted small">
+              ${codStr ? `CoD: ${escapeHtml(codStr)}` : ""}${codStr && uuidStr !== "(none)" ? " · " : ""}UUIDs: ${escapeHtml(uuidStr)}
+            </div>
+          </div>
+          <button class="btn btn-outline-warning btn-sm ms-3 flex-shrink-0"
+                  onclick="confirmForcePair('${d.address}', '${nameEsc.replace(/'/g, "\\'")}', '${reasonEsc.replace(/'/g, "\\'")}')">
+            <i class="fas fa-bolt me-1"></i>Force Pair
+          </button>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function confirmForcePair(address, name, reason) {
+  $("#force-pair-name").textContent = name;
+  $("#force-pair-address").textContent = address;
+  $("#force-pair-reason").textContent = reason;
+  const btn = $("#btn-confirm-force-pair");
+  // Clone to remove old listeners
+  const newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+  newBtn.addEventListener("click", () => executeForcePair(address, reason));
+  new bootstrap.Modal("#forcePairModal").show();
+}
+
+async function executeForcePair(address, reason) {
+  bootstrap.Modal.getInstance($("#forcePairModal"))?.hide();
+  try {
+    await apiPost("/api/pair", { address, force: true, rejection_reason: reason });
+  } catch (e) {
+    showToast(`Force pair failed: ${e.message}`, "error");
+  }
+}
+
+// ============================================
+// Section 12c: Device List Cache
+// ============================================
+
 let lastDevices = null;
 
 function refreshDevicesFromCache() {
@@ -1297,6 +1398,8 @@ document.addEventListener("DOMContentLoaded", () => {
       $("#build-version").textContent = ver;
       $("#version-label").textContent = `${ver} (${data.adapter})`;
       window._hfpSwitchingEnabled = !!data.hfp_switching_enabled;
+      window._showRejectedDevices = !!data.show_rejected_devices;
+      updateRejectedNavVisibility();
     })
     .catch(() => {
       $("#build-version").textContent = "unknown";

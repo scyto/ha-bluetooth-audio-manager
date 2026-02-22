@@ -103,6 +103,7 @@ def create_api_routes(
             "adapter_mac": manager.config.bt_adapter
             if manager.config.bt_adapter_is_mac else None,
             "hfp_switching_enabled": HFP_SWITCHING_ENABLED,
+            "show_rejected_devices": manager.config.show_rejected_devices,
         })
 
     @routes.get("/api/adapters")
@@ -194,8 +195,11 @@ def create_api_routes(
     async def list_devices(request: web.Request) -> web.Response:
         """List all discovered and paired audio devices."""
         try:
-            devices = await manager.get_all_devices()
-            return web.json_response({"devices": devices})
+            devices, rejected = await manager.get_all_devices()
+            resp = {"devices": devices}
+            if rejected:
+                resp["rejected_devices"] = rejected
+            return web.json_response(resp)
         except Exception as e:
             logger.error("Failed to list devices: %s", e)
             return web.json_response({"error": str(e)}, status=500)
@@ -225,14 +229,23 @@ def create_api_routes(
 
     @routes.post("/api/pair")
     async def pair(request: web.Request) -> web.Response:
-        """Pair and trust a Bluetooth audio device."""
+        """Pair and trust a Bluetooth audio device.
+
+        Pass ``{"force": true, "rejection_reason": "..."}`` to force-pair
+        a device that was rejected during discovery (e.g. incomplete SDP).
+        """
         address = None
         try:
             body = await request.json()
             address, err = _get_validated_address(body)
             if err:
                 return err
-            result = await manager.pair_device(address)
+            force = body.get("force", False)
+            if force:
+                rejection_reason = body.get("rejection_reason", "")
+                result = await manager.force_pair_device(address, rejection_reason)
+            else:
+                result = await manager.pair_device(address)
             return web.json_response(result)
         except Exception as e:
             logger.error("Pair failed for %s: %s", address, e)
@@ -438,13 +451,17 @@ def create_api_routes(
             v = body["scan_duration_seconds"]
             if not isinstance(v, int) or v < 5 or v > 60:
                 errors.append("scan_duration_seconds must be an integer between 5 and 60")
+        if "show_rejected_devices" in body:
+            if not isinstance(body["show_rejected_devices"], bool):
+                errors.append("show_rejected_devices must be a boolean")
 
         if errors:
             return web.json_response({"error": "; ".join(errors)}, status=400)
 
         # Apply to live config
         allowed = {"auto_reconnect", "reconnect_interval_seconds",
-                    "reconnect_max_backoff_seconds", "scan_duration_seconds"}
+                    "reconnect_max_backoff_seconds", "scan_duration_seconds",
+                    "show_rejected_devices"}
         for key in allowed:
             if key in body:
                 setattr(manager.config, key, body[key])
@@ -480,7 +497,7 @@ def create_api_routes(
             mpris_after = float(request.query.get("mpris_after", 0))
             avrcp_after = float(request.query.get("avrcp_after", 0))
 
-            devices = await manager.get_all_devices()
+            devices, _rejected = await manager.get_all_devices()
             sinks = await manager.get_audio_sinks()
 
             mpris = [e for e in manager.recent_mpris if e["ts"] > mpris_after]
@@ -704,13 +721,16 @@ def create_api_routes(
         sender = asyncio.create_task(_ws_sender(ws, queue))
         try:
             # Send initial state so UI renders immediately
-            devices = await manager.get_all_devices()
+            devices, rejected = await manager.get_all_devices()
             try:
                 sinks = await manager.get_audio_sinks()
             except Exception:
                 logger.warning("PA unavailable during WS init — sending empty sinks")
                 sinks = []
-            await ws.send_json({"type": "devices_changed", "devices": devices})
+            init_payload = {"type": "devices_changed", "devices": devices}
+            if rejected:
+                init_payload["rejected_devices"] = rejected
+            await ws.send_json(init_payload)
             await ws.send_json({"type": "sinks_changed", "sinks": sinks})
             await ws.send_json({
                 "type": "scan_state",

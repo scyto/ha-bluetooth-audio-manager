@@ -787,6 +787,77 @@ class BluetoothAudioManager:
             self.event_bus.emit("status", {"message": ""})
             raise
 
+    async def force_pair_device(self, address: str, rejection_reason: str = "") -> dict:
+        """Force-pair a device that was rejected during discovery.
+
+        Same flow as pair_device() but with extra logging, force_paired
+        metadata in the store, and a post-pair UUID re-check to see if
+        the device now advertises audio capabilities.
+        """
+        from .bluez.constants import SINK_UUIDS
+
+        logger.warning(
+            "FORCE PAIR: Attempting force-pair of %s. Rejection: %s",
+            address, rejection_reason or "unknown",
+        )
+        self._broadcast_status(f"Force-pairing with {address}...")
+        self._a2dp_attempts.pop(address, None)
+        self._connecting.add(address)
+        try:
+            device = await self._get_or_create_device(address)
+
+            await device.pair()
+            await device.set_trusted(True)
+
+            # Wait for SDP to complete so UUIDs are populated
+            await device.wait_for_services(timeout=10)
+
+            # Re-check UUIDs — some devices only expose full SDP after pairing
+            post_uuids = set(await device.get_uuids())
+            has_audio = bool(post_uuids.intersection(SINK_UUIDS))
+
+            name = await device.get_name()
+
+            if has_audio:
+                logger.info(
+                    "FORCE PAIR: %s (%s) now advertises audio UUIDs: %s",
+                    address, name, sorted(post_uuids.intersection(SINK_UUIDS)),
+                )
+                self.event_bus.emit("toast", {
+                    "message": f"{name} now shows audio capabilities!",
+                    "level": "success",
+                })
+            else:
+                logger.warning(
+                    "FORCE PAIR: %s (%s) still has no audio UUIDs. UUIDs: %s",
+                    address, name, sorted(post_uuids) if post_uuids else "(none)",
+                )
+                self.event_bus.emit("toast", {
+                    "message": f"{name} paired but no audio profiles detected. Attempting connection anyway...",
+                    "level": "warning",
+                })
+
+            await self.store.add_device(
+                address, name,
+                force_paired=True, rejection_reason=rejection_reason,
+            )
+
+            logger.info("FORCE PAIR: Device %s (%s) paired and stored", address, name)
+            await self._broadcast_all()
+
+            connected = await self.connect_device(address, _from_pair=True)
+            return {
+                "address": address,
+                "name": name,
+                "connected": connected,
+                "force_paired": True,
+                "audio_detected": has_audio,
+            }
+        except Exception:
+            self._connecting.discard(address)
+            self.event_bus.emit("status", {"message": ""})
+            raise
+
     async def connect_device(self, address: str, *, _from_pair: bool = False) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
         # If another connection attempt is already in progress, wait for it
@@ -894,7 +965,19 @@ class BluetoothAudioManager:
                         await self._start_mpd_if_enabled(address)
                     await self._broadcast_all()
                     return True
-                logger.warning("%s sink for %s did not appear in PulseAudio", profile_label, address)
+                device_record = self.store.get_device(address)
+                is_force_paired = device_record and device_record.get("force_paired", False)
+                if is_force_paired:
+                    logger.warning(
+                        "FORCE PAIR: No %s sink appeared for force-paired device %s",
+                        profile_label, address,
+                    )
+                    self.event_bus.emit("toast", {
+                        "message": f"Force-paired device {address} connected but no audio sink appeared.",
+                        "level": "warning",
+                    })
+                else:
+                    logger.warning("%s sink for %s did not appear in PulseAudio", profile_label, address)
                 await self._broadcast_all()
                 return False
 
@@ -1056,12 +1139,20 @@ class BluetoothAudioManager:
         logger.info("clear_all_devices: removed %d device(s)", total)
         await self._broadcast_all()
 
-    async def get_all_devices(self) -> list[dict]:
-        """Get combined list of discovered and paired devices."""
+    async def get_all_devices(self) -> tuple[list[dict], list[dict]]:
+        """Get combined list of discovered/paired devices and rejected devices.
+
+        Returns (devices, rejected_devices).  rejected_devices is only
+        populated when show_rejected_devices is enabled in settings.
+        """
         if not self.adapter:
-            return []  # still initializing
+            return [], []
         # Get currently visible devices from BlueZ
-        discovered = await self.adapter.get_audio_devices()
+        if self.config.show_rejected_devices:
+            discovered, rejected = await self.adapter.get_audio_devices(include_rejected=True)
+        else:
+            discovered = await self.adapter.get_audio_devices()
+            rejected = []
 
         # Merge with persistent store info
         stored_addresses = {d["address"] for d in self.store.devices}
@@ -1110,7 +1201,7 @@ class BluetoothAudioManager:
                     }
                 )
 
-        return discovered
+        return discovered, rejected
 
     async def get_audio_sinks(self) -> list[dict]:
         """List Bluetooth PulseAudio sinks."""
@@ -1394,10 +1485,13 @@ class BluetoothAudioManager:
     # -- SSE broadcast helpers --
 
     async def _broadcast_devices(self) -> None:
-        """Push full device list to all SSE clients."""
+        """Push full device list to all WebSocket clients."""
         try:
-            devices = await self.get_all_devices()
-            self.event_bus.emit("devices_changed", {"devices": devices})
+            devices, rejected = await self.get_all_devices()
+            payload = {"devices": devices}
+            if rejected:
+                payload["rejected_devices"] = rejected
+            self.event_bus.emit("devices_changed", payload)
         except Exception as e:
             logger.debug("Broadcast devices failed: %s", e)
 

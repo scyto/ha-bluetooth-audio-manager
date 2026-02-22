@@ -63,22 +63,28 @@ class PersistenceStore:
         logger.debug("Saved %d device(s) to store", len(self._devices))
 
     async def add_device(
-        self, address: str, name: str, auto_connect: bool = True
+        self, address: str, name: str, auto_connect: bool = True,
+        *, force_paired: bool = False, rejection_reason: str | None = None,
     ) -> None:
         """Add or update a paired device."""
         existing = self._find_device(address)
         if existing is not None:
             existing["name"] = name
             existing["auto_connect"] = auto_connect
+            if force_paired:
+                existing["force_paired"] = True
+                existing["original_rejection_reason"] = rejection_reason
         else:
-            self._devices.append(
-                {
-                    "address": address,
-                    "name": name,
-                    "auto_connect": auto_connect,
-                    "paired_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
+            record = {
+                "address": address,
+                "name": name,
+                "auto_connect": auto_connect,
+                "paired_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if force_paired:
+                record["force_paired"] = True
+                record["original_rejection_reason"] = rejection_reason
+            self._devices.append(record)
         await self.save()
         logger.info("Stored device %s (%s)", address, name)
 

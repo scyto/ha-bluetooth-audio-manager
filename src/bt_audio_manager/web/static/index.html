@@ -41,6 +41,9 @@
               <li><a class="dropdown-item" href="#" onclick="switchView('logs'); return false;">
                 <i class="fas fa-scroll me-2"></i>Logs
               </a></li>
+              <li id="nav-rejected" style="display:none"><a class="dropdown-item" href="#" onclick="switchView('rejected'); return false;">
+                <i class="fas fa-filter-circle-xmark me-2"></i>Rejected
+              </a></li>
             </ul>
           </div>
 
@@ -168,6 +171,33 @@
     </div>
   </div>
 
+  <!-- ========== REJECTED VIEW ========== -->
+  <div id="view-rejected" class="view-panel d-none">
+    <div class="subview-header bg-body-tertiary border-bottom sticky-top">
+      <div class="container py-2">
+        <div class="d-flex align-items-center justify-content-between">
+          <div class="d-flex align-items-center">
+            <button type="button" class="btn btn-outline-secondary btn-sm me-3" onclick="switchView('devices')">
+              <i class="fas fa-arrow-left me-1"></i>Back
+            </button>
+            <h5 class="mb-0">
+              <i class="fas fa-filter-circle-xmark me-2"></i>Rejected Devices
+              <span id="rejected-count" class="badge bg-secondary ms-2">0</span>
+            </h5>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="container py-3">
+      <div id="rejected-list" class="list-group">
+        <div class="text-center py-4 text-muted">
+          <i class="fas fa-filter fa-2x mb-2 d-block opacity-50"></i>
+          Run a scan to see devices that were filtered out.
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ========== ADAPTERS MODAL ========== -->
   <div class="modal fade" id="adaptersModal" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
@@ -283,6 +313,22 @@
             <input type="number" class="form-control" id="setting-reconnect-max-backoff" min="60" max="3600" step="1">
             <div class="form-text">
               Maximum delay between reconnection attempts with exponential backoff (60&ndash;3600).
+            </div>
+          </div>
+
+          <hr>
+
+          <!-- Advanced -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-show-rejected">
+              <label class="form-check-label" for="setting-show-rejected">
+                <strong>Show Rejected Devices</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              Adds a &ldquo;Rejected&rdquo; view showing non-audio devices found during scans.
+              Allows force-pairing devices that weren&rsquo;t detected as audio sinks.
             </div>
           </div>
         </div>
@@ -456,6 +502,37 @@
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
           <button type="button" class="btn btn-danger" id="btn-confirm-forget">
             <i class="fas fa-trash me-1"></i>Forget
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== FORCE PAIR CONFIRMATION MODAL ========== -->
+  <div class="modal fade" id="forcePairModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header bg-warning-subtle">
+          <h5 class="modal-title">
+            <i class="fas fa-exclamation-triangle text-warning me-2"></i>Force Pair
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>Force pair with <strong id="force-pair-name"></strong> (<code id="force-pair-address"></code>)?</p>
+          <div class="alert alert-warning mb-2 py-2">
+            <small><strong>Rejection reason:</strong> <span id="force-pair-reason"></span></small>
+          </div>
+          <p class="text-muted mb-0"><small>
+            This device was not detected as an audio sink. Pairing may succeed but audio
+            playback is not guaranteed. If the device supports audio, it will appear in
+            the Devices view after pairing.
+          </small></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-warning" id="btn-confirm-force-pair">
+            <i class="fas fa-bolt me-1"></i>Force Pair
           </button>
         </div>
       </div>

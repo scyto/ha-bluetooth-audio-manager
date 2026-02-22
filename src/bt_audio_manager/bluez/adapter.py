@@ -128,13 +128,33 @@ class BluezAdapter:
             self._discovering = False
         logger.info("Device discovery stopped")
 
-    async def get_audio_devices(self) -> list[dict]:
+    @staticmethod
+    def _extract_device_props(props: dict) -> dict:
+        """Extract common device properties from a BlueZ Device1 interface."""
+        def _v(key):
+            v = props.get(key)
+            return v.value if v else None
+
+        return {
+            "address": _v("Address") or "??:??",
+            "name": _v("Name") or "unknown",
+            "paired": bool(_v("Paired")),
+            "connected": bool(_v("Connected")),
+            "rssi": _v("RSSI"),
+        }
+
+    async def get_audio_devices(
+        self, *, include_rejected: bool = False,
+    ) -> list[dict] | tuple[list[dict], list[dict]]:
         """Enumerate discovered devices that can receive/play audio.
 
         Uses ObjectManager to list all /org/bluez/hci0/dev_* objects
         and filters for those with a sink-capable profile (A2DP Sink,
         HFP, or HSP).  Devices that only advertise A2DP Source (e.g.
         phones) are excluded since this add-on manages speakers.
+
+        When include_rejected=True, returns (audio_devices, rejected_devices)
+        so the frontend can surface filtered-out devices for force-pairing.
         """
         introspection = await self._bus.introspect(BLUEZ_SERVICE, "/")
         proxy = self._bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
@@ -142,6 +162,7 @@ class BluezAdapter:
         objects = await obj_manager.call_get_managed_objects()
 
         devices = []
+        rejected = []
         skipped = 0
         audio_class_no_uuid = 0
         for path, interfaces in objects.items():
@@ -160,14 +181,15 @@ class BluezAdapter:
                 skipped += 1
                 if not uuids and cod_major_class(cod_raw) == COD_MAJOR_AUDIO:
                     audio_class_no_uuid += 1
-                addr_v = props.get("Address")
-                addr = addr_v.value if addr_v else "??:??"
-                name_v = props.get("Name")
-                name = name_v.value if name_v else "unknown"
+
+                common = self._extract_device_props(props)
+                addr = common["address"]
+                name = common["name"]
+
                 # Log each rejection once per scan session at INFO
+                reason = _classify_rejection(uuids)
                 if addr not in self._logged_cache:
                     self._logged_cache.add(addr)
-                    reason = _classify_rejection(uuids)
                     cod_str = (
                         f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
                         if cod_raw else "(none)"
@@ -178,21 +200,27 @@ class BluezAdapter:
                         sorted(uuids) if uuids else "(none)",
                         cod_str,
                     )
+
+                if include_rejected:
+                    adapter_name = path.split("/")[3] if len(path.split("/")) > 3 else "unknown"
+                    rejected.append({
+                        **common,
+                        "path": path,
+                        "adapter": adapter_name,
+                        "uuids": sorted(uuids),
+                        "cod": cod_raw,
+                        "cod_label": cod_major_label(cod_raw) if cod_raw else "",
+                        "rejection_reason": reason,
+                        "bearers": [],
+                        "has_transport": False,
+                    })
                 continue
 
-            address_variant = props.get("Address")
-            name_variant = props.get("Name")
-            paired_variant = props.get("Paired")
-            connected_variant = props.get("Connected")
-            rssi_variant = props.get("RSSI")
-
-            paired = paired_variant.value if paired_variant else False
-            connected = connected_variant.value if connected_variant else False
-            rssi = rssi_variant.value if rssi_variant else None
+            common = self._extract_device_props(props)
+            addr = common["address"]
+            name = common["name"]
 
             # Log accepted devices once per scan so the full picture is visible
-            addr = address_variant.value if address_variant else "??:??"
-            name = name_variant.value if name_variant else "unknown"
             if addr not in self._logged_cache:
                 self._logged_cache.add(addr)
                 matched = sorted(uuids.intersection(SINK_UUIDS))
@@ -200,9 +228,9 @@ class BluezAdapter:
                     f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
                     if cod_raw else "(none)"
                 )
-                if connected:
+                if common["connected"]:
                     state = "connected"
-                elif paired:
+                elif common["paired"]:
                     state = "paired (offline)"
                 else:
                     state = "unpaired"
@@ -241,13 +269,10 @@ class BluezAdapter:
 
             devices.append(
                 {
+                    **common,
                     "path": path,
                     "adapter": adapter_name,
-                    "address": address_variant.value if address_variant else "unknown",
-                    "name": name_variant.value if name_variant else "Unknown Device",
-                    "paired": paired,
-                    "connected": connected,
-                    "rssi": rssi,
+                    "name": common["name"] if common["name"] != "unknown" else "Unknown Device",
                     "uuids": list(uuids),
                     "bearers": bearers,
                     "has_transport": has_transport,
@@ -265,6 +290,9 @@ class BluezAdapter:
                 )
             parts.append(f"{len(devices)} supported audio devices matched")
             logger.info("get_audio_devices: %s", ", ".join(parts))
+
+        if include_rejected:
+            return devices, rejected
         return devices
 
     async def remove_device(self, device_path: str) -> None:

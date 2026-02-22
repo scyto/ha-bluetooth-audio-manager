@@ -858,3 +858,12 @@ button, input, select, textarea,
 .btn, .form-control, .form-select, .form-check-input {
   touch-action: manipulation;
 }
+
+/* ============================================
+   Rejected Devices View
+   ============================================ */
+
+.rejected-device-row {
+  border-left: 3px solid var(--accent-warning);
+  opacity: 0.9;
+}
