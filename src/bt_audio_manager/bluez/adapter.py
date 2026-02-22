@@ -62,9 +62,9 @@ class BluezAdapter:
         self._adapter_iface = None
         self._properties_iface = None
         self._discovering = False
-        # Tracks addresses already logged as rejected during this scan,
-        # so each rejection is logged at INFO only once per scan session.
-        self._rejected_log_cache: set[str] = set()
+        # Tracks addresses already logged during this scan session,
+        # so each device is logged at INFO only once per scan.
+        self._logged_cache: set[str] = set()
 
     async def initialize(self) -> None:
         """Connect to the adapter's D-Bus interfaces.
@@ -106,7 +106,7 @@ class BluezAdapter:
                 "Transport": Variant("s", "auto"),
             }
         )
-        self._rejected_log_cache.clear()
+        self._logged_cache.clear()
         await self._adapter_iface.call_start_discovery()
         self._discovering = True
         logger.info("Device discovery started (all transports, no UUID filter)")
@@ -165,8 +165,8 @@ class BluezAdapter:
                 name_v = props.get("Name")
                 name = name_v.value if name_v else "unknown"
                 # Log each rejection once per scan session at INFO
-                if addr not in self._rejected_log_cache:
-                    self._rejected_log_cache.add(addr)
+                if addr not in self._logged_cache:
+                    self._logged_cache.add(addr)
                     reason = _classify_rejection(uuids)
                     cod_str = (
                         f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
@@ -189,6 +189,21 @@ class BluezAdapter:
             paired = paired_variant.value if paired_variant else False
             connected = connected_variant.value if connected_variant else False
             rssi = rssi_variant.value if rssi_variant else None
+
+            # Log accepted devices once per scan so the full picture is visible
+            addr = address_variant.value if address_variant else "??:??"
+            name = name_variant.value if name_variant else "unknown"
+            if addr not in self._logged_cache:
+                self._logged_cache.add(addr)
+                matched = sorted(uuids.intersection(SINK_UUIDS))
+                cod_str = (
+                    f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
+                    if cod_raw else "(none)"
+                )
+                logger.info(
+                    "Accepted device %s (%s) — matched %s. CoD: %s",
+                    name, addr, matched, cod_str,
+                )
 
             # Detect active bearers (BR/EDR vs LE)
             bearers = []
