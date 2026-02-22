@@ -715,8 +715,8 @@ class BluetoothAudioManager:
             except Exception:
                 pass
 
-        # Final broadcast after scan completes
-        await self._broadcast_devices()
+        # Final broadcast after scan completes (with CoD fallback)
+        await self._broadcast_devices(cod_fallback=True)
         self.event_bus.emit("scan_finished", {})
 
     def _schedule_scan_broadcast(self) -> None:
@@ -739,7 +739,7 @@ class BluetoothAudioManager:
         """Execute the debounced broadcast."""
         self._scan_debounce_handle = None
         if self._scanning:
-            await self._broadcast_devices()
+            await self._broadcast_devices(cod_fallback=True)
 
     def _cancel_scan_debounce(self) -> None:
         """Cancel any pending debounced broadcast."""
@@ -1056,12 +1056,12 @@ class BluetoothAudioManager:
         logger.info("clear_all_devices: removed %d device(s)", total)
         await self._broadcast_all()
 
-    async def get_all_devices(self) -> list[dict]:
+    async def get_all_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Get combined list of discovered and paired devices."""
         if not self.adapter:
             return []  # still initializing
         # Get currently visible devices from BlueZ
-        discovered = await self.adapter.get_audio_devices()
+        discovered = await self.adapter.get_audio_devices(cod_fallback=cod_fallback)
 
         # Merge with persistent store info
         stored_addresses = {d["address"] for d in self.store.devices}
@@ -1393,10 +1393,10 @@ class BluetoothAudioManager:
 
     # -- SSE broadcast helpers --
 
-    async def _broadcast_devices(self) -> None:
+    async def _broadcast_devices(self, *, cod_fallback: bool = False) -> None:
         """Push full device list to all SSE clients."""
         try:
-            devices = await self.get_all_devices()
+            devices = await self.get_all_devices(cod_fallback=cod_fallback)
             self.event_bus.emit("devices_changed", {"devices": devices})
         except Exception as e:
             logger.debug("Broadcast devices failed: %s", e)

@@ -129,13 +129,18 @@ class BluezAdapter:
             self._discovering = False
         logger.info("Device discovery stopped")
 
-    async def get_audio_devices(self) -> list[dict]:
+    async def get_audio_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Enumerate discovered devices that can receive/play audio.
 
         Uses ObjectManager to list all /org/bluez/hci0/dev_* objects
         and filters for those with a sink-capable profile (A2DP Sink,
         HFP, or HSP).  Devices that only advertise A2DP Source (e.g.
         phones) are excluded since this add-on manages speakers.
+
+        When cod_fallback=True, devices with no UUIDs but an audio-sink
+        Class of Device are also accepted.  This should only be enabled
+        during scan sessions to avoid surfacing stale BlueZ cache entries
+        as ghost devices.
         """
         introspection = await self._bus.introspect(BLUEZ_SERVICE, "/")
         proxy = self._bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
@@ -159,12 +164,14 @@ class BluezAdapter:
 
             uuid_matched = bool(uuids.intersection(SINK_UUIDS))
 
-            # CoD fallback: device advertises no UUIDs but has an
-            # audio-sink CoD (headphones, speaker, etc.).  These are
-            # budget BR/EDR devices that only expose profiles after
-            # pairing triggers SDP.
+            # CoD fallback (scan-only): device advertises no UUIDs but
+            # has an audio-sink CoD (headphones, speaker, etc.).  These
+            # are budget BR/EDR devices that only expose profiles after
+            # pairing triggers SDP.  Gated to cod_fallback=True to avoid
+            # surfacing stale BlueZ cache entries as ghost devices.
             cod_matched = (
-                not uuid_matched
+                cod_fallback
+                and not uuid_matched
                 and not uuids
                 and is_cod_audio_sink(cod_raw)
             )
@@ -335,7 +342,7 @@ class BluezAdapter:
         await self.start_discovery()
         await asyncio.sleep(seconds)
         await self.stop_discovery()
-        return await self.get_audio_devices()
+        return await self.get_audio_devices(cod_fallback=True)
 
     @property
     def adapter_path(self) -> str:
