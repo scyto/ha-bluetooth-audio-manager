@@ -55,3 +55,31 @@ SINK_UUIDS = frozenset({A2DP_SINK_UUID, HFP_UUID, HSP_UUID})
 # Feature flag: HFP profile switching is disabled until the HAOS audio
 # container supports SCO sockets (AF_BLUETOOTH).  See issue #98.
 HFP_SWITCHING_ENABLED = False
+
+# ── Bluetooth Class of Device (CoD) helpers ──────────────────────────
+# The 24-bit CoD field encodes Major Device Class in bits 12-8.
+# See Bluetooth Assigned Numbers § 2.8.
+COD_MAJOR_AUDIO = 0x04
+
+_COD_MAJOR_LABELS = {
+    0x00: "Misc",
+    0x01: "Computer",
+    0x02: "Phone",
+    0x03: "LAN/AP",
+    COD_MAJOR_AUDIO: "Audio/Video",
+    0x05: "Peripheral",
+    0x06: "Imaging",
+    0x07: "Wearable",
+    0x08: "Toy",
+    0x09: "Health",
+}
+
+
+def cod_major_class(cod: int) -> int:
+    """Extract Major Device Class from a raw CoD value (bits 12-8)."""
+    return (cod >> 8) & 0x1F
+
+
+def cod_major_label(cod: int) -> str:
+    """Return a human-readable label for the Major Device Class."""
+    return _COD_MAJOR_LABELS.get(cod_major_class(cod), "Unknown")

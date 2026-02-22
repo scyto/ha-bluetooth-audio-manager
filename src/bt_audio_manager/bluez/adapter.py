@@ -14,12 +14,15 @@ from .constants import (
     AVRCP_CONTROLLER_UUID,
     AVRCP_TARGET_UUID,
     BLUEZ_SERVICE,
+    COD_MAJOR_AUDIO,
     DEFAULT_ADAPTER_PATH,
     DEVICE_INTERFACE,
     LE_AUDIO_UUIDS,
     OBJECT_MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
     SINK_UUIDS,
+    cod_major_class,
+    cod_major_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,6 +143,7 @@ class BluezAdapter:
 
         devices = []
         skipped = 0
+        audio_class_no_uuid = 0
         for path, interfaces in objects.items():
             if DEVICE_INTERFACE not in interfaces:
                 continue
@@ -148,8 +152,14 @@ class BluezAdapter:
             uuids_variant = props.get("UUIDs")
             uuids = set(uuids_variant.value) if uuids_variant else set()
 
+            # Read Class of Device for diagnostics
+            class_variant = props.get("Class")
+            cod_raw = class_variant.value if class_variant else 0
+
             if not uuids.intersection(SINK_UUIDS):
                 skipped += 1
+                if not uuids and cod_major_class(cod_raw) == COD_MAJOR_AUDIO:
+                    audio_class_no_uuid += 1
                 addr_v = props.get("Address")
                 addr = addr_v.value if addr_v else "??:??"
                 name_v = props.get("Name")
@@ -158,10 +168,15 @@ class BluezAdapter:
                 if addr not in self._rejected_log_cache:
                     self._rejected_log_cache.add(addr)
                     reason = _classify_rejection(uuids)
+                    cod_str = (
+                        f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
+                        if cod_raw else "(none)"
+                    )
                     logger.info(
-                        "Skipping device %s (%s) — %s. UUIDs: %s",
+                        "Skipping device %s (%s) — %s. UUIDs: %s CoD: %s",
                         name, addr, reason,
                         sorted(uuids) if uuids else "(none)",
+                        cod_str,
                     )
                 continue
 
@@ -219,11 +234,16 @@ class BluezAdapter:
             )
 
         if not self._discovering:
-            logger.info(
-                "get_audio_devices: %d BlueZ objects scanned, "
-                "%d unsupported devices skipped, %d supported audio devices returned",
-                len(objects), skipped, len(devices),
-            )
+            parts = [
+                f"{len(objects)} BlueZ objects scanned",
+                f"{skipped - audio_class_no_uuid} unsupported skipped",
+            ]
+            if audio_class_no_uuid:
+                parts.append(
+                    f"{audio_class_no_uuid} audio-class device(s) with no UUIDs skipped"
+                )
+            parts.append(f"{len(devices)} supported audio devices returned")
+            logger.info("get_audio_devices: %s", ", ".join(parts))
         return devices
 
     async def remove_device(self, device_path: str) -> None:
