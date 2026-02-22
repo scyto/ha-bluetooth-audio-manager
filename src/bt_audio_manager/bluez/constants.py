@@ -80,6 +80,39 @@ def cod_major_class(cod: int) -> int:
     return (cod >> 8) & 0x1F
 
 
+def cod_minor_class(cod: int) -> int:
+    """Extract Minor Device Class from a raw CoD value (bits 7-2)."""
+    return (cod >> 2) & 0x3F
+
+
 def cod_major_label(cod: int) -> str:
     """Return a human-readable label for the Major Device Class."""
     return _COD_MAJOR_LABELS.get(cod_major_class(cod), "Unknown")
+
+
+# Audio/Video minor classes that can receive/play audio.
+# Excludes: 0 (Uncategorized), 4 (Microphone), 9 (Set-top box),
+# 11 (VCR), 12 (Video Camera), 13 (Camcorder), 14 (Video Monitor),
+# 18 (Gaming/Toy).
+COD_AUDIO_SINK_MINORS = frozenset({
+    1,   # Wearable Headset
+    2,   # Hands-free Device
+    5,   # Loudspeaker
+    6,   # Headphones
+    7,   # Portable Audio
+    8,   # Car Audio
+    10,  # HiFi Audio Device
+    15,  # Video Display and Loudspeaker
+    16,  # Video Conferencing
+})
+
+
+def is_cod_audio_sink(cod: int) -> bool:
+    """Return True if CoD indicates an audio sink device.
+
+    Used as a fallback for devices that don't advertise UUIDs.
+    """
+    return (
+        cod_major_class(cod) == COD_MAJOR_AUDIO
+        and cod_minor_class(cod) in COD_AUDIO_SINK_MINORS
+    )
