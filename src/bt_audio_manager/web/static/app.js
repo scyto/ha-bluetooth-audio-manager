@@ -475,7 +475,7 @@ function renderDevices(devices) {
               </div>
               ${buildCapBadges(d)}
               <div class="device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
-              ${profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
+              ${d.cod_matched && !d.paired ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-info-circle me-1"></i>Detected by device class \u2014 pair to confirm audio support</div>' : profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
               ${sinkInfo}
               ${(() => { const fb = buildFeatureBadges(d); return fb ? `<div class="device-feature-badges d-flex gap-2 flex-wrap">${fb}</div>` : ""; })()}
               <div class="device-actions">
