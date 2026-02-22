@@ -781,7 +781,21 @@ class BluetoothAudioManager:
             # _connecting is already set; pass _from_pair so connect_device
             # skips the duplicate-connection guard.
             connected = await self.connect_device(address, _from_pair=True)
-            return {"address": address, "name": name, "connected": connected}
+
+            result = {"address": address, "name": name, "connected": connected}
+
+            # Post-pair check: did SDP resolve any audio sink profiles?
+            from .bluez.constants import SINK_UUIDS
+            dev_uuids = set(await device.get_uuids())
+            if not dev_uuids.intersection(SINK_UUIDS):
+                result["warning"] = "no_audio_profiles"
+                logger.warning(
+                    "Device %s (%s) paired but no audio profiles resolved "
+                    "(UUIDs: %s). Device may not support audio playback.",
+                    address, name, sorted(dev_uuids) if dev_uuids else "(none)",
+                )
+
+            return result
         except Exception:
             self._connecting.discard(address)
             self.event_bus.emit("status", {"message": ""})
