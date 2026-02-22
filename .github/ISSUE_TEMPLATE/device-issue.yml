@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a device issue. Please fill in the details below.
+        Thanks for reporting a device issue. Please fill in the details below. Please be sure to attach full logs.
         Check the [Device Issues Megathread](https://github.com/scyto/ha-bluetooth-audio-manager/issues/39) first to see if your device is already listed.
 
   - type: input
