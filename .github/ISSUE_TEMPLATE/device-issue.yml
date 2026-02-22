@@ -1,13 +1,17 @@
-name: Device Issue Report
-description: Report a device-specific issue or oddity
+name: Device Discovery / Pairing Issue
+description: Report a problem with Bluetooth device discovery, pairing, or connection — not for general add-on bugs
 title: "Device: "
-labels: ["device-issue"]
+labels: ["Device Issue"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a device issue. Please fill in the details below. Please be sure to attach full logs.
-        Check the [Device Issues Megathread](https://github.com/scyto/ha-bluetooth-audio-manager/issues/39) first to see if your device is already listed.
+        This template is for issues with a **specific Bluetooth device** — discovery, pairing, connection, audio playback, or stability.
+        For general add-on bugs (UI, settings, crashes) use the **Bug Report** template instead.
+
+        **Before opening an issue:**
+        Check the [Device Issues Megathread](https://github.com/scyto/ha-bluetooth-audio-manager/issues/39) to see if your device is already listed.
+        Please attach **full logs** — issues without logs may be closed.
 
   - type: input
     id: device-name
@@ -67,6 +71,7 @@ body:
     attributes:
       label: Diagnostics
       options:
+        - label: Device is discovered
         - label: Pairing succeeds
         - label: Audio plays
         - label: Disconnects frequently
@@ -85,3 +90,12 @@ body:
     attributes:
       label: Workaround
       description: Any workaround found, or "None known"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste full add-on logs here. Go to Settings → Add-ons → Bluetooth Audio Manager → Log tab.
+      render: text
+    validations:
+      required: true
