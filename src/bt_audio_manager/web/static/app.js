@@ -475,7 +475,7 @@ function renderDevices(devices) {
               </div>
               ${buildCapBadges(d)}
               <div class="device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
-              ${d.cod_matched && !d.paired ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-info-circle me-1"></i>Detected by device class \u2014 pair to confirm audio support</div>' : profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
+              ${d.cod_matched && !d.paired ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-info-circle me-1"></i>Detected by device class \u2014 pair to confirm audio support</div>' : d.paired && !profiles ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-exclamation-triangle me-1"></i>Paired but no audio profiles found</div>' : profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
               ${sinkInfo}
               ${(() => { const fb = buildFeatureBadges(d); return fb ? `<div class="device-feature-badges d-flex gap-2 flex-wrap">${fb}</div>` : ""; })()}
               <div class="device-actions">
@@ -829,7 +829,10 @@ async function scanDevices() {
 
 async function pairDevice(address) {
   try {
-    await apiPost("/api/pair", { address });
+    const res = await apiPost("/api/pair", { address });
+    if (res && res.warning === "no_audio_profiles") {
+      showToast("Paired, but no audio profiles found \u2014 this device may not support audio playback.", "warning");
+    }
   } catch (e) {
     showToast(`Pairing failed: ${e.message}`, "error");
   }
