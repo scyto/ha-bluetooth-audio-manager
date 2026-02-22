@@ -1,0 +1,95 @@
+name: Bug Report
+description: Report a general add-on bug — not for device-specific issues
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for **general add-on bugs** — UI issues, crashes, settings problems, etc.
+        If your issue is with a **specific Bluetooth device** (discovery, pairing, connection), use the **Device Discovery / Pairing Issue** template instead.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: What is broken?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we trigger this bug?
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happens instead?
+    validations:
+      required: true
+
+  - type: input
+    id: haos-version
+    attributes:
+      label: HAOS version
+      placeholder: e.g. 14.1
+    validations:
+      required: true
+
+  - type: input
+    id: addon-version
+    attributes:
+      label: App version
+      placeholder: e.g. 0.3.5
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      placeholder: e.g. RPi 4, Home Assistant Green, Yellow, x86 NUC
+    validations:
+      required: true
+
+  - type: dropdown
+    id: access-method
+    attributes:
+      label: Access method
+      options:
+        - Ingress
+        - Direct URL
+        - Both
+        - N/A
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste relevant add-on logs here. Go to Settings → Add-ons → Bluetooth Audio Manager → Log tab.
+      render: text
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, configuration details, or anything else that might help.
