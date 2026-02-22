@@ -436,8 +436,8 @@ def create_api_routes(
                 errors.append("reconnect_max_backoff_seconds must be an integer between 60 and 3600")
         if "scan_duration_seconds" in body:
             v = body["scan_duration_seconds"]
-            if not isinstance(v, int) or v < 5 or v > 60:
-                errors.append("scan_duration_seconds must be an integer between 5 and 60")
+            if not isinstance(v, int) or v < 5 or v > 120:
+                errors.append("scan_duration_seconds must be an integer between 5 and 120")
 
         if errors:
             return web.json_response({"error": "; ".join(errors)}, status=400)
