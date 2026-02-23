@@ -700,10 +700,14 @@ def create_api_routes(
         logger.info("WS client connected from %s", request.remote)
 
         bus = manager.event_bus
-        queue = bus.subscribe()
-        sender = asyncio.create_task(_ws_sender(ws, queue))
+        sender: asyncio.Task | None = None
+        queue: asyncio.Queue | None = None
         try:
-            # Send initial state so UI renders immediately
+            # Send initial state so UI renders immediately.
+            # NOTE: get_all_devices() triggers adapter scanning which
+            # emits log events.  We must NOT subscribe to the EventBus
+            # until after the historical replay so that live events
+            # don't race ahead of replayed entries in the client.
             devices = await manager.get_all_devices()
             try:
                 sinks = await manager.get_audio_sinks()
@@ -728,6 +732,12 @@ def create_api_routes(
                 for entry in log_handler.recent_logs:
                     await ws.send_json({"type": "log_entry", **entry})
 
+            # Subscribe to live events AFTER replay so log order is
+            # preserved.  Events generated during replay (e.g. from
+            # get_all_devices) are already in the ring buffer.
+            queue = bus.subscribe()
+            sender = asyncio.create_task(_ws_sender(ws, queue))
+
             # Block until client disconnects (reads drain client msgs)
             async for _msg in ws:
                 pass
@@ -736,12 +746,14 @@ def create_api_routes(
         except Exception as e:
             logger.warning("WS unexpected error: %s: %s", type(e).__name__, e)
         finally:
-            sender.cancel()
-            try:
-                await sender
-            except asyncio.CancelledError:
-                pass
-            bus.unsubscribe(queue)
+            if sender is not None:
+                sender.cancel()
+                try:
+                    await sender
+                except asyncio.CancelledError:
+                    pass
+            if queue is not None:
+                bus.unsubscribe(queue)
             logger.info("WS client disconnected")
         return ws
 
