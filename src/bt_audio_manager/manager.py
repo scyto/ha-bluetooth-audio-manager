@@ -82,6 +82,7 @@ class BluetoothAudioManager:
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
         self._a2dp_attempts: dict[str, int] = {}  # addr → consecutive A2DP activation failures
         self._null_hfp_registered: bool = False  # tracks null HFP handler state
+        self._recent_disconnects: dict[str, float] = {}  # addr → time.time() for burst detection
         # Ring buffers so WebSocket clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
@@ -803,7 +804,13 @@ class BluetoothAudioManager:
             self.event_bus.emit("status", {"message": ""})
             raise
 
-    async def connect_device(self, address: str, *, _from_pair: bool = False) -> bool:
+    async def connect_device(
+        self,
+        address: str,
+        *,
+        _from_pair: bool = False,
+        _from_reconnect: bool = False,
+    ) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
         # If another connection attempt is already in progress, wait for it
         if not _from_pair and address in self._connecting:
@@ -823,8 +830,11 @@ class BluetoothAudioManager:
             await self._broadcast_all()
             return False
 
-        # Cancel any pending auto-reconnect to avoid racing
-        if self.reconnect_service:
+        # Cancel any pending auto-reconnect to avoid racing.
+        # Skip when called from the reconnect service itself — otherwise
+        # cancel_reconnect() kills the very task that called us, and the
+        # CancelledError silently aborts the entire backoff loop.
+        if self.reconnect_service and not _from_reconnect:
             self.reconnect_service.cancel_reconnect(address)
         # Clear any disconnect suppression (user wants to connect now)
         self._suppress_reconnect.discard(address)
@@ -1502,6 +1512,24 @@ class BluetoothAudioManager:
         addr_underscored = address.replace(":", "_")
         self._running_sinks = {s for s in self._running_sinks if addr_underscored not in s}
         self._fire_and_forget(self._on_device_disconnected_async(address))
+
+        # Detect adapter-level disruptions: multiple devices dropping at once
+        now = time.time()
+        self._recent_disconnects[address] = now
+        # Prune stale entries (> 5s old)
+        self._recent_disconnects = {
+            a: t for a, t in self._recent_disconnects.items() if now - t < 5
+        }
+        burst_addrs = [a for a, t in self._recent_disconnects.items() if now - t < 3]
+        if len(burst_addrs) >= 2:
+            adapter_name = (self._adapter_path or "").rsplit("/", 1)[-1] or "unknown"
+            logger.warning(
+                "%d devices disconnected simultaneously (%s) — probable "
+                "Bluetooth adapter disruption on %s",
+                len(burst_addrs),
+                ", ".join(sorted(burst_addrs)),
+                adapter_name,
+            )
 
         if address in self._connecting:
             # Active pair/connect flow in progress — don't start competing reconnect
