@@ -49,7 +49,7 @@ This app gives you a point-and-click UI right in the HA sidebar. Scan, pair, con
 | Architecture | Examples |
 | --- | --- |
 | amd64 | Intel NUCs, x86-64 VMs |
-| aarch64 (not tested) | Raspberry Pi 4, Raspberry Pi 5 |
+| aarch64 | Raspberry Pi 4, Raspberry Pi 5 |
 | armv7 (not tested) | Raspberry Pi 3 |
 | armhf (not tested)| Older ARM devices |
 
