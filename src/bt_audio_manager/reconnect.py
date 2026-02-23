@@ -109,12 +109,18 @@ class ReconnectService:
             return
 
         try:
-            success = await self._manager.connect_device(address)
+            success = await self._manager.connect_device(
+                address, _from_reconnect=True
+            )
             if success:
                 logger.info("Quick reconnect to %s succeeded", address)
                 self._manager._broadcast_status(f"Reconnected to {address}")
                 self._tasks.pop(address, None)
                 return
+            logger.info(
+                "Quick reconnect to %s failed (no sink) — falling back to backoff",
+                address,
+            )
         except (DBusError, asyncio.TimeoutError, OSError) as e:
             logger.info(
                 "Quick reconnect to %s failed: %s — falling back to backoff",
@@ -130,8 +136,8 @@ class ReconnectService:
             jitter = random.uniform(0, wait * 0.1)
             total_wait = wait + jitter
 
-            logger.debug(
-                "Reconnect to %s: attempt %d in %.1fs",
+            logger.info(
+                "Reconnect to %s: attempt %d in %.0fs",
                 address, attempt + 1, total_wait,
             )
             self._manager._broadcast_status(
@@ -144,7 +150,9 @@ class ReconnectService:
                 return
 
             try:
-                success = await self._manager.connect_device(address)
+                success = await self._manager.connect_device(
+                    address, _from_reconnect=True
+                )
                 if success:
                     logger.info(
                         "Reconnected to %s after %d attempt(s)", address, attempt + 1
