@@ -103,12 +103,7 @@ class MPDManager:
             self._stderr_task.cancel()
             self._stderr_task = None
 
-        if self._client:
-            try:
-                self._client.disconnect()
-            except Exception:
-                pass
-            self._client = None
+        self._disconnect_client()
 
         if self._process and self._process.returncode is None:
             self._process.terminate()
@@ -210,6 +205,25 @@ class MPDManager:
 
     # -- Client connection --
 
+    def _disconnect_client(self) -> None:
+        """Disconnect and clean up the python-mpd2 client.
+
+        Must be called before dropping the reference to avoid orphaning
+        the internal ``__run_task`` (causes 'Task was destroyed but it
+        is pending!' errors).
+        """
+        if self._client:
+            try:
+                self._client.disconnect()
+            except Exception:
+                pass
+            self._client = None
+
+    @staticmethod
+    def _is_connection_error(exc: Exception) -> bool:
+        """Return True if the exception indicates a broken connection."""
+        return isinstance(exc, (ConnectionError, BrokenPipeError, OSError, EOFError))
+
     async def _connect_client(self) -> None:
         """Connect the python-mpd2 async client."""
         self._client = MPDClient()
@@ -233,7 +247,7 @@ class MPDManager:
                 await self._client.ping()
                 return
             except Exception:
-                self._client = None
+                self._disconnect_client()
 
         async with self._connect_lock:
             if self._client:
@@ -273,7 +287,8 @@ class MPDManager:
                     pass
         except Exception as e:
             logger.warning("MPD command %s failed (port %d): %s", command, self._port, e)
-            self._client = None
+            if self._is_connection_error(e):
+                self._disconnect_client()
 
     async def set_volume(self, vol_pct: int) -> None:
         """Set MPD volume (0-100)."""
@@ -284,7 +299,8 @@ class MPDManager:
             await self._client.setvol(max(0, min(100, vol_pct)))
         except Exception as e:
             logger.debug("MPD set_volume failed (port %d): %s", self._port, e)
-            self._client = None
+            if self._is_connection_error(e):
+                self._disconnect_client()
 
     async def get_status(self) -> dict:
         """Return MPD status dict."""
@@ -293,6 +309,7 @@ class MPDManager:
             return {"state": "unknown"}
         try:
             return await self._client.status()
-        except Exception:
-            self._client = None
+        except Exception as e:
+            if self._is_connection_error(e):
+                self._disconnect_client()
             return {"state": "unknown"}

@@ -76,6 +76,7 @@ class BluetoothAudioManager:
         self._sink_poll_task: asyncio.Task | None = None
         self._last_sink_snapshot: str = ""
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
+        self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
@@ -374,6 +375,7 @@ class BluetoothAudioManager:
                 if await device.is_connected():
                     logger.info("Device %s already connected at startup", addr)
                     self._last_signaled_volume.pop(addr, None)
+                    self._last_pa_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
                     if HFP_SWITCHING_ENABLED:
                         audio_profile = self._get_audio_profile(addr)
@@ -961,6 +963,7 @@ class BluetoothAudioManager:
         self._a2dp_attempts.pop(address, None)
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
+        self._last_pa_volume.pop(address, None)
         self._device_lifecycle_locks.pop(address, None)
         self._connecting.discard(address)
         self._suppress_reconnect.discard(address)
@@ -1062,6 +1065,7 @@ class BluetoothAudioManager:
         # 8. Clear internal tracking state
         self._device_connect_time.clear()
         self._last_signaled_volume.clear()
+        self._last_pa_volume.clear()
         self._suppress_reconnect.clear()
         self._a2dp_attempts.clear()
         self._connecting.clear()
@@ -1437,6 +1441,7 @@ class BluetoothAudioManager:
         """Handle device disconnection event."""
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
+        self._last_pa_volume.pop(address, None)
         # Clean up running sink tracking for this device
         addr_underscored = address.replace(":", "_")
         self._running_sinks = {s for s in self._running_sinks if addr_underscored not in s}
@@ -1467,6 +1472,7 @@ class BluetoothAudioManager:
         """Handle device connection event (D-Bus signal)."""
         self._device_connect_time[address] = time.time()
         self._last_signaled_volume.pop(address, None)
+        self._last_pa_volume.pop(address, None)
         self._fire_and_forget(self._on_device_connected_async(address))
 
     async def _on_device_connected_async(self, address: str) -> None:
@@ -2310,10 +2316,12 @@ class BluetoothAudioManager:
         self.recent_avrcp.append(entry)
         self.event_bus.emit("avrcp_event", entry)
         # Sync PA volume change to MPD so HA's media_player entity reflects
-        # the speaker's actual volume (speaker buttons → AVRCP → PA → MPD)
+        # the speaker's actual volume (speaker buttons → AVRCP → PA → MPD).
+        # Skip if volume hasn't changed (PA fires on every sink state change).
         if addr:
             mpd = self._mpd_instances.get(addr)
-            if mpd and mpd.is_running:
+            if mpd and mpd.is_running and self._last_pa_volume.get(addr) != volume:
+                self._last_pa_volume[addr] = volume
                 self._fire_and_forget(mpd.set_volume(volume))
 
     @staticmethod
