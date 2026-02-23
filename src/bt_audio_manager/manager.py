@@ -891,6 +891,62 @@ class BluetoothAudioManager:
                         except Exception as e:
                             logger.warning("Reconnect after PA reload failed for %s: %s", address, e)
 
+                # A2DP fallback: PA card missing — device likely connected
+                # via BLE only (dual-mode speakers sometimes prefer LE).
+                # Force BR/EDR by explicitly connecting the A2DP Sink profile.
+                if not activated and audio_profile != "hfp":
+                    from .bluez.constants import A2DP_SINK_UUID
+
+                    logger.info(
+                        "A2DP PA card not found for %s — likely BLE-only "
+                        "connection, trying ConnectProfile(A2DP_SINK)...",
+                        address,
+                    )
+                    self._broadcast_status(
+                        f"Requesting A2DP profile for {address}..."
+                    )
+                    try:
+                        await device.connect_profile(A2DP_SINK_UUID)
+                        await asyncio.sleep(3)
+                        activated = await self.pulse.activate_bt_card_profile(
+                            address, profile=audio_profile
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "ConnectProfile(A2DP) failed for %s: %s",
+                            address, e,
+                        )
+
+                    if not activated:
+                        logger.info(
+                            "A2DP still missing for %s — trying disconnect "
+                            "+ ConnectProfile(A2DP_SINK) cycle...",
+                            address,
+                        )
+                        self._broadcast_status(
+                            f"Reconnecting {address} with A2DP..."
+                        )
+                        try:
+                            await device.disconnect()
+                            await asyncio.sleep(2)
+                            try:
+                                await device.connect_profile(A2DP_SINK_UUID)
+                            except Exception:
+                                # Some BlueZ versions need a link before
+                                # ConnectProfile — fall back to generic Connect
+                                await device.connect()
+                            await device.wait_for_services(timeout=10)
+                            await asyncio.sleep(2)
+                            activated = await self.pulse.activate_bt_card_profile(
+                                address, profile=audio_profile
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "A2DP disconnect/reconnect cycle failed "
+                                "for %s: %s",
+                                address, e,
+                            )
+
                 sink_name = None
                 if activated:
                     self._broadcast_status(f"Waiting for {profile_label} sink for {address}...")
@@ -2293,7 +2349,10 @@ class BluetoothAudioManager:
         try:
             await device.disconnect()
             await asyncio.sleep(2)
-            await device.connect()
+            try:
+                await device.connect_profile(A2DP_SINK_UUID)
+            except Exception:
+                await device.connect()  # fallback to generic
             await device.wait_for_services(timeout=10)
             await asyncio.sleep(3)
             found = await self._log_transport_properties(address)
