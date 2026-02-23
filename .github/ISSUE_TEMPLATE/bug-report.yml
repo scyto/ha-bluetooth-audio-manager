@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a general add-on bug — not for device-specific issues
+description: Report a general add-on bug (MPD, Logging, UI, etc) — not for device-specific issues
 title: "[bug] "
 labels: ["bug"]
 body:
