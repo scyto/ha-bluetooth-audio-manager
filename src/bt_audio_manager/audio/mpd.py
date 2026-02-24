@@ -10,6 +10,7 @@ media_player entity per speaker.
 
 import asyncio
 import logging
+import os
 import textwrap
 
 from mpd.asyncio import MPDClient
@@ -41,8 +42,11 @@ class MPDManager:
         # anything else → "default" (errors/warnings only)
         self._mpd_log_level = "verbose" if log_level == "debug" else "default"
 
-        self._conf_path = f"/tmp/mpd_{port}.conf"
-        self._pid_file = f"/tmp/mpd_{port}.pid"
+        # All MPD paths live in /tmp (ephemeral, writable) — no persistent
+        # storage needed since HA streams URLs, never stores local files.
+        self._tmp_dir = f"/tmp/mpd_{port}"
+        self._conf_path = f"{self._tmp_dir}/mpd.conf"
+        self._pid_file = f"{self._tmp_dir}/pid"
 
         self._process: asyncio.subprocess.Process | None = None
         self._client: MPDClient | None = None
@@ -63,6 +67,8 @@ class MPDManager:
             return
 
         self._sink_name = sink_name
+        os.makedirs(f"{self._tmp_dir}/music", exist_ok=True)
+        os.makedirs(f"{self._tmp_dir}/playlists", exist_ok=True)
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
@@ -110,10 +116,14 @@ class MPDManager:
             password_line = f'password "{self._password}@read,add,control,admin"'
 
         config = textwrap.dedent("""\
+            music_directory     "{tmp_dir}/music"
+            playlist_directory  "{tmp_dir}/playlists"
+            db_file             "{tmp_dir}/database"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
             log_level           "{mpd_log_level}"
+            auto_update         "no"
             {password_line}
 
             audio_output {{
@@ -126,6 +136,7 @@ class MPDManager:
                 plugin  "curl"
             }}
         """).format(
+            tmp_dir=self._tmp_dir,
             pid_file=self._pid_file,
             port=self._port,
             password_line=password_line,
