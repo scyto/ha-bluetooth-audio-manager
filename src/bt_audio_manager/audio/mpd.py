@@ -46,6 +46,8 @@ def _chown_mpd_dirs() -> None:
 class MPDManager:
     """Manages an embedded MPD daemon and bridges AVRCP commands to it."""
 
+    _version_logged = False
+
     def __init__(
         self,
         address: str,
@@ -66,7 +68,6 @@ class MPDManager:
         # Per-instance paths (port as discriminator)
         self._instance_dir = f"{MPD_BASE_DIR}/instance_{port}"
         self._db_file = f"{self._instance_dir}/database"
-        self._state_file = f"{self._instance_dir}/state"
         self._conf_path = f"/tmp/mpd_{port}.conf"
         self._pid_file = f"/tmp/mpd_{port}.pid"
 
@@ -97,7 +98,6 @@ class MPDManager:
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
-        await self._reset_playback_modes()
         self._running = True
         logger.info("MPD started for %s on port %d", self._address, self._port)
 
@@ -133,26 +133,6 @@ class MPDManager:
     def address(self) -> str:
         return self._address
 
-    async def _reset_playback_modes(self) -> None:
-        """Reset MPD playback modes to defaults for queue advancement.
-
-        HA's media player (or other clients) may set single/consume/repeat/
-        random, and these persist in the state file across restarts.  Reset
-        them so the queue always advances normally.
-        """
-        if not self._client:
-            return
-        try:
-            await self._client.single(0)
-            await self._client.consume(0)
-            await self._client.repeat(0)
-            await self._client.random(0)
-        except Exception as e:
-            logger.warning(
-                "Failed to reset MPD playback modes (port %d): %s",
-                self._port, e,
-            )
-
     # -- Config generation --
 
     def _generate_config(self) -> None:
@@ -165,7 +145,6 @@ class MPDManager:
             music_directory     "{music_dir}"
             playlist_directory  "{playlist_dir}"
             db_file             "{db_file}"
-            state_file          "{state_file}"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
@@ -186,7 +165,6 @@ class MPDManager:
             music_dir=MPD_MUSIC_DIR,
             playlist_dir=MPD_PLAYLIST_DIR,
             db_file=self._db_file,
-            state_file=self._state_file,
             pid_file=self._pid_file,
             port=self._port,
             password_line=password_line,
@@ -201,8 +179,27 @@ class MPDManager:
 
     # -- Daemon management --
 
+    async def _log_mpd_version(self) -> None:
+        """Log the installed MPD version on first use."""
+        if MPDManager._version_logged:
+            return
+        MPDManager._version_logged = True
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "mpd", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            first_line = stdout.decode().split("\n", 1)[0].strip()
+            if first_line:
+                logger.info("MPD version: %s", first_line)
+        except Exception as e:
+            logger.debug("Could not determine MPD version: %s", e)
+
     async def _start_daemon(self) -> None:
         """Start MPD in foreground mode as a subprocess."""
+        await self._log_mpd_version()
         self._process = await asyncio.create_subprocess_exec(
             "mpd", "--no-daemon", "--stderr", self._conf_path,
             stdout=asyncio.subprocess.DEVNULL,
