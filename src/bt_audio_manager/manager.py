@@ -1153,6 +1153,9 @@ class BluetoothAudioManager:
             addr = device["address"]
             device["stored"] = addr in stored_addresses
             if device["stored"]:
+                stored_entry = self.store.get_device(addr)
+                if stored_entry and stored_entry.get("name"):
+                    device["name"] = stored_entry["name"]
                 s = self.store.get_device_settings(addr)
                 device["idle_mode"] = s.get("idle_mode", "default")
                 device["keep_alive_method"] = s["keep_alive_method"]
