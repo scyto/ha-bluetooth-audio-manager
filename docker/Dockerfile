@@ -9,6 +9,7 @@ RUN apk add --no-cache \
     bluez-btmon \
     bluez-libs \
     mpd \
+    && rm -f /etc/mpd.conf \
     && apk add --no-cache \
     dbus-libs \
     pulseaudio-utils \
