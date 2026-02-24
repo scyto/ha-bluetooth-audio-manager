@@ -44,6 +44,10 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /data/** rwk,
   /data/ r,
 
+  # Persistent config storage (survives reinstall via addon_config)
+  /config/** rwk,
+  /config/ r,
+
   # Temporary files (k = flock, needed by MPD state/database)
   /tmp/** rwk,
 
