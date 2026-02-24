@@ -118,12 +118,10 @@ class MPDManager:
         config = textwrap.dedent("""\
             music_directory     "{tmp_dir}/music"
             playlist_directory  "{tmp_dir}/playlists"
-            db_file             "{tmp_dir}/database"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
             log_level           "{mpd_log_level}"
-            auto_update         "no"
             {password_line}
 
             audio_output {{
