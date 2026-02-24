@@ -11,7 +11,6 @@ media_player entity per speaker.
 import asyncio
 import logging
 import os
-import shutil
 import textwrap
 
 from mpd.asyncio import MPDClient
@@ -73,12 +72,11 @@ class MPDManager:
         os.makedirs(f"{self._tmp_dir}/music", exist_ok=True)
         os.makedirs(f"{self._tmp_dir}/playlists", exist_ok=True)
         os.makedirs(self._data_dir, exist_ok=True)
-        # MPD drops privileges to the 'mpd' user (Alpine package default).
-        # Chown all dirs so the dropped-privilege process can write.
-        for d in (self._tmp_dir, self._data_dir):
-            shutil.chown(d, user="mpd", group="mpd")
-        for sub in ("music", "playlists"):
-            shutil.chown(f"{self._tmp_dir}/{sub}", user="mpd", group="mpd")
+        # MPD may drop privileges after start; make dirs world-writable
+        # so it can write regardless of which user it runs as.
+        for d in (self._tmp_dir, f"{self._tmp_dir}/music",
+                  f"{self._tmp_dir}/playlists", self._data_dir):
+            os.chmod(d, 0o777)
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
