@@ -66,7 +66,7 @@ class MPDManager:
             return
 
         self._sink_name = sink_name
-        os.makedirs(self._tmp_dir, exist_ok=True)
+        os.makedirs(f"{self._tmp_dir}/playlists", exist_ok=True)
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
@@ -114,6 +114,7 @@ class MPDManager:
             password_line = f'password "{self._password}@read,add,control,admin"'
 
         config = textwrap.dedent("""\
+            playlist_directory  "{tmp_dir}/playlists"
             state_file          "{tmp_dir}/state"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
