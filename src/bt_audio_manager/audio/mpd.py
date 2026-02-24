@@ -67,10 +67,6 @@ class MPDManager:
 
         self._sink_name = sink_name
         os.makedirs(f"{self._tmp_dir}/playlists", exist_ok=True)
-        # Pre-create empty state file so MPD doesn't warn on first boot
-        state_path = f"{self._tmp_dir}/state"
-        if not os.path.exists(state_path):
-            open(state_path, "a").close()
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
@@ -119,7 +115,6 @@ class MPDManager:
 
         config = textwrap.dedent("""\
             playlist_directory  "{tmp_dir}/playlists"
-            state_file          "{tmp_dir}/state"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
