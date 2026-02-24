@@ -309,9 +309,15 @@ def create_api_routes(
             )
         try:
             # Auto-store paired devices not yet in the persistence store
-            # (can happen when BlueZ paired a device before the add-on tracked it)
+            # (can happen when BlueZ paired a device before the add-on tracked it,
+            # or device connected after startup missed the Phase 6b import)
             if manager.store.get_device(address) is None:
                 bluez_dev = manager.managed_devices.get(address)
+                if not bluez_dev:
+                    try:
+                        bluez_dev = await manager._get_or_create_device(address)
+                    except Exception:
+                        bluez_dev = None
                 if bluez_dev:
                     name = await bluez_dev.get_name()
                     await manager.store.add_device(address, name)
@@ -731,6 +737,12 @@ def create_api_routes(
             if log_handler:
                 for entry in log_handler.recent_logs:
                     await ws.send_json({"type": "log_entry", **entry})
+
+            # Deliver pending toasts (e.g. device reimport warning from startup)
+            if manager._pending_toasts:
+                for toast in manager._pending_toasts:
+                    await ws.send_json({"type": "toast", **toast})
+                manager._pending_toasts.clear()
 
             # Subscribe to live events AFTER replay so log order is
             # preserved.  Events generated during replay (e.g. from

@@ -92,6 +92,7 @@ class BluetoothAudioManager:
         self._scanning: bool = False
         self._scan_task: asyncio.Task | None = None
         self._scan_debounce_handle: asyncio.TimerHandle | None = None
+        self._pending_toasts: list[dict] = []  # toasts queued before any WS client connects
 
     async def _resolve_adapter_path(self) -> str:
         """Resolve the configured bt_adapter to a BlueZ D-Bus path.
@@ -436,11 +437,13 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.debug("Stale device cleanup failed: %s", e)
 
-        # 6b. Detect devices connected at the BlueZ level but NOT in our
-        #     store (e.g. store wiped during rebuild, or device paired outside
-        #     the app).  Create BluezDevice wrappers so UI buttons work.
+        # 6b. Detect paired/connected BlueZ audio devices not in our store
+        #     (e.g. store wiped during reinstall, or device paired outside
+        #     the app).  Auto-import into the persistence store with default
+        #     settings and create BluezDevice wrappers so UI buttons work.
+        reimported_count = 0
         try:
-            from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE
+            from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE, AUDIO_UUIDS
             intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
             proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
             obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
@@ -453,27 +456,47 @@ class BluetoothAudioManager:
                     continue
                 dev_props = ifaces[DEVICE_INTERFACE]
                 addr_v = dev_props.get("Address")
+                paired_v = dev_props.get("Paired")
                 connected_v = dev_props.get("Connected")
-                if not addr_v or not connected_v:
+                uuids_v = dev_props.get("UUIDs")
+                name_v = dev_props.get("Name")
+                if not addr_v:
                     continue
                 addr = addr_v.value if hasattr(addr_v, "value") else addr_v
-                connected = connected_v.value if hasattr(connected_v, "value") else connected_v
-                if not connected or addr in self.managed_devices:
-                    continue
+                paired = (paired_v.value if hasattr(paired_v, "value") else paired_v) if paired_v else False
+                connected = (connected_v.value if hasattr(connected_v, "value") else connected_v) if connected_v else False
+                uuids = set(uuids_v.value if hasattr(uuids_v, "value") else uuids_v) if uuids_v else set()
+                name = (name_v.value if hasattr(name_v, "value") else name_v) if name_v else addr
 
-                logger.info(
-                    "Found connected device %s not in managed_devices — initializing",
-                    addr,
-                )
-                try:
-                    device = await self._get_or_create_device(addr)
-                    self._device_connect_time[addr] = time.time()
-                    if self._should_disconnect_hfp(addr):
-                        await self._disconnect_hfp(addr)
-                except Exception as e:
-                    logger.warning("Could not initialize unmanaged device %s: %s", addr, e)
+                # Auto-import paired audio devices missing from the store
+                if paired and uuids.intersection(AUDIO_UUIDS) and self.store.get_device(addr) is None:
+                    await self.store.add_device(addr, name)
+                    reimported_count += 1
+                    logger.info("Auto-imported paired device %s (%s) into store", addr, name)
+
+                # Create managed_devices wrappers for connected devices
+                if connected and addr not in self.managed_devices:
+                    logger.info(
+                        "Found connected device %s not in managed_devices — initializing",
+                        addr,
+                    )
+                    try:
+                        device = await self._get_or_create_device(addr)
+                        self._device_connect_time[addr] = time.time()
+                        if self._should_disconnect_hfp(addr):
+                            await self._disconnect_hfp(addr)
+                    except Exception as e:
+                        logger.warning("Could not initialize unmanaged device %s: %s", addr, e)
         except Exception as e:
-            logger.debug("Failed to enumerate connected BlueZ devices: %s", e)
+            logger.debug("Failed to enumerate BlueZ devices: %s", e)
+
+        if reimported_count > 0:
+            toast = {
+                "message": f"Restored {reimported_count} device(s) from Bluetooth adapter \u2014 settings reset to defaults.",
+                "level": "warning",
+            }
+            self._pending_toasts.append(toast)
+            logger.info("Queued reimport toast for %d device(s)", reimported_count)
 
         # 6c. If any device already has an active A2DP transport, signal
         #     PlaybackStatus=Playing so the speaker enables AVRCP volume buttons
