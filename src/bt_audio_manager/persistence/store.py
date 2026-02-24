@@ -50,6 +50,14 @@ class PersistenceStore:
             data = json.loads(self._path.read_text())
             self._devices = data.get("devices", [])
             logger.info("Loaded %d paired device(s) from store", len(self._devices))
+            for d in self._devices:
+                non_defaults = {
+                    k: d[k]
+                    for k in DEFAULT_DEVICE_SETTINGS
+                    if k in d and d[k] != DEFAULT_DEVICE_SETTINGS[k]
+                }
+                if non_defaults:
+                    logger.info("  %s: custom settings: %s", d.get("address", "?"), non_defaults)
         except (json.JSONDecodeError, KeyError) as e:
             logger.error("Failed to parse paired devices store: %s", e)
             self._devices = []
