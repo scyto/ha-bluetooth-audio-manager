@@ -10,16 +10,12 @@ media_player entity per speaker.
 
 import asyncio
 import logging
-import os
 import textwrap
 
 from mpd.asyncio import MPDClient
 
 logger = logging.getLogger(__name__)
 
-MPD_BASE_DIR = "/data/mpd"
-MPD_MUSIC_DIR = "/data/mpd/music"
-MPD_PLAYLIST_DIR = "/data/mpd/playlists"
 MPD_HOST = "127.0.0.1"
 
 
@@ -45,9 +41,6 @@ class MPDManager:
         # anything else → "default" (errors/warnings only)
         self._mpd_log_level = "verbose" if log_level == "debug" else "default"
 
-        # Per-instance paths (port as discriminator)
-        self._instance_dir = f"{MPD_BASE_DIR}/instance_{port}"
-        self._db_file = f"{self._instance_dir}/database"
         self._conf_path = f"/tmp/mpd_{port}.conf"
         self._pid_file = f"/tmp/mpd_{port}.pid"
 
@@ -70,9 +63,6 @@ class MPDManager:
             return
 
         self._sink_name = sink_name
-        os.makedirs(MPD_MUSIC_DIR, exist_ok=True)
-        os.makedirs(MPD_PLAYLIST_DIR, exist_ok=True)
-        os.makedirs(self._instance_dir, exist_ok=True)
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
@@ -120,14 +110,10 @@ class MPDManager:
             password_line = f'password "{self._password}@read,add,control,admin"'
 
         config = textwrap.dedent("""\
-            music_directory     "{music_dir}"
-            playlist_directory  "{playlist_dir}"
-            db_file             "{db_file}"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
             log_level           "{mpd_log_level}"
-            auto_update         "no"
             {password_line}
 
             audio_output {{
@@ -140,9 +126,6 @@ class MPDManager:
                 plugin  "curl"
             }}
         """).format(
-            music_dir=MPD_MUSIC_DIR,
-            playlist_dir=MPD_PLAYLIST_DIR,
-            db_file=self._db_file,
             pid_file=self._pid_file,
             port=self._port,
             password_line=password_line,
