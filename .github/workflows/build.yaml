@@ -323,16 +323,17 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync dev config.yaml from dev branch and set version
+      - name: Sync dev metadata from dev branch and set version
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          # Fetch the full dev config.yaml from the dev branch so options/schema
-          # changes propagate to main (HAOS reads config.yaml from main)
+          # Fetch dev metadata from the dev branch so config, apparmor, etc.
+          # propagate to main (HAOS Supervisor reads these from main)
           git fetch origin dev --depth=1
           git show origin/dev:bluetooth_audio_manager_dev/config.yaml > bluetooth_audio_manager_dev/config.yaml
+          git show origin/dev:bluetooth_audio_manager_dev/apparmor.txt > bluetooth_audio_manager_dev/apparmor.txt
           # Override version with the build SHA
           sed -i "s/^version: .*/version: \"sha-${SHORT_SHA}\"/" bluetooth_audio_manager_dev/config.yaml
-          echo "Synced bluetooth_audio_manager_dev/config.yaml from dev:"
+          echo "Synced bluetooth_audio_manager_dev/ metadata from dev:"
           cat bluetooth_audio_manager_dev/config.yaml
 
       - name: Create PR for version update
@@ -344,7 +345,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add bluetooth_audio_manager_dev/config.yaml
+          git add bluetooth_audio_manager_dev/config.yaml bluetooth_audio_manager_dev/apparmor.txt
           if git diff --staged --quiet; then
             echo "No version change needed"
             exit 0
