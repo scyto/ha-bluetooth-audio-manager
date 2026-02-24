@@ -40,12 +40,12 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /root/.config/pulse/ rw,
   /root/.config/pulse/** rw,
 
-  # Persistent data storage
-  /data/** rw,
+  # Persistent data storage (k = flock, needed by MPD state/database)
+  /data/** rwk,
   /data/ r,
 
-  # Temporary files
-  /tmp/** rw,
+  # Temporary files (k = flock, needed by MPD state/database)
+  /tmp/** rwk,
 
   # Python runtime
   /usr/lib/python3*/** r,
