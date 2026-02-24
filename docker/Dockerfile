@@ -1,15 +1,17 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 FROM ${BUILD_FROM}
 
-# Pull bluez packages from Alpine edge (newer than base 3.20)
+# Pull bluez and mpd from Alpine edge (newer than base 3.20)
 RUN apk add --no-cache \
     --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
     bluez \
     bluez-btmon \
     bluez-libs \
     && apk add --no-cache \
-    dbus-libs \
+    --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
     mpd \
+    && apk add --no-cache \
+    dbus-libs \
     pulseaudio-utils \
     python3 \
     py3-pip
