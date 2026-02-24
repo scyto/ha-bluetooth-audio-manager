@@ -11,7 +11,6 @@ media_player entity per speaker.
 import asyncio
 import logging
 import os
-import pwd
 import textwrap
 
 from mpd.asyncio import MPDClient
@@ -22,25 +21,6 @@ MPD_BASE_DIR = "/data/mpd"
 MPD_MUSIC_DIR = "/data/mpd/music"
 MPD_PLAYLIST_DIR = "/data/mpd/playlists"
 MPD_HOST = "127.0.0.1"
-
-
-def _chown_mpd_dirs() -> None:
-    """Recursively chown MPD data dirs to the 'mpd' user/group.
-
-    Alpine's mpd package creates the mpd user.  MPD drops privileges from
-    root to this user at startup, so it must own its data directories.
-    """
-    try:
-        pw = pwd.getpwnam("mpd")
-        for dirpath, dirnames, filenames in os.walk(MPD_BASE_DIR):
-            os.chown(dirpath, pw.pw_uid, pw.pw_gid)
-            for fname in filenames:
-                os.chown(os.path.join(dirpath, fname), pw.pw_uid, pw.pw_gid)
-        logger.debug("chown'd %s to mpd:%d", MPD_BASE_DIR, pw.pw_uid)
-    except KeyError:
-        logger.warning("'mpd' user not found — MPD may fail to write its database")
-    except OSError as e:
-        logger.warning("Failed to chown MPD dirs: %s", e)
 
 
 class MPDManager:
@@ -93,8 +73,6 @@ class MPDManager:
         os.makedirs(MPD_MUSIC_DIR, exist_ok=True)
         os.makedirs(MPD_PLAYLIST_DIR, exist_ok=True)
         os.makedirs(self._instance_dir, exist_ok=True)
-        # MPD drops from root to the 'mpd' user; ensure it owns its data dirs
-        _chown_mpd_dirs()
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()

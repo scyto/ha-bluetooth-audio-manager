@@ -5,6 +5,5 @@
 # ==============================================================================
 
 mkdir -p /data/mpd/music /data/mpd/playlists
-chown -R mpd:mpd /data/mpd
 
 bashio::log.info "MPD directories initialized."
