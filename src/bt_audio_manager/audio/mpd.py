@@ -52,11 +52,16 @@ class MPDManager:
         port: int,
         speaker_name: str,
         password: str | None = None,
+        log_level: str = "info",
     ) -> None:
         self._address = address
         self._port = port
         self._speaker_name = speaker_name
         self._password = password
+        # Map app log level to MPD log level:
+        # debug → "verbose" (full client/command chatter)
+        # anything else → "default" (errors/warnings only)
+        self._mpd_log_level = "verbose" if log_level == "debug" else "default"
 
         # Per-instance paths (port as discriminator)
         self._instance_dir = f"{MPD_BASE_DIR}/instance_{port}"
@@ -143,7 +148,7 @@ class MPDManager:
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
-            log_level           "verbose"
+            log_level           "{mpd_log_level}"
             auto_update         "no"
             {password_line}
 
@@ -166,6 +171,7 @@ class MPDManager:
             password_line=password_line,
             speaker_name=self._speaker_name.replace("\\", "\\\\").replace('"', '\\"'),
             sink=self._sink_name.replace("\\", "\\\\").replace('"', '\\"'),
+            mpd_log_level=self._mpd_log_level,
         )
 
         with open(self._conf_path, "w") as f:
