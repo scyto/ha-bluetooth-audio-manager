@@ -2755,6 +2755,7 @@ class BluetoothAudioManager:
             port=port,
             speaker_name=mpd_name,
             password=mpd_password,
+            log_level=self.config.log_level,
         )
         try:
             await mpd.start(sink_name)
