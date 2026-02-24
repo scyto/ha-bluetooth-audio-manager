@@ -37,8 +37,8 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /run/pulse/** rw,
   /etc/pulse/** r,
   /tmp/pulse-*/** rw,
-  /root/.config/pulse/ rw,
-  /root/.config/pulse/** rw,
+  /root/.config/pulse/ rwk,
+  /root/.config/pulse/** rwk,
 
   # Persistent data storage (k = flock, needed by MPD state/database)
   /data/** rwk,
