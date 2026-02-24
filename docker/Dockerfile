@@ -4,11 +4,10 @@ FROM ${BUILD_FROM}
 # Pull bluez and mpd from Alpine edge (newer than base 3.20)
 RUN apk add --no-cache \
     --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
+    --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
     bluez \
     bluez-btmon \
     bluez-libs \
-    && apk add --no-cache \
-    --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
     mpd \
     && apk add --no-cache \
     dbus-libs \
