@@ -33,6 +33,8 @@ panel_title: "BT Audio"
 map:
   - type: data
     read_only: false
+  - type: addon_config
+    read_only: false
 
 # User options (runtime settings are managed in the app UI)
 options:

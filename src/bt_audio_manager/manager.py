@@ -2593,8 +2593,8 @@ class BluetoothAudioManager:
         enable keep-alive on all stored devices."""
         from pathlib import Path
 
-        marker = Path("/data/.keepalive_migrated")
-        if marker.exists():
+        marker = Path("/config/.keepalive_migrated")
+        if marker.exists() or Path("/data/.keepalive_migrated").exists():
             return
         try:
             opts_path = Path("/data/options.json")
@@ -2611,6 +2611,7 @@ class BluetoothAudioManager:
                             device_info["address"],
                             {"idle_mode": "keep_alive", "keep_alive_method": method},
                         )
+            marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("migrated")
         except Exception as e:
             logger.warning("Keep-alive migration failed (non-fatal): %s", e)

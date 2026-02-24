@@ -4,8 +4,8 @@ Reads user options from /data/options.json which is injected by
 the HA Supervisor based on the schema defined in config.yaml.
 
 Runtime settings (auto_reconnect, reconnect intervals, scan duration,
-bt_adapter) are stored in /data/settings.json and managed via the
-app's web UI.
+bt_adapter) are stored in /config/settings.json (addon_config, survives
+reinstall) and managed via the app's web UI.
 """
 
 import json
@@ -16,7 +16,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 OPTIONS_PATH = "/data/options.json"
-SETTINGS_PATH = "/data/settings.json"
+SETTINGS_PATH = "/config/settings.json"
+_LEGACY_SETTINGS_PATH = "/data/settings.json"
 
 # Keys that live in settings.json (managed via app UI)
 _SETTINGS_KEYS = {
@@ -86,8 +87,15 @@ class AppConfig:
             except (json.JSONDecodeError, KeyError) as e:
                 logger.error("Failed to parse options: %s, using defaults", e)
 
-        # 2. Load settings from settings.json
+        # 1b. Migrate settings from /data/ to /config/ (one-time)
         settings_path = Path(SETTINGS_PATH)
+        legacy_settings = Path(_LEGACY_SETTINGS_PATH)
+        if not settings_path.exists() and legacy_settings.exists():
+            logger.info("Migrating settings from %s to %s", legacy_settings, settings_path)
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text(legacy_settings.read_text())
+
+        # 2. Load settings from settings.json
         if settings_path.exists():
             try:
                 settings = json.loads(settings_path.read_text())
