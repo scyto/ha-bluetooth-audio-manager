@@ -42,11 +42,13 @@ class MPDManager:
         # anything else → "default" (errors/warnings only)
         self._mpd_log_level = "verbose" if log_level == "debug" else "default"
 
-        # All MPD paths live in /tmp (ephemeral, writable) — no persistent
-        # storage needed since HA streams URLs, never stores local files.
+        # Ephemeral per-instance dir for config, pid, state, and temp dirs.
         self._tmp_dir = f"/tmp/mpd_{port}"
         self._conf_path = f"{self._tmp_dir}/mpd.conf"
         self._pid_file = f"{self._tmp_dir}/pid"
+        # Database lives in /data (persistent, guaranteed writable in HA).
+        self._data_dir = f"/data/mpd/{port}"
+        self._db_file = f"{self._data_dir}/database"
 
         self._process: asyncio.subprocess.Process | None = None
         self._client: MPDClient | None = None
@@ -69,6 +71,7 @@ class MPDManager:
         self._sink_name = sink_name
         os.makedirs(f"{self._tmp_dir}/music", exist_ok=True)
         os.makedirs(f"{self._tmp_dir}/playlists", exist_ok=True)
+        os.makedirs(self._data_dir, exist_ok=True)
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
@@ -118,6 +121,7 @@ class MPDManager:
         config = textwrap.dedent("""\
             music_directory     "{tmp_dir}/music"
             playlist_directory  "{tmp_dir}/playlists"
+            db_file             "{db_file}"
             state_file          "{tmp_dir}/state"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
@@ -136,6 +140,7 @@ class MPDManager:
             }}
         """).format(
             tmp_dir=self._tmp_dir,
+            db_file=self._db_file,
             pid_file=self._pid_file,
             port=self._port,
             password_line=password_line,
