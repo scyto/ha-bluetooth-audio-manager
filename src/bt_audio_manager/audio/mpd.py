@@ -119,6 +119,7 @@ class MPDManager:
             password_line = f'password "{self._password}@read,add,control,admin"'
 
         config = textwrap.dedent("""\
+            user                "root"
             music_directory     "{tmp_dir}/music"
             playlist_directory  "{tmp_dir}/playlists"
             db_file             "{db_file}"
