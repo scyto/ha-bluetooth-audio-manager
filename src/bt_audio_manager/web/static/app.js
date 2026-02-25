@@ -144,6 +144,27 @@ function hideBanner() {
   if (existing) existing.remove();
 }
 
+function showWarningBanner(text) {
+  hideWarningBanner();
+  const container = $("#alert-container");
+  if (!container) return;
+  const el = document.createElement("div");
+  el.id = "warning-banner";
+  el.className = "alert alert-warning alert-dismissible d-flex align-items-center gap-2 mb-3";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `
+    <i class="fas fa-exclamation-triangle"></i>
+    <span>${escapeHtml(text)}</span>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+  `;
+  container.prepend(el);
+}
+
+function hideWarningBanner() {
+  const existing = $("#warning-banner");
+  if (existing) existing.remove();
+}
+
 // ============================================
 // Section 5a: Scanning State
 // ============================================
@@ -1216,6 +1237,9 @@ function connectWebSocket() {
         break;
       case "toast":
         showToast(msg.message, msg.level || "info");
+        break;
+      case "warning_banner":
+        showWarningBanner(msg.message);
         break;
       default:
         console.log("[WS] Unknown message type:", msg.type);

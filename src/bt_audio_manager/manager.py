@@ -30,6 +30,14 @@ from .web.events import EventBus
 
 logger = logging.getLogger(__name__)
 
+
+def _dbus_val(variant, default=None):
+    """Unwrap a D-Bus Variant, or return *default* if *variant* is None."""
+    if variant is None:
+        return default
+    return variant.value if hasattr(variant, "value") else variant
+
+
 # Common Bluetooth USB vendor IDs → friendly vendor names.
 # Used as a last-resort fallback when both sysfs and the Supervisor's
 # udev database lack a human-readable product name.
@@ -106,9 +114,12 @@ class BluetoothAudioManager:
         adapters = await BluezAdapter.list_all(self.bus)
 
         if cfg.bt_adapter == "auto":
-            # Prefer first powered adapter, else first available
             powered = [a for a in adapters if a["powered"]]
-            choice = powered[0] if powered else (adapters[0] if adapters else None)
+            if len(powered) > 1:
+                # Multiple powered adapters — prefer the one with most paired audio devices
+                choice = await self._pick_best_adapter(powered)
+            else:
+                choice = powered[0] if powered else (adapters[0] if adapters else None)
             if choice:
                 logger.info("Auto-selected adapter %s (%s)", choice["name"], choice["address"])
                 return choice["path"]
@@ -153,6 +164,44 @@ class BluetoothAudioManager:
         powered = [a for a in adapters if a["powered"]]
         choice = powered[0] if powered else (adapters[0] if adapters else None)
         return choice["path"] if choice else "/org/bluez/hci0"
+
+    async def _pick_best_adapter(self, adapters: list[dict]) -> dict:
+        """Pick the powered adapter with the most paired audio devices.
+
+        Tie-break: first in *adapters* list (i.e. lowest hci index).
+        """
+        from .bluez.constants import (
+            BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE, AUDIO_UUIDS,
+        )
+        scores: dict[str, int] = {a["path"]: 0 for a in adapters}
+        try:
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+            obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+            objects = await obj_mgr.call_get_managed_objects()
+            for path, ifaces in objects.items():
+                if DEVICE_INTERFACE not in ifaces:
+                    continue
+                adapter_path = "/".join(path.split("/")[:4])
+                if adapter_path not in scores:
+                    continue
+                props = ifaces[DEVICE_INTERFACE]
+                paired = _dbus_val(props.get("Paired"), False)
+                uuids = set(_dbus_val(props.get("UUIDs"), []))
+                if paired and uuids.intersection(AUDIO_UUIDS):
+                    scores[adapter_path] += 1
+        except Exception as e:
+            logger.debug("Could not score adapters: %s", e)
+
+        best_path = max(scores, key=scores.get)
+        if scores[best_path] > 0:
+            choice = next(a for a in adapters if a["path"] == best_path)
+            logger.info(
+                "Auto-select: preferring %s (%s) — %d paired audio device(s)",
+                choice["name"], choice["address"], scores[best_path],
+            )
+            return choice
+        return adapters[0]  # fallback: first powered
 
     async def start(self) -> None:
         """Full startup sequence."""
@@ -441,7 +490,10 @@ class BluetoothAudioManager:
         #     (e.g. store wiped during reinstall, or device paired outside
         #     the app).  Auto-import into the persistence store with default
         #     settings and create BluezDevice wrappers so UI buttons work.
+        #     Scans ALL adapters so devices on non-selected adapters are
+        #     still imported (managed_device wrappers only for selected adapter).
         reimported_count = 0
+        reimport_adapters: set[str] = set()
         try:
             from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE, AUDIO_UUIDS
             intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
@@ -452,30 +504,25 @@ class BluetoothAudioManager:
             for path, ifaces in objects.items():
                 if DEVICE_INTERFACE not in ifaces:
                     continue
-                if not path.startswith(self._adapter_path + "/"):
-                    continue
+                adapter_path = "/".join(path.split("/")[:4])
                 dev_props = ifaces[DEVICE_INTERFACE]
-                addr_v = dev_props.get("Address")
-                paired_v = dev_props.get("Paired")
-                connected_v = dev_props.get("Connected")
-                uuids_v = dev_props.get("UUIDs")
-                name_v = dev_props.get("Name")
-                if not addr_v:
+                addr = _dbus_val(dev_props.get("Address"))
+                if not addr:
                     continue
-                addr = addr_v.value if hasattr(addr_v, "value") else addr_v
-                paired = (paired_v.value if hasattr(paired_v, "value") else paired_v) if paired_v else False
-                connected = (connected_v.value if hasattr(connected_v, "value") else connected_v) if connected_v else False
-                uuids = set(uuids_v.value if hasattr(uuids_v, "value") else uuids_v) if uuids_v else set()
-                name = (name_v.value if hasattr(name_v, "value") else name_v) if name_v else addr
+                paired = _dbus_val(dev_props.get("Paired"), False)
+                connected = _dbus_val(dev_props.get("Connected"), False)
+                uuids = set(_dbus_val(dev_props.get("UUIDs"), []))
+                name = _dbus_val(dev_props.get("Name"), addr)
 
                 # Auto-import paired audio devices missing from the store
                 if paired and uuids.intersection(AUDIO_UUIDS) and self.store.get_device(addr) is None:
                     await self.store.add_device(addr, name)
                     reimported_count += 1
-                    logger.info("Auto-imported paired device %s (%s) into store", addr, name)
+                    reimport_adapters.add(adapter_path)
+                    logger.info("Auto-imported paired device %s (%s) from %s", addr, name, adapter_path)
 
-                # Create managed_devices wrappers for connected devices
-                if connected and addr not in self.managed_devices:
+                # Create managed_device wrappers only for the SELECTED adapter
+                if connected and addr not in self.managed_devices and path.startswith(self._adapter_path + "/"):
                     logger.info(
                         "Found connected device %s not in managed_devices — initializing",
                         addr,
@@ -491,12 +538,26 @@ class BluetoothAudioManager:
             logger.debug("Failed to enumerate BlueZ devices: %s", e)
 
         if reimported_count > 0:
-            toast = {
+            self._pending_toasts.append({
                 "message": f"Restored {reimported_count} device(s) from Bluetooth adapter \u2014 settings reset to defaults.",
                 "level": "warning",
-            }
-            self._pending_toasts.append(toast)
+            })
             logger.info("Queued reimport toast for %d device(s)", reimported_count)
+
+        if len(reimport_adapters) > 1:
+            self._pending_toasts.append({
+                "type": "warning_banner",
+                "message": (
+                    "Paired audio devices were found on multiple Bluetooth adapters. "
+                    "This configuration is not supported \u2014 use Forget to remove "
+                    "devices from the unused adapter, then re-pair them on your "
+                    "preferred adapter."
+                ),
+            })
+            logger.warning(
+                "Devices reimported from multiple adapters: %s",
+                ", ".join(sorted(reimport_adapters)),
+            )
 
         # 6c. If any device already has an active A2DP transport, signal
         #     PlaybackStatus=Playing so the speaker enables AVRCP volume buttons
