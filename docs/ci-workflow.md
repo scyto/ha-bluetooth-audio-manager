@@ -34,9 +34,9 @@ push to dev
   -> build-dev: 4 per-arch images pushed by digest
   -> merge-dev: combines digests into multi-arch manifest
      tagged: sha-XXXXXXX + latest
-  -> update-addon-version-dev: creates PR to update
-     bluetooth_audio_manager_dev/config.yaml on main
-     with the new SHA version (merged immediately)
+  -> update-addon-version-dev: creates PR to sync
+     bluetooth_audio_manager_dev/config.yaml and apparmor.txt
+     from dev to main, stamped with SHA version (merged immediately)
 ```
 
 The dev image is published to `ghcr.io/scyto/ha-bluetooth-audio-manager-dev`.
@@ -83,9 +83,10 @@ stable images are built and published.
 
 ## Dev Version Bump (automatically merged PR)
 
-After each dev build, the `update-addon-version-dev` job updates
-`bluetooth_audio_manager_dev/config.yaml` on `main` with the new SHA version.
-HAOS reads add-on metadata from the default branch (main), so this file must be
+After each dev build, the `update-addon-version-dev` job syncs
+`bluetooth_audio_manager_dev/config.yaml` and `bluetooth_audio_manager_dev/apparmor.txt`
+from `dev` to `main`, then stamps the config with the new SHA version.
+HAOS reads add-on metadata from the default branch (main), so these files must be
 kept current for users to see dev updates in the add-on store.
 
 ### Why it uses a PR instead of direct push
@@ -100,8 +101,9 @@ The PR approach works with standard `GITHUB_TOKEN` permissions:
 
 1. Closes any stale dev-version PRs from previous runs
 2. Creates a temporary branch (`chore/dev-version-sha-XXXXXXX`)
-3. Opens a PR to main
-4. Immediately merges with `--squash --delete-branch`
+3. Syncs `config.yaml` and `apparmor.txt` from the dev branch
+4. Opens a PR to main
+5. Immediately merges with `--squash --delete-branch`
 
 Note: `--auto` is not used because it requires the "Allow auto-merge" repo setting,
 which in turn requires required status checks. Since there are no checks to wait for
@@ -112,7 +114,7 @@ the merge executes immediately.
 
 The automatically merged PR does not create infinite build loops because:
 
-1. The PR only changes `bluetooth_audio_manager_dev/config.yaml`, which is in the
+1. The PR only changes files under `bluetooth_audio_manager_dev/`, which is in the
    `pull_request` `paths-ignore` list — so no validation build triggers
 2. The merge to main does not trigger any build because `main` is not in the
    `push` trigger branches

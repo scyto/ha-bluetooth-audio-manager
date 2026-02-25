@@ -15,7 +15,7 @@ Home Assistant has no built-in way to manage Bluetooth audio devices. Without th
 This app gives you a point-and-click UI right in the HA sidebar. Scan, pair, connect, done — and it reconnects automatically when things drop.
 
 ## Use Cases
-- **Use to just manage connections** - this app makes it easy to manage BT connectiosn, let your other apps use the BT device as normal
+- **Use to just manage connections** - this app makes it easy to manage BT connections, let your other apps use the BT device as normal
 - **Self contained TTS solution** - includes optional Music Player Daemon support to allow use of BT devices for TTS without additional app
 
 

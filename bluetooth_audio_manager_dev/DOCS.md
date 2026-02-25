@@ -126,7 +126,7 @@ immediately — no restart needed.
 | Auto Reconnect | On | toggle |
 | Reconnect Interval | 30 s | 5–600 s |
 | Max Reconnect Backoff | 300 s | 60–3600 s |
-| Scan Duration | 30 s | 5–60 s |
+| Scan Duration | 30 s | 5–120 s |
 
 - **Auto Reconnect** — automatically reconnect to paired devices when they
   become available after a disconnect or reboot.
@@ -138,8 +138,8 @@ immediately — no restart needed.
 ## Device settings
 
 Open a device's menu (**⋮**) and select **Settings** to configure per-device
-options. Settings are stored in `/data/paired_devices.json` and persist across
-restarts and HA backups.
+options. Settings are stored in `/config/paired_devices.json` (addon_config) and
+persist across restarts, HA backups, and add-on reinstalls.
 
 ### When Idle
 
@@ -176,8 +176,10 @@ when MPD starts. MPD's software volume then acts as the single volume knob — s
 | **TTS with volume preset** | Automation sets volume then speaks → plays at that level |
 
 To add the speaker to HA: install the **MPD** integration and point it at
-the port shown in the device settings (e.g. port 6600). The host is the
-add-on itself (typically `localhost` or the add-on's hostname).
+the port shown in the device settings (e.g. port 6600). The hostname and
+password status are displayed in **Settings > App Settings** under
+"MPD Connection Info". Use that hostname when configuring the MPD integration
+in HA.
 
 ### Media Buttons (AVRCP)
 
@@ -257,6 +259,24 @@ disconnect/reconnect cycle to re-establish the audio link.
 sleep while an AVRCP media player is registered. Open the device menu (**⋮**) >
 **Settings** and disable **Media Buttons (AVRCP)**, or set the idle mode to
 **Power Save**.
+
+**Device paired but "no audio profiles resolved" warning**: Some budget
+Bluetooth speakers only advertise their audio capabilities via Class of Device
+(CoD) and do not expose A2DP UUIDs until after pairing completes. Try
+connecting the device — audio profiles typically resolve after the first
+successful connection. If they don't, the device may not support A2DP.
+
+**Multiple devices disconnected at once**: If several devices drop
+simultaneously, the add-on detects this as a Bluetooth adapter disruption and
+temporarily suppresses auto-reconnect to avoid hammering a potentially
+unstable adapter. Reconnection resumes automatically after the suppression
+window. Check the Logs view for "adapter disruption" messages.
+
+**Devices reappeared after reinstall with default settings**: After a fresh
+install or data wipe, the add-on automatically imports any devices that are
+still paired in BlueZ. These devices are restored with default settings
+(keep-alive off, MPD disabled). A toast notification confirms how many devices
+were restored. Reconfigure per-device settings as needed.
 
 **`br-connection-key-missing` error when connecting**: The pairing keys stored
 by BlueZ are out of sync with the speaker. Open the device menu (**⋮**) and
