@@ -1,5 +1,5 @@
 name: Device Discovery / Pairing Issue
-description: Report a problem with Bluetooth device discovery, pairing, or connection — not for general add-on bugs
+description: Report a problem with Bluetooth device discovery, pairing, connection, button issues — not for general add-on bugs
 title: "Device: "
 labels: ["Device Issue"]
 body:
@@ -69,13 +69,14 @@ body:
   - type: checkboxes
     id: diagnostics
     attributes:
-      label: Diagnostics
+      label: What doesn't work (check all that apply)
       options:
-        - label: Device is discovered
-        - label: Pairing succeeds
-        - label: Audio plays
+        - label: Device is not discovered
+        - label: Pairing fails
+        - label: No audio after pairing
         - label: Disconnects frequently
-        - label: Reconnect works
+        - label: Device buttons kill connection
+        - label: Reconnect fails
 
   - type: textarea
     id: issue
