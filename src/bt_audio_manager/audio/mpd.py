@@ -11,40 +11,19 @@ media_player entity per speaker.
 import asyncio
 import logging
 import os
-import pwd
 import textwrap
 
 from mpd.asyncio import MPDClient
 
 logger = logging.getLogger(__name__)
 
-MPD_BASE_DIR = "/data/mpd"
-MPD_MUSIC_DIR = "/data/mpd/music"
-MPD_PLAYLIST_DIR = "/data/mpd/playlists"
 MPD_HOST = "127.0.0.1"
-
-
-def _chown_mpd_dirs() -> None:
-    """Recursively chown MPD data dirs to the 'mpd' user/group.
-
-    Alpine's mpd package creates the mpd user.  MPD drops privileges from
-    root to this user at startup, so it must own its data directories.
-    """
-    try:
-        pw = pwd.getpwnam("mpd")
-        for dirpath, dirnames, filenames in os.walk(MPD_BASE_DIR):
-            os.chown(dirpath, pw.pw_uid, pw.pw_gid)
-            for fname in filenames:
-                os.chown(os.path.join(dirpath, fname), pw.pw_uid, pw.pw_gid)
-        logger.debug("chown'd %s to mpd:%d", MPD_BASE_DIR, pw.pw_uid)
-    except KeyError:
-        logger.warning("'mpd' user not found — MPD may fail to write its database")
-    except OSError as e:
-        logger.warning("Failed to chown MPD dirs: %s", e)
 
 
 class MPDManager:
     """Manages an embedded MPD daemon and bridges AVRCP commands to it."""
+
+    _version_logged = False
 
     def __init__(
         self,
@@ -52,18 +31,21 @@ class MPDManager:
         port: int,
         speaker_name: str,
         password: str | None = None,
+        log_level: str = "info",
     ) -> None:
         self._address = address
         self._port = port
         self._speaker_name = speaker_name
         self._password = password
+        # Map app log level to MPD log level:
+        # debug → "verbose" (full client/command chatter)
+        # anything else → "default" (errors/warnings only)
+        self._mpd_log_level = "verbose" if log_level == "debug" else "default"
 
-        # Per-instance paths (port as discriminator)
-        self._instance_dir = f"{MPD_BASE_DIR}/instance_{port}"
-        self._db_file = f"{self._instance_dir}/database"
-        self._state_file = f"{self._instance_dir}/state"
-        self._conf_path = f"/tmp/mpd_{port}.conf"
-        self._pid_file = f"/tmp/mpd_{port}.pid"
+        # Ephemeral per-instance dir for config, pid, and state.
+        self._tmp_dir = f"/tmp/mpd_{port}"
+        self._conf_path = f"{self._tmp_dir}/mpd.conf"
+        self._pid_file = f"{self._tmp_dir}/pid"
 
         self._process: asyncio.subprocess.Process | None = None
         self._client: MPDClient | None = None
@@ -84,11 +66,7 @@ class MPDManager:
             return
 
         self._sink_name = sink_name
-        os.makedirs(MPD_MUSIC_DIR, exist_ok=True)
-        os.makedirs(MPD_PLAYLIST_DIR, exist_ok=True)
-        os.makedirs(self._instance_dir, exist_ok=True)
-        # MPD drops from root to the 'mpd' user; ensure it owns its data dirs
-        _chown_mpd_dirs()
+        os.makedirs(f"{self._tmp_dir}/playlists", exist_ok=True)
         self._generate_config()
         await self._start_daemon()
         await self._connect_client()
@@ -103,12 +81,7 @@ class MPDManager:
             self._stderr_task.cancel()
             self._stderr_task = None
 
-        if self._client:
-            try:
-                self._client.disconnect()
-            except Exception:
-                pass
-            self._client = None
+        self._disconnect_client()
 
         if self._process and self._process.returncode is None:
             self._process.terminate()
@@ -141,15 +114,11 @@ class MPDManager:
             password_line = f'password "{self._password}@read,add,control,admin"'
 
         config = textwrap.dedent("""\
-            music_directory     "{music_dir}"
-            playlist_directory  "{playlist_dir}"
-            db_file             "{db_file}"
-            state_file          "{state_file}"
+            playlist_directory  "{tmp_dir}/playlists"
             pid_file            "{pid_file}"
             bind_to_address     "0.0.0.0"
             port                "{port}"
-            log_level           "verbose"
-            auto_update         "no"
+            log_level           "{mpd_log_level}"
             {password_line}
 
             audio_output {{
@@ -162,15 +131,13 @@ class MPDManager:
                 plugin  "curl"
             }}
         """).format(
-            music_dir=MPD_MUSIC_DIR,
-            playlist_dir=MPD_PLAYLIST_DIR,
-            db_file=self._db_file,
-            state_file=self._state_file,
+            tmp_dir=self._tmp_dir,
             pid_file=self._pid_file,
             port=self._port,
             password_line=password_line,
             speaker_name=self._speaker_name.replace("\\", "\\\\").replace('"', '\\"'),
             sink=self._sink_name.replace("\\", "\\\\").replace('"', '\\"'),
+            mpd_log_level=self._mpd_log_level,
         )
 
         with open(self._conf_path, "w") as f:
@@ -179,8 +146,27 @@ class MPDManager:
 
     # -- Daemon management --
 
+    async def _log_mpd_version(self) -> None:
+        """Log the installed MPD version on first use."""
+        if MPDManager._version_logged:
+            return
+        MPDManager._version_logged = True
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "mpd", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            first_line = stdout.decode().split("\n", 1)[0].strip()
+            if first_line:
+                logger.info("MPD version: %s", first_line)
+        except Exception as e:
+            logger.debug("Could not determine MPD version: %s", e)
+
     async def _start_daemon(self) -> None:
         """Start MPD in foreground mode as a subprocess."""
+        await self._log_mpd_version()
         self._process = await asyncio.create_subprocess_exec(
             "mpd", "--no-daemon", "--stderr", self._conf_path,
             stdout=asyncio.subprocess.DEVNULL,
@@ -210,6 +196,25 @@ class MPDManager:
 
     # -- Client connection --
 
+    def _disconnect_client(self) -> None:
+        """Disconnect and clean up the python-mpd2 client.
+
+        Must be called before dropping the reference to avoid orphaning
+        the internal ``__run_task`` (causes 'Task was destroyed but it
+        is pending!' errors).
+        """
+        if self._client:
+            try:
+                self._client.disconnect()
+            except Exception:
+                pass
+            self._client = None
+
+    @staticmethod
+    def _is_connection_error(exc: Exception) -> bool:
+        """Return True if the exception indicates a broken connection."""
+        return isinstance(exc, (ConnectionError, BrokenPipeError, OSError, EOFError))
+
     async def _connect_client(self) -> None:
         """Connect the python-mpd2 async client."""
         self._client = MPDClient()
@@ -233,7 +238,7 @@ class MPDManager:
                 await self._client.ping()
                 return
             except Exception:
-                self._client = None
+                self._disconnect_client()
 
         async with self._connect_lock:
             if self._client:
@@ -273,7 +278,8 @@ class MPDManager:
                     pass
         except Exception as e:
             logger.warning("MPD command %s failed (port %d): %s", command, self._port, e)
-            self._client = None
+            if self._is_connection_error(e):
+                self._disconnect_client()
 
     async def set_volume(self, vol_pct: int) -> None:
         """Set MPD volume (0-100)."""
@@ -284,7 +290,8 @@ class MPDManager:
             await self._client.setvol(max(0, min(100, vol_pct)))
         except Exception as e:
             logger.debug("MPD set_volume failed (port %d): %s", self._port, e)
-            self._client = None
+            if self._is_connection_error(e):
+                self._disconnect_client()
 
     async def get_status(self) -> dict:
         """Return MPD status dict."""
@@ -293,6 +300,7 @@ class MPDManager:
             return {"state": "unknown"}
         try:
             return await self._client.status()
-        except Exception:
-            self._client = None
+        except Exception as e:
+            if self._is_connection_error(e):
+                self._disconnect_client()
             return {"state": "unknown"}

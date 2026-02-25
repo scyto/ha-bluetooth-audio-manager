@@ -1,7 +1,8 @@
 """JSON-backed persistent store for paired device information.
 
-Data is stored in /data/paired_devices.json which persists across
-container restarts, app updates, and is included in HA backups.
+Data is stored in /config/paired_devices.json (addon_config) which
+persists across container restarts, app updates, reinstalls, and is
+included in HA backups.  Legacy /data/ location is auto-migrated.
 """
 
 import json
@@ -12,7 +13,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_STORE_PATH = "/data/paired_devices.json"
+DEFAULT_STORE_PATH = "/config/paired_devices.json"
+LEGACY_STORE_PATH = "/data/paired_devices.json"
 
 # Per-device settings with their default values.
 # Existing device records without these keys get defaults automatically.
@@ -41,6 +43,13 @@ class PersistenceStore:
 
     async def load(self) -> None:
         """Load paired devices from disk."""
+        # Migrate from /data/ to /config/ (one-time, for users upgrading)
+        legacy = Path(LEGACY_STORE_PATH)
+        if not self._path.exists() and legacy.exists():
+            logger.info("Migrating paired devices from %s to %s", legacy, self._path)
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(legacy.read_text())
+
         if not self._path.exists():
             self._devices = []
             logger.info("No existing paired devices store found")
@@ -50,6 +59,14 @@ class PersistenceStore:
             data = json.loads(self._path.read_text())
             self._devices = data.get("devices", [])
             logger.info("Loaded %d paired device(s) from store", len(self._devices))
+            for d in self._devices:
+                non_defaults = {
+                    k: d[k]
+                    for k in DEFAULT_DEVICE_SETTINGS
+                    if k in d and d[k] != DEFAULT_DEVICE_SETTINGS[k]
+                }
+                if non_defaults:
+                    logger.info("  %s: custom settings: %s", d.get("address", "?"), non_defaults)
         except (json.JSONDecodeError, KeyError) as e:
             logger.error("Failed to parse paired devices store: %s", e)
             self._devices = []

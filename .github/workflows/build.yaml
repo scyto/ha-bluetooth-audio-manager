@@ -352,12 +352,12 @@ jobs:
           fi
 
           # Close any stale dev-version PRs
-          gh pr list --head "chore/dev-version-" --state open --json number --jq '.[].number' | \
+          gh pr list --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("chore/dev-version-")) | .number' | \
             xargs -I {} gh pr close {} --delete-branch 2>/dev/null || true
 
           git checkout -b "$BRANCH"
           git commit -m "chore: update dev app version to sha-${SHORT_SHA}"
-          git push origin "$BRANCH"
+          git push --force origin "$BRANCH"
 
           gh pr create \
             --base main \

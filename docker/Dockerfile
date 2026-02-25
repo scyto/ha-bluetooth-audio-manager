@@ -1,15 +1,17 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 FROM ${BUILD_FROM}
 
-# Pull bluez packages from Alpine edge (newer than base 3.20)
+# Pull bluez and mpd from Alpine edge (newer than base 3.20)
 RUN apk add --no-cache \
     --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
+    --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
     bluez \
     bluez-btmon \
     bluez-libs \
+    mpd \
+    && rm -f /etc/mpd.conf \
     && apk add --no-cache \
     dbus-libs \
-    mpd \
     pulseaudio-utils \
     python3 \
     py3-pip
@@ -29,8 +31,7 @@ RUN chmod +x /init \
     && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/bt-audio-manager/finish \
     && chmod +x /etc/cont-init.d/01-verify-dbus.sh \
-    && chmod +x /etc/cont-init.d/02-init-storage.sh \
-    && chmod +x /etc/cont-init.d/03-init-mpd.sh
+    && chmod +x /etc/cont-init.d/02-init-storage.sh
 
 ENV PYTHONPATH="/usr/src"
 
@@ -45,7 +46,8 @@ ARG BUILD_DATE
 ARG BUILD_VERSION
 ARG BUILD_SHA=""
 ENV BUILD_VERSION="${BUILD_VERSION}" \
-    BUILD_SHA="${BUILD_SHA}"
+    BUILD_SHA="${BUILD_SHA}" \
+    PYTHONUNBUFFERED="1"
 LABEL \
     io.hass.name="Bluetooth Audio Manager" \
     io.hass.type="addon" \

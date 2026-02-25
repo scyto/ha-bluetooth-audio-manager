@@ -93,6 +93,7 @@ def create_api_routes(
     async def info(request: web.Request) -> web.Response:
         """Return app version and adapter info for the UI."""
         import os
+        import socket
         from ..bluez.constants import HFP_SWITCHING_ENABLED
         path = manager._adapter_path or "/org/bluez/hci0"
         adapter_name = path.rsplit("/", 1)[-1]
@@ -103,6 +104,8 @@ def create_api_routes(
             "adapter_mac": manager.config.bt_adapter
             if manager.config.bt_adapter_is_mac else None,
             "hfp_switching_enabled": HFP_SWITCHING_ENABLED,
+            "hostname": socket.gethostname(),
+            "mpd_password_set": manager._get_mpd_password() is not None,
         })
 
     @routes.get("/api/adapters")
@@ -309,9 +312,15 @@ def create_api_routes(
             )
         try:
             # Auto-store paired devices not yet in the persistence store
-            # (can happen when BlueZ paired a device before the add-on tracked it)
+            # (can happen when BlueZ paired a device before the add-on tracked it,
+            # or device connected after startup missed the Phase 6b import)
             if manager.store.get_device(address) is None:
                 bluez_dev = manager.managed_devices.get(address)
+                if not bluez_dev:
+                    try:
+                        bluez_dev = await manager._get_or_create_device(address)
+                    except Exception:
+                        bluez_dev = None
                 if bluez_dev:
                     name = await bluez_dev.get_name()
                     await manager.store.add_device(address, name)
@@ -436,8 +445,8 @@ def create_api_routes(
                 errors.append("reconnect_max_backoff_seconds must be an integer between 60 and 3600")
         if "scan_duration_seconds" in body:
             v = body["scan_duration_seconds"]
-            if not isinstance(v, int) or v < 5 or v > 60:
-                errors.append("scan_duration_seconds must be an integer between 5 and 60")
+            if not isinstance(v, int) or v < 5 or v > 120:
+                errors.append("scan_duration_seconds must be an integer between 5 and 120")
 
         if errors:
             return web.json_response({"error": "; ".join(errors)}, status=400)
@@ -700,10 +709,14 @@ def create_api_routes(
         logger.info("WS client connected from %s", request.remote)
 
         bus = manager.event_bus
-        queue = bus.subscribe()
-        sender = asyncio.create_task(_ws_sender(ws, queue))
+        sender: asyncio.Task | None = None
+        queue: asyncio.Queue | None = None
         try:
-            # Send initial state so UI renders immediately
+            # Send initial state so UI renders immediately.
+            # NOTE: get_all_devices() triggers adapter scanning which
+            # emits log events.  We must NOT subscribe to the EventBus
+            # until after the historical replay so that live events
+            # don't race ahead of replayed entries in the client.
             devices = await manager.get_all_devices()
             try:
                 sinks = await manager.get_audio_sinks()
@@ -728,6 +741,18 @@ def create_api_routes(
                 for entry in log_handler.recent_logs:
                     await ws.send_json({"type": "log_entry", **entry})
 
+            # Deliver pending toasts (e.g. device reimport warning from startup)
+            if manager._pending_toasts:
+                for toast in manager._pending_toasts:
+                    await ws.send_json({"type": "toast", **toast})
+                manager._pending_toasts.clear()
+
+            # Subscribe to live events AFTER replay so log order is
+            # preserved.  Events generated during replay (e.g. from
+            # get_all_devices) are already in the ring buffer.
+            queue = bus.subscribe()
+            sender = asyncio.create_task(_ws_sender(ws, queue))
+
             # Block until client disconnects (reads drain client msgs)
             async for _msg in ws:
                 pass
@@ -736,12 +761,14 @@ def create_api_routes(
         except Exception as e:
             logger.warning("WS unexpected error: %s: %s", type(e).__name__, e)
         finally:
-            sender.cancel()
-            try:
-                await sender
-            except asyncio.CancelledError:
-                pass
-            bus.unsubscribe(queue)
+            if sender is not None:
+                sender.cancel()
+                try:
+                    await sender
+                except asyncio.CancelledError:
+                    pass
+            if queue is not None:
+                bus.unsubscribe(queue)
             logger.info("WS client disconnected")
         return ws
 

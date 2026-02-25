@@ -144,6 +144,27 @@ function hideBanner() {
   if (existing) existing.remove();
 }
 
+function showWarningBanner(text) {
+  hideWarningBanner();
+  const container = $("#alert-container");
+  if (!container) return;
+  const el = document.createElement("div");
+  el.id = "warning-banner";
+  el.className = "alert alert-warning alert-dismissible d-flex align-items-center gap-2 mb-3";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `
+    <i class="fas fa-exclamation-triangle"></i>
+    <span>${escapeHtml(text)}</span>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+  `;
+  container.prepend(el);
+}
+
+function hideWarningBanner() {
+  const existing = $("#warning-banner");
+  if (existing) existing.remove();
+}
+
 // ============================================
 // Section 5a: Scanning State
 // ============================================
@@ -475,7 +496,7 @@ function renderDevices(devices) {
               </div>
               ${buildCapBadges(d)}
               <div class="device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
-              ${profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
+              ${d.cod_matched && !d.paired ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-info-circle me-1"></i>Detected by device class \u2014 pair to confirm audio support</div>' : d.paired && !profiles ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-exclamation-triangle me-1"></i>Paired but no audio profiles found</div>' : profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
               ${sinkInfo}
               ${(() => { const fb = buildFeatureBadges(d); return fb ? `<div class="device-feature-badges d-flex gap-2 flex-wrap">${fb}</div>` : ""; })()}
               <div class="device-actions">
@@ -829,7 +850,10 @@ async function scanDevices() {
 
 async function pairDevice(address) {
   try {
-    await apiPost("/api/pair", { address });
+    const res = await apiPost("/api/pair", { address });
+    if (res && res.warning === "no_audio_profiles") {
+      showToast("Paired, but no audio profiles found \u2014 this device may not support audio playback.", "warning");
+    }
   } catch (e) {
     showToast(`Pairing failed: ${e.message}`, "error");
   }
@@ -1021,7 +1045,8 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   // Show connection info if port is assigned
   if (mpdPort) {
     $("#mpd-port-display").textContent = mpdPort;
-    $("#mpd-hostname").textContent = location.hostname;
+    $("#mpd-hostname").textContent = window._mpdHostname || location.hostname;
+    $("#mpd-password-display").textContent = window._mpdPasswordSet ? "**********" : "None";
     $("#mpd-connection-info").style.display = "";
   } else {
     $("#mpd-connection-info").style.display = "none";
@@ -1072,7 +1097,8 @@ function toggleMpdConfigVisibility() {
       if (!usedPorts.has(p)) {
         $("#setting-mpd-port").value = p;
         $("#mpd-port-display").textContent = p;
-        $("#mpd-hostname").textContent = location.hostname;
+        $("#mpd-hostname").textContent = window._mpdHostname || location.hostname;
+        $("#mpd-password-display").textContent = window._mpdPasswordSet ? "**********" : "None";
         $("#mpd-connection-info").style.display = "";
         break;
       }
@@ -1214,6 +1240,9 @@ function connectWebSocket() {
       case "toast":
         showToast(msg.message, msg.level || "info");
         break;
+      case "warning_banner":
+        showWarningBanner(msg.message);
+        break;
       default:
         console.log("[WS] Unknown message type:", msg.type);
     }
@@ -1297,6 +1326,8 @@ document.addEventListener("DOMContentLoaded", () => {
       $("#build-version").textContent = ver;
       $("#version-label").textContent = `${ver} (${data.adapter})`;
       window._hfpSwitchingEnabled = !!data.hfp_switching_enabled;
+      window._mpdHostname = data.hostname || location.hostname;
+      window._mpdPasswordSet = !!data.mpd_password_set;
     })
     .catch(() => {
       $("#build-version").textContent = "unknown";

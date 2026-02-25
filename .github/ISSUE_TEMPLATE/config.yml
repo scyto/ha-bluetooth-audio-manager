@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Device Issues Megathread
     url: https://github.com/scyto/ha-bluetooth-audio-manager/issues/39
-    about: Browse known device issues.
+    about: Browse known device issues or add yours as a sub-issue to the megathread
   - name: Questions & Discussion
     url: https://github.com/scyto/ha-bluetooth-audio-manager/discussions
     about: Ask questions, share ideas, or chat with the community

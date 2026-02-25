@@ -247,7 +247,7 @@
           <!-- Device Discovery -->
           <div class="mb-3">
             <label for="setting-scan-duration" class="form-label">Scan Duration (seconds)</label>
-            <input type="number" class="form-control" id="setting-scan-duration" min="5" max="60" step="1">
+            <input type="number" class="form-control" id="setting-scan-duration" min="5" max="120" step="1">
             <div class="form-text">
               How long to scan for discoverable Bluetooth audio devices (5&ndash;60).
             </div>
@@ -409,7 +409,8 @@
             <div class="alert alert-info py-2 mb-0" id="mpd-connection-info">
               <i class="fas fa-info-circle me-1"></i>
               Use port <strong id="mpd-port-display"></strong> when adding the HA MPD integration.<br>
-              <span class="form-text">Host: <code id="mpd-hostname"></code></span>
+              <span class="form-text">Host: <code id="mpd-hostname"></code></span><br>
+              <span class="form-text">Password: <code id="mpd-password-display"></code></span>
             </div>
           </div>
 

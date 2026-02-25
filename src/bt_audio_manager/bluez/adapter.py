@@ -9,19 +9,40 @@ from dbus_next.aio import MessageBus
 from dbus_next.errors import DBusError
 
 from .constants import (
-    A2DP_SINK_UUID,
+    A2DP_SOURCE_UUID,
     ADAPTER_INTERFACE,
+    AVRCP_CONTROLLER_UUID,
+    AVRCP_TARGET_UUID,
     BLUEZ_SERVICE,
+    COD_MAJOR_AUDIO,
     DEFAULT_ADAPTER_PATH,
     DEVICE_INTERFACE,
-    HFP_UUID,
-    HSP_UUID,
+    LE_AUDIO_UUIDS,
     OBJECT_MANAGER_INTERFACE,
     PROPERTIES_INTERFACE,
     SINK_UUIDS,
+    cod_major_class,
+    cod_major_label,
+    is_cod_audio_sink,
 )
 
 logger = logging.getLogger(__name__)
+
+_AVRCP_ONLY = frozenset({AVRCP_TARGET_UUID, AVRCP_CONTROLLER_UUID})
+_SOURCE_UUIDS = frozenset({A2DP_SOURCE_UUID})
+
+
+def _classify_rejection(uuids: set[str]) -> str:
+    """Return a human-readable reason why a device was not surfaced."""
+    if uuids.intersection(LE_AUDIO_UUIDS):
+        return "LE Audio device, not yet supported"
+    if uuids.intersection(_SOURCE_UUIDS) and not uuids.intersection(SINK_UUIDS):
+        return "audio source only (e.g. phone), not a speaker"
+    if uuids and uuids.issubset(_AVRCP_ONLY):
+        return "AVRCP remote control only, no audio playback"
+    if not uuids:
+        return "no UUIDs advertised (incomplete SDP)"
+    return "no audio sink profile"
 
 
 class AdapterNotPoweredError(Exception):
@@ -31,9 +52,9 @@ class AdapterNotPoweredError(Exception):
 class BluezAdapter:
     """Wraps org.bluez.Adapter1 for A2DP device discovery.
 
-    COEXISTENCE: Uses SetDiscoveryFilter(Transport="bredr") to restrict
-    scanning to Classic Bluetooth only. HA's passive BLE scanning uses
-    LE transport and is completely unaffected.
+    COEXISTENCE: BlueZ reference-counts StartDiscovery/StopDiscovery per
+    D-Bus client.  Our discovery session is independent of HA's passive
+    BLE scanning.
     """
 
     def __init__(self, bus: MessageBus, adapter_path: str = DEFAULT_ADAPTER_PATH):
@@ -42,6 +63,9 @@ class BluezAdapter:
         self._adapter_iface = None
         self._properties_iface = None
         self._discovering = False
+        # Tracks addresses already logged during this scan session,
+        # so each device is logged at INFO only once per scan.
+        self._logged_cache: set[str] = set()
 
     async def initialize(self) -> None:
         """Connect to the adapter's D-Bus interfaces.
@@ -68,21 +92,25 @@ class BluezAdapter:
         logger.info("Adapter %s initialized at %s", address.value, self._adapter_path)
 
     async def start_discovery(self) -> None:
-        """Start audio-filtered discovery on Classic Bluetooth only.
+        """Start unfiltered discovery on all transports (BR/EDR + BLE).
 
-        Sets a discovery filter BEFORE starting discovery. BlueZ merges
-        filters from multiple D-Bus clients, so our filter narrows only
-        our own view without affecting HA's passive BLE scanning.
+        No UUID filter is set so BlueZ reports ALL nearby devices.  The
+        app-level filter in get_audio_devices() then decides which to
+        surface, logging every rejection at INFO so support can see
+        exactly what was discovered and why it was excluded.
+
+        BlueZ reference-counts discovery per D-Bus client, so our session
+        does not interfere with HA's passive BLE scanning.
         """
         await self._adapter_iface.call_set_discovery_filter(
             {
-                "UUIDs": Variant("as", [A2DP_SINK_UUID, HFP_UUID, HSP_UUID]),
-                "Transport": Variant("s", "bredr"),
+                "Transport": Variant("s", "auto"),
             }
         )
+        self._logged_cache.clear()
         await self._adapter_iface.call_start_discovery()
         self._discovering = True
-        logger.info("Audio device discovery started (A2DP + HFP, Transport=bredr)")
+        logger.info("Device discovery started (all transports, no UUID filter)")
 
     async def stop_discovery(self) -> None:
         """Stop our discovery session.
@@ -99,15 +127,20 @@ class BluezAdapter:
                 raise
         finally:
             self._discovering = False
-        logger.info("A2DP device discovery stopped")
+        logger.info("Device discovery stopped")
 
-    async def get_audio_devices(self) -> list[dict]:
+    async def get_audio_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Enumerate discovered devices that can receive/play audio.
 
         Uses ObjectManager to list all /org/bluez/hci0/dev_* objects
         and filters for those with a sink-capable profile (A2DP Sink,
         HFP, or HSP).  Devices that only advertise A2DP Source (e.g.
         phones) are excluded since this add-on manages speakers.
+
+        When cod_fallback=True, devices with no UUIDs but an audio-sink
+        Class of Device are also accepted.  This should only be enabled
+        during scan sessions to avoid surfacing stale BlueZ cache entries
+        as ghost devices.
         """
         introspection = await self._bus.introspect(BLUEZ_SERVICE, "/")
         proxy = self._bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
@@ -115,6 +148,8 @@ class BluezAdapter:
         objects = await obj_manager.call_get_managed_objects()
 
         devices = []
+        skipped = 0
+        cod_accepted = 0
         for path, interfaces in objects.items():
             if DEVICE_INTERFACE not in interfaces:
                 continue
@@ -123,8 +158,48 @@ class BluezAdapter:
             uuids_variant = props.get("UUIDs")
             uuids = set(uuids_variant.value) if uuids_variant else set()
 
-            if not uuids.intersection(SINK_UUIDS):
+            # Read Class of Device for diagnostics and CoD fallback
+            class_variant = props.get("Class")
+            cod_raw = class_variant.value if class_variant else 0
+
+            uuid_matched = bool(uuids.intersection(SINK_UUIDS))
+
+            # CoD fallback (scan-only): device advertises no UUIDs but
+            # has an audio-sink CoD (headphones, speaker, etc.).  These
+            # are budget BR/EDR devices that only expose profiles after
+            # pairing triggers SDP.  Gated to cod_fallback=True to avoid
+            # surfacing stale BlueZ cache entries as ghost devices.
+            cod_matched = (
+                cod_fallback
+                and not uuid_matched
+                and not uuids
+                and is_cod_audio_sink(cod_raw)
+            )
+
+            if not uuid_matched and not cod_matched:
+                skipped += 1
+                addr_v = props.get("Address")
+                addr = addr_v.value if addr_v else "??:??"
+                name_v = props.get("Name")
+                name = name_v.value if name_v else "unknown"
+                # Log each rejection once per scan session at INFO
+                if addr not in self._logged_cache:
+                    self._logged_cache.add(addr)
+                    reason = _classify_rejection(uuids)
+                    cod_str = (
+                        f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
+                        if cod_raw else "(none)"
+                    )
+                    logger.info(
+                        "Skipping device %s (%s) — %s. UUIDs: %s CoD: %s",
+                        name, addr, reason,
+                        sorted(uuids) if uuids else "(none)",
+                        cod_str,
+                    )
                 continue
+
+            if cod_matched:
+                cod_accepted += 1
 
             address_variant = props.get("Address")
             name_variant = props.get("Name")
@@ -135,6 +210,34 @@ class BluezAdapter:
             paired = paired_variant.value if paired_variant else False
             connected = connected_variant.value if connected_variant else False
             rssi = rssi_variant.value if rssi_variant else None
+
+            # Log accepted devices once per scan so the full picture is visible
+            addr = address_variant.value if address_variant else "??:??"
+            name = name_variant.value if name_variant else "unknown"
+            if addr not in self._logged_cache:
+                self._logged_cache.add(addr)
+                cod_str = (
+                    f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
+                    if cod_raw else "(none)"
+                )
+                if connected:
+                    state = "connected"
+                elif paired:
+                    state = "paired (offline)"
+                else:
+                    state = "unpaired"
+                if cod_matched:
+                    logger.info(
+                        "Accepted device %s (%s) [%s] — CoD fallback %s. "
+                        "UUIDs will resolve after pairing.",
+                        name, addr, state, cod_str,
+                    )
+                else:
+                    matched = sorted(uuids.intersection(SINK_UUIDS))
+                    logger.info(
+                        "Accepted device %s (%s) [%s] — matched %s. CoD: %s",
+                        name, addr, state, matched, cod_str,
+                    )
 
             # Detect active bearers (BR/EDR vs LE)
             bearers = []
@@ -176,9 +279,21 @@ class BluezAdapter:
                     "uuids": list(uuids),
                     "bearers": bearers,
                     "has_transport": has_transport,
+                    "cod_matched": cod_matched,
                 }
             )
 
+        if not self._discovering:
+            parts = [
+                f"{len(objects)} BlueZ objects scanned",
+                f"{skipped} unsupported skipped",
+            ]
+            uuid_count = len(devices) - cod_accepted
+            if uuid_count:
+                parts.append(f"{uuid_count} matched by UUID")
+            if cod_accepted:
+                parts.append(f"{cod_accepted} matched by CoD fallback")
+            logger.info("get_audio_devices: %s", ", ".join(parts))
         return devices
 
     async def remove_device(self, device_path: str) -> None:
@@ -227,7 +342,7 @@ class BluezAdapter:
         await self.start_discovery()
         await asyncio.sleep(seconds)
         await self.stop_discovery()
-        return await self.get_audio_devices()
+        return await self.get_audio_devices(cod_fallback=True)
 
     @property
     def adapter_path(self) -> str:

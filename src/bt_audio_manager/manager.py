@@ -20,6 +20,7 @@ from .audio.mpd import MPDManager
 from .audio.pulse import PulseAudioManager
 from .bluez.adapter import BluezAdapter
 from .bluez.agent import PairingAgent
+from .bluez.constants import cod_major_label
 from .bluez.device import BluezDevice
 from .bluez.media_player import AVRCPMediaPlayer
 from .config import AppConfig
@@ -28,6 +29,14 @@ from .reconnect import ReconnectService
 from .web.events import EventBus
 
 logger = logging.getLogger(__name__)
+
+
+def _dbus_val(variant, default=None):
+    """Unwrap a D-Bus Variant, or return *default* if *variant* is None."""
+    if variant is None:
+        return default
+    return variant.value if hasattr(variant, "value") else variant
+
 
 # Common Bluetooth USB vendor IDs → friendly vendor names.
 # Used as a last-resort fallback when both sysfs and the Supervisor's
@@ -75,11 +84,13 @@ class BluetoothAudioManager:
         self._sink_poll_task: asyncio.Task | None = None
         self._last_sink_snapshot: str = ""
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
+        self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
         self._a2dp_attempts: dict[str, int] = {}  # addr → consecutive A2DP activation failures
         self._null_hfp_registered: bool = False  # tracks null HFP handler state
+        self._recent_disconnects: dict[str, float] = {}  # addr → time.time() for burst detection
         # Ring buffers so WebSocket clients get recent events on reconnect
         self.recent_mpris: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
@@ -89,6 +100,7 @@ class BluetoothAudioManager:
         self._scanning: bool = False
         self._scan_task: asyncio.Task | None = None
         self._scan_debounce_handle: asyncio.TimerHandle | None = None
+        self._pending_toasts: list[dict] = []  # toasts queued before any WS client connects
 
     async def _resolve_adapter_path(self) -> str:
         """Resolve the configured bt_adapter to a BlueZ D-Bus path.
@@ -102,9 +114,12 @@ class BluetoothAudioManager:
         adapters = await BluezAdapter.list_all(self.bus)
 
         if cfg.bt_adapter == "auto":
-            # Prefer first powered adapter, else first available
             powered = [a for a in adapters if a["powered"]]
-            choice = powered[0] if powered else (adapters[0] if adapters else None)
+            if len(powered) > 1:
+                # Multiple powered adapters — prefer the one with most paired audio devices
+                choice = await self._pick_best_adapter(powered)
+            else:
+                choice = powered[0] if powered else (adapters[0] if adapters else None)
             if choice:
                 logger.info("Auto-selected adapter %s (%s)", choice["name"], choice["address"])
                 return choice["path"]
@@ -150,6 +165,44 @@ class BluetoothAudioManager:
         choice = powered[0] if powered else (adapters[0] if adapters else None)
         return choice["path"] if choice else "/org/bluez/hci0"
 
+    async def _pick_best_adapter(self, adapters: list[dict]) -> dict:
+        """Pick the powered adapter with the most paired audio devices.
+
+        Tie-break: first in *adapters* list (i.e. lowest hci index).
+        """
+        from .bluez.constants import (
+            BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE, AUDIO_UUIDS,
+        )
+        scores: dict[str, int] = {a["path"]: 0 for a in adapters}
+        try:
+            intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+            obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+            objects = await obj_mgr.call_get_managed_objects()
+            for path, ifaces in objects.items():
+                if DEVICE_INTERFACE not in ifaces:
+                    continue
+                adapter_path = "/".join(path.split("/")[:4])
+                if adapter_path not in scores:
+                    continue
+                props = ifaces[DEVICE_INTERFACE]
+                paired = _dbus_val(props.get("Paired"), False)
+                uuids = set(_dbus_val(props.get("UUIDs"), []))
+                if paired and uuids.intersection(AUDIO_UUIDS):
+                    scores[adapter_path] += 1
+        except Exception as e:
+            logger.debug("Could not score adapters: %s", e)
+
+        best_path = max(scores, key=scores.get)
+        if scores[best_path] > 0:
+            choice = next(a for a in adapters if a["path"] == best_path)
+            logger.info(
+                "Auto-select: preferring %s (%s) — %d paired audio device(s)",
+                choice["name"], choice["address"], scores[best_path],
+            )
+            return choice
+        return adapters[0]  # fallback: first powered
+
     async def start(self) -> None:
         """Full startup sequence."""
         # 1. Connect to system D-Bus
@@ -181,7 +234,38 @@ class BluetoothAudioManager:
                     and isinstance(ifaces, dict)
                     and "org.bluez.Device1" in ifaces
                 ):
-                    logger.info("New device discovered during scan: %s", obj_path)
+                    dev_props = ifaces.get("org.bluez.Device1", {})
+
+                    def _v(key, _p=dev_props):
+                        raw = _p.get(key)
+                        return raw.value if hasattr(raw, "value") else raw
+
+                    dev_name = _v("Name")
+                    dev_uuids = _v("UUIDs")
+                    dev_cod = _v("Class") or 0
+                    dev_addr_type = _v("AddressType")  # "public" or "random"
+                    dev_appearance = _v("Appearance")   # BLE GAP appearance
+
+                    cod_str = (
+                        f"0x{dev_cod:06X}({cod_major_label(dev_cod)})"
+                        if dev_cod else "(none)"
+                    )
+                    extras = []
+                    if dev_addr_type:
+                        extras.append(f"addr_type={dev_addr_type}")
+                    if dev_appearance:
+                        extras.append(f"appearance=0x{dev_appearance:04X}")
+                    extra_str = f" {' '.join(extras)}" if extras else ""
+
+                    logger.info(
+                        "New device discovered during scan: %s name=%s "
+                        "UUIDs=%s CoD=%s%s",
+                        obj_path,
+                        dev_name or "unknown",
+                        sorted(dev_uuids) if dev_uuids else "(none)",
+                        cod_str,
+                        extra_str,
+                    )
                     self._schedule_scan_broadcast()
             elif (
                 msg.message_type == MessageType.SIGNAL
@@ -342,6 +426,7 @@ class BluetoothAudioManager:
                 if await device.is_connected():
                     logger.info("Device %s already connected at startup", addr)
                     self._last_signaled_volume.pop(addr, None)
+                    self._last_pa_volume.pop(addr, None)
                     self._device_connect_time[addr] = time.time()
                     if HFP_SWITCHING_ENABLED:
                         audio_profile = self._get_audio_profile(addr)
@@ -401,11 +486,16 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.debug("Stale device cleanup failed: %s", e)
 
-        # 6b. Detect devices connected at the BlueZ level but NOT in our
-        #     store (e.g. store wiped during rebuild, or device paired outside
-        #     the app).  Create BluezDevice wrappers so UI buttons work.
+        # 6b. Detect paired/connected BlueZ audio devices not in our store
+        #     (e.g. store wiped during reinstall, or device paired outside
+        #     the app).  Auto-import into the persistence store with default
+        #     settings and create BluezDevice wrappers so UI buttons work.
+        #     Scans ALL adapters so devices on non-selected adapters are
+        #     still imported (managed_device wrappers only for selected adapter).
+        reimported_count = 0
+        reimport_adapters: set[str] = set()
         try:
-            from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE
+            from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE, DEVICE_INTERFACE, AUDIO_UUIDS
             intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
             proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
             obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
@@ -414,31 +504,60 @@ class BluetoothAudioManager:
             for path, ifaces in objects.items():
                 if DEVICE_INTERFACE not in ifaces:
                     continue
-                if not path.startswith(self._adapter_path + "/"):
-                    continue
+                adapter_path = "/".join(path.split("/")[:4])
                 dev_props = ifaces[DEVICE_INTERFACE]
-                addr_v = dev_props.get("Address")
-                connected_v = dev_props.get("Connected")
-                if not addr_v or not connected_v:
+                addr = _dbus_val(dev_props.get("Address"))
+                if not addr:
                     continue
-                addr = addr_v.value if hasattr(addr_v, "value") else addr_v
-                connected = connected_v.value if hasattr(connected_v, "value") else connected_v
-                if not connected or addr in self.managed_devices:
-                    continue
+                paired = _dbus_val(dev_props.get("Paired"), False)
+                connected = _dbus_val(dev_props.get("Connected"), False)
+                uuids = set(_dbus_val(dev_props.get("UUIDs"), []))
+                name = _dbus_val(dev_props.get("Name"), addr)
 
-                logger.info(
-                    "Found connected device %s not in managed_devices — initializing",
-                    addr,
-                )
-                try:
-                    device = await self._get_or_create_device(addr)
-                    self._device_connect_time[addr] = time.time()
-                    if self._should_disconnect_hfp(addr):
-                        await self._disconnect_hfp(addr)
-                except Exception as e:
-                    logger.warning("Could not initialize unmanaged device %s: %s", addr, e)
+                # Auto-import paired audio devices missing from the store
+                if paired and uuids.intersection(AUDIO_UUIDS) and self.store.get_device(addr) is None:
+                    await self.store.add_device(addr, name)
+                    reimported_count += 1
+                    reimport_adapters.add(adapter_path)
+                    logger.info("Auto-imported paired device %s (%s) from %s", addr, name, adapter_path)
+
+                # Create managed_device wrappers only for the SELECTED adapter
+                if connected and addr not in self.managed_devices and path.startswith(self._adapter_path + "/"):
+                    logger.info(
+                        "Found connected device %s not in managed_devices — initializing",
+                        addr,
+                    )
+                    try:
+                        device = await self._get_or_create_device(addr)
+                        self._device_connect_time[addr] = time.time()
+                        if self._should_disconnect_hfp(addr):
+                            await self._disconnect_hfp(addr)
+                    except Exception as e:
+                        logger.warning("Could not initialize unmanaged device %s: %s", addr, e)
         except Exception as e:
-            logger.debug("Failed to enumerate connected BlueZ devices: %s", e)
+            logger.debug("Failed to enumerate BlueZ devices: %s", e)
+
+        if reimported_count > 0:
+            self._pending_toasts.append({
+                "message": f"Restored {reimported_count} device(s) from Bluetooth adapter \u2014 settings reset to defaults.",
+                "level": "warning",
+            })
+            logger.info("Queued reimport toast for %d device(s)", reimported_count)
+
+        if len(reimport_adapters) > 1:
+            self._pending_toasts.append({
+                "type": "warning_banner",
+                "message": (
+                    "Paired audio devices were found on multiple Bluetooth adapters. "
+                    "This configuration is not supported \u2014 use Forget to remove "
+                    "devices from the unused adapter, then re-pair them on your "
+                    "preferred adapter."
+                ),
+            })
+            logger.warning(
+                "Devices reimported from multiple adapters: %s",
+                ", ".join(sorted(reimport_adapters)),
+            )
 
         # 6c. If any device already has an active A2DP transport, signal
         #     PlaybackStatus=Playing so the speaker enables AVRCP volume buttons
@@ -683,8 +802,8 @@ class BluetoothAudioManager:
             except Exception:
                 pass
 
-        # Final broadcast after scan completes
-        await self._broadcast_devices()
+        # Final broadcast after scan completes (with CoD fallback)
+        await self._broadcast_devices(cod_fallback=True)
         self.event_bus.emit("scan_finished", {})
 
     def _schedule_scan_broadcast(self) -> None:
@@ -707,7 +826,7 @@ class BluetoothAudioManager:
         """Execute the debounced broadcast."""
         self._scan_debounce_handle = None
         if self._scanning:
-            await self._broadcast_devices()
+            await self._broadcast_devices(cod_fallback=True)
 
     def _cancel_scan_debounce(self) -> None:
         """Cancel any pending debounced broadcast."""
@@ -749,13 +868,33 @@ class BluetoothAudioManager:
             # _connecting is already set; pass _from_pair so connect_device
             # skips the duplicate-connection guard.
             connected = await self.connect_device(address, _from_pair=True)
-            return {"address": address, "name": name, "connected": connected}
+
+            result = {"address": address, "name": name, "connected": connected}
+
+            # Post-pair check: did SDP resolve any audio sink profiles?
+            from .bluez.constants import SINK_UUIDS
+            dev_uuids = set(await device.get_uuids())
+            if not dev_uuids.intersection(SINK_UUIDS):
+                result["warning"] = "no_audio_profiles"
+                logger.warning(
+                    "Device %s (%s) paired but no audio profiles resolved "
+                    "(UUIDs: %s). Device may not support audio playback.",
+                    address, name, sorted(dev_uuids) if dev_uuids else "(none)",
+                )
+
+            return result
         except Exception:
             self._connecting.discard(address)
             self.event_bus.emit("status", {"message": ""})
             raise
 
-    async def connect_device(self, address: str, *, _from_pair: bool = False) -> bool:
+    async def connect_device(
+        self,
+        address: str,
+        *,
+        _from_pair: bool = False,
+        _from_reconnect: bool = False,
+    ) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
         # If another connection attempt is already in progress, wait for it
         if not _from_pair and address in self._connecting:
@@ -775,8 +914,11 @@ class BluetoothAudioManager:
             await self._broadcast_all()
             return False
 
-        # Cancel any pending auto-reconnect to avoid racing
-        if self.reconnect_service:
+        # Cancel any pending auto-reconnect to avoid racing.
+        # Skip when called from the reconnect service itself — otherwise
+        # cancel_reconnect() kills the very task that called us, and the
+        # CancelledError silently aborts the entire backoff loop.
+        if self.reconnect_service and not _from_reconnect:
             self.reconnect_service.cancel_reconnect(address)
         # Clear any disconnect suppression (user wants to connect now)
         self._suppress_reconnect.discard(address)
@@ -842,6 +984,62 @@ class BluetoothAudioManager:
                             activated = await self.pulse.activate_bt_card_profile(address, profile="hfp")
                         except Exception as e:
                             logger.warning("Reconnect after PA reload failed for %s: %s", address, e)
+
+                # A2DP fallback: PA card missing — device likely connected
+                # via BLE only (dual-mode speakers sometimes prefer LE).
+                # Force BR/EDR by explicitly connecting the A2DP Sink profile.
+                if not activated and audio_profile != "hfp":
+                    from .bluez.constants import A2DP_SINK_UUID
+
+                    logger.info(
+                        "A2DP PA card not found for %s — likely BLE-only "
+                        "connection, trying ConnectProfile(A2DP_SINK)...",
+                        address,
+                    )
+                    self._broadcast_status(
+                        f"Requesting A2DP profile for {address}..."
+                    )
+                    try:
+                        await device.connect_profile(A2DP_SINK_UUID)
+                        await asyncio.sleep(3)
+                        activated = await self.pulse.activate_bt_card_profile(
+                            address, profile=audio_profile
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "ConnectProfile(A2DP) failed for %s: %s",
+                            address, e,
+                        )
+
+                    if not activated:
+                        logger.info(
+                            "A2DP still missing for %s — trying disconnect "
+                            "+ ConnectProfile(A2DP_SINK) cycle...",
+                            address,
+                        )
+                        self._broadcast_status(
+                            f"Reconnecting {address} with A2DP..."
+                        )
+                        try:
+                            await device.disconnect()
+                            await asyncio.sleep(2)
+                            try:
+                                await device.connect_profile(A2DP_SINK_UUID)
+                            except Exception:
+                                # Some BlueZ versions need a link before
+                                # ConnectProfile — fall back to generic Connect
+                                await device.connect()
+                            await device.wait_for_services(timeout=10)
+                            await asyncio.sleep(2)
+                            activated = await self.pulse.activate_bt_card_profile(
+                                address, profile=audio_profile
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "A2DP disconnect/reconnect cycle failed "
+                                "for %s: %s",
+                                address, e,
+                            )
 
                 sink_name = None
                 if activated:
@@ -915,6 +1113,7 @@ class BluetoothAudioManager:
         self._a2dp_attempts.pop(address, None)
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
+        self._last_pa_volume.pop(address, None)
         self._device_lifecycle_locks.pop(address, None)
         self._connecting.discard(address)
         self._suppress_reconnect.discard(address)
@@ -1016,6 +1215,7 @@ class BluetoothAudioManager:
         # 8. Clear internal tracking state
         self._device_connect_time.clear()
         self._last_signaled_volume.clear()
+        self._last_pa_volume.clear()
         self._suppress_reconnect.clear()
         self._a2dp_attempts.clear()
         self._connecting.clear()
@@ -1024,12 +1224,12 @@ class BluetoothAudioManager:
         logger.info("clear_all_devices: removed %d device(s)", total)
         await self._broadcast_all()
 
-    async def get_all_devices(self) -> list[dict]:
+    async def get_all_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Get combined list of discovered and paired devices."""
         if not self.adapter:
             return []  # still initializing
         # Get currently visible devices from BlueZ
-        discovered = await self.adapter.get_audio_devices()
+        discovered = await self.adapter.get_audio_devices(cod_fallback=cod_fallback)
 
         # Merge with persistent store info
         stored_addresses = {d["address"] for d in self.store.devices}
@@ -1037,6 +1237,9 @@ class BluetoothAudioManager:
             addr = device["address"]
             device["stored"] = addr in stored_addresses
             if device["stored"]:
+                stored_entry = self.store.get_device(addr)
+                if stored_entry and stored_entry.get("name"):
+                    device["name"] = stored_entry["name"]
                 s = self.store.get_device_settings(addr)
                 device["idle_mode"] = s.get("idle_mode", "default")
                 device["keep_alive_method"] = s["keep_alive_method"]
@@ -1361,10 +1564,10 @@ class BluetoothAudioManager:
 
     # -- SSE broadcast helpers --
 
-    async def _broadcast_devices(self) -> None:
+    async def _broadcast_devices(self, *, cod_fallback: bool = False) -> None:
         """Push full device list to all SSE clients."""
         try:
-            devices = await self.get_all_devices()
+            devices = await self.get_all_devices(cod_fallback=cod_fallback)
             self.event_bus.emit("devices_changed", {"devices": devices})
         except Exception as e:
             logger.debug("Broadcast devices failed: %s", e)
@@ -1391,10 +1594,29 @@ class BluetoothAudioManager:
         """Handle device disconnection event."""
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
+        self._last_pa_volume.pop(address, None)
         # Clean up running sink tracking for this device
         addr_underscored = address.replace(":", "_")
         self._running_sinks = {s for s in self._running_sinks if addr_underscored not in s}
         self._fire_and_forget(self._on_device_disconnected_async(address))
+
+        # Detect adapter-level disruptions: multiple devices dropping at once
+        now = time.time()
+        self._recent_disconnects[address] = now
+        # Prune stale entries (> 5s old)
+        self._recent_disconnects = {
+            a: t for a, t in self._recent_disconnects.items() if now - t < 5
+        }
+        burst_addrs = [a for a, t in self._recent_disconnects.items() if now - t < 3]
+        if len(burst_addrs) >= 2:
+            adapter_name = (self._adapter_path or "").rsplit("/", 1)[-1] or "unknown"
+            logger.warning(
+                "%d devices disconnected simultaneously (%s) — probable "
+                "Bluetooth adapter disruption on %s",
+                len(burst_addrs),
+                ", ".join(sorted(burst_addrs)),
+                adapter_name,
+            )
 
         if address in self._connecting:
             # Active pair/connect flow in progress — don't start competing reconnect
@@ -1421,6 +1643,7 @@ class BluetoothAudioManager:
         """Handle device connection event (D-Bus signal)."""
         self._device_connect_time[address] = time.time()
         self._last_signaled_volume.pop(address, None)
+        self._last_pa_volume.pop(address, None)
         self._fire_and_forget(self._on_device_connected_async(address))
 
     async def _on_device_connected_async(self, address: str) -> None:
@@ -2241,7 +2464,10 @@ class BluetoothAudioManager:
         try:
             await device.disconnect()
             await asyncio.sleep(2)
-            await device.connect()
+            try:
+                await device.connect_profile(A2DP_SINK_UUID)
+            except Exception:
+                await device.connect()  # fallback to generic
             await device.wait_for_services(timeout=10)
             await asyncio.sleep(3)
             found = await self._log_transport_properties(address)
@@ -2264,10 +2490,12 @@ class BluetoothAudioManager:
         self.recent_avrcp.append(entry)
         self.event_bus.emit("avrcp_event", entry)
         # Sync PA volume change to MPD so HA's media_player entity reflects
-        # the speaker's actual volume (speaker buttons → AVRCP → PA → MPD)
+        # the speaker's actual volume (speaker buttons → AVRCP → PA → MPD).
+        # Skip if volume hasn't changed (PA fires on every sink state change).
         if addr:
             mpd = self._mpd_instances.get(addr)
-            if mpd and mpd.is_running:
+            if mpd and mpd.is_running and self._last_pa_volume.get(addr) != volume:
+                self._last_pa_volume[addr] = volume
                 self._fire_and_forget(mpd.set_volume(volume))
 
     @staticmethod
@@ -2426,8 +2654,8 @@ class BluetoothAudioManager:
         enable keep-alive on all stored devices."""
         from pathlib import Path
 
-        marker = Path("/data/.keepalive_migrated")
-        if marker.exists():
+        marker = Path("/config/.keepalive_migrated")
+        if marker.exists() or Path("/data/.keepalive_migrated").exists():
             return
         try:
             opts_path = Path("/data/options.json")
@@ -2444,6 +2672,7 @@ class BluetoothAudioManager:
                             device_info["address"],
                             {"idle_mode": "keep_alive", "keep_alive_method": method},
                         )
+            marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("migrated")
         except Exception as e:
             logger.warning("Keep-alive migration failed (non-fatal): %s", e)
@@ -2614,6 +2843,7 @@ class BluetoothAudioManager:
             port=port,
             speaker_name=mpd_name,
             password=mpd_password,
+            log_level=self.config.log_level,
         )
         try:
             await mpd.start(sink_name)
