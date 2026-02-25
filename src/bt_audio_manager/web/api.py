@@ -93,6 +93,7 @@ def create_api_routes(
     async def info(request: web.Request) -> web.Response:
         """Return app version and adapter info for the UI."""
         import os
+        import socket
         from ..bluez.constants import HFP_SWITCHING_ENABLED
         path = manager._adapter_path or "/org/bluez/hci0"
         adapter_name = path.rsplit("/", 1)[-1]
@@ -103,6 +104,8 @@ def create_api_routes(
             "adapter_mac": manager.config.bt_adapter
             if manager.config.bt_adapter_is_mac else None,
             "hfp_switching_enabled": HFP_SWITCHING_ENABLED,
+            "hostname": socket.gethostname(),
+            "mpd_password_set": manager._get_mpd_password() is not None,
         })
 
     @routes.get("/api/adapters")
