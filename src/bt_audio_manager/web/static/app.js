@@ -1045,7 +1045,8 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   // Show connection info if port is assigned
   if (mpdPort) {
     $("#mpd-port-display").textContent = mpdPort;
-    $("#mpd-hostname").textContent = location.hostname;
+    $("#mpd-hostname").textContent = window._mpdHostname || location.hostname;
+    $("#mpd-password-display").textContent = window._mpdPasswordSet ? "**********" : "None";
     $("#mpd-connection-info").style.display = "";
   } else {
     $("#mpd-connection-info").style.display = "none";
@@ -1096,7 +1097,8 @@ function toggleMpdConfigVisibility() {
       if (!usedPorts.has(p)) {
         $("#setting-mpd-port").value = p;
         $("#mpd-port-display").textContent = p;
-        $("#mpd-hostname").textContent = location.hostname;
+        $("#mpd-hostname").textContent = window._mpdHostname || location.hostname;
+        $("#mpd-password-display").textContent = window._mpdPasswordSet ? "**********" : "None";
         $("#mpd-connection-info").style.display = "";
         break;
       }
@@ -1324,6 +1326,8 @@ document.addEventListener("DOMContentLoaded", () => {
       $("#build-version").textContent = ver;
       $("#version-label").textContent = `${ver} (${data.adapter})`;
       window._hfpSwitchingEnabled = !!data.hfp_switching_enabled;
+      window._mpdHostname = data.hostname || location.hostname;
+      window._mpdPasswordSet = !!data.mpd_password_set;
     })
     .catch(() => {
       $("#build-version").textContent = "unknown";
