@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 
 from dbus_next import Variant
 from dbus_next.aio import MessageBus
@@ -295,6 +296,31 @@ class BluezAdapter:
                 parts.append(f"{cod_accepted} matched by CoD fallback")
             logger.info("get_audio_devices: %s", ", ".join(parts))
         return devices
+
+    @staticmethod
+    async def get_connected_rssi(address: str) -> int | None:
+        """Get RSSI for a connected BR/EDR device via hcitool.
+
+        Returns the RSSI value in dBm, or None if the device is not
+        connected or hcitool is unavailable.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "hcitool", "rssi", address,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            # Output format: "RSSI return value: -52"
+            match = re.search(r"(-?\d+)", stdout.decode())
+            return int(match.group(1)) if match else None
+        except FileNotFoundError:
+            logger.debug("hcitool not found — RSSI polling unavailable")
+            return None
+        except asyncio.TimeoutError:
+            return None
+        except Exception:
+            return None
 
     async def remove_device(self, device_path: str) -> None:
         """Remove a device from the adapter (unpair)."""

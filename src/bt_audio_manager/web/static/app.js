@@ -455,7 +455,14 @@ function renderDevices(devices) {
         `;
       }
 
-      const rssiDisplay = d.rssi ? ` (${d.rssi} dBm)` : "";
+      let rssiDisplay = "";
+      if (d.rssi != null) {
+        const colorClass =
+          d.signal_quality === "excellent" || d.signal_quality === "good" ? "text-success"
+          : d.signal_quality === "fair" ? "text-warning"
+          : "text-danger";
+        rssiDisplay = ` <i class="fas fa-signal ${colorClass}" title="${d.rssi} dBm (${d.signal_quality || "unknown"})"></i>`;
+      }
       const profiles = profileLabels(d.uuids);
 
       // Merge sink info for connected devices
@@ -497,6 +504,7 @@ function renderDevices(devices) {
               ${buildCapBadges(d)}
               <div class="device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
               ${d.cod_matched && !d.paired ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-info-circle me-1"></i>Detected by device class \u2014 pair to confirm audio support</div>' : d.paired && !profiles ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-exclamation-triangle me-1"></i>Paired but no audio profiles found</div>' : profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
+              ${d.signal_warning ? `<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-exclamation-triangle me-1"></i>${escapeHtml(d.signal_warning)}</div>` : ""}
               ${sinkInfo}
               ${(() => { const fb = buildFeatureBadges(d); return fb ? `<div class="device-feature-badges d-flex gap-2 flex-wrap">${fb}</div>` : ""; })()}
               <div class="device-actions">
