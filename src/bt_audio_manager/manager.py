@@ -1611,7 +1611,7 @@ class BluetoothAudioManager:
                 if not connected_addrs:
                     if self._connected_rssi:
                         self._connected_rssi.clear()
-                        self._event_bus.fire("devices_changed")
+                        await self._broadcast_devices()
                     continue
 
                 changed = False
