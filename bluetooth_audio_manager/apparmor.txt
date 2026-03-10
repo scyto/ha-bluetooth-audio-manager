@@ -97,9 +97,11 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   network unix dgram,
   network bluetooth,
 
-  # CRITICAL: block raw HCI device access
-  # All Bluetooth operations MUST go through BlueZ D-Bus to avoid
-  # interfering with HA's passive BLE scanning and other integrations.
+  # Block raw HCI character-device access — all Bluetooth configuration
+  # MUST go through BlueZ D-Bus to avoid interfering with HA's passive
+  # BLE scanning and other integrations.  Note: hcitool rssi uses
+  # AF_BLUETOOTH sockets (permitted by "network bluetooth" above),
+  # NOT /dev/hci* character devices, so this deny does not block it.
   deny /dev/hci* rw,
   deny /sys/kernel/** rw,
   deny /proc/sys/** w,
