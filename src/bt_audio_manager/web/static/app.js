@@ -461,7 +461,11 @@ function renderDevices(devices) {
           d.signal_quality === "excellent" || d.signal_quality === "good" ? "text-success"
           : d.signal_quality === "fair" ? "text-warning"
           : "text-danger";
-        rssiDisplay = ` <i class="fas fa-signal ${colorClass}" title="${d.rssi} dBm (${d.signal_quality || "unknown"})"></i>`;
+        // Clip fa-signal icon to show fewer bars for weaker signals
+        const clipPct = { excellent: 0, good: 20, fair: 45, weak: 70, very_weak: 70 };
+        const clip = clipPct[d.signal_quality] || 0;
+        const clipStyle = clip ? ` style="clip-path:inset(0 ${clip}% 0 0)"` : "";
+        rssiDisplay = ` <i class="fas fa-signal ${colorClass}"${clipStyle} title="${d.signal_quality || "unknown"}"></i> <small class="text-muted">${d.rssi} dBm</small>`;
       }
       const profiles = profileLabels(d.uuids);
 
