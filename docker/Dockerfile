@@ -7,7 +7,6 @@ RUN apk add --no-cache \
     --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
     bluez \
     bluez-btmon \
-    bluez-deprecated \
     bluez-libs \
     mpd \
     && rm -f /etc/mpd.conf \

@@ -63,6 +63,7 @@ class BluezAdapter:
         self._adapter_iface = None
         self._properties_iface = None
         self._discovering = False
+        self._rssi_refreshing = False
         # Tracks addresses already logged during this scan session,
         # so each device is logged at INFO only once per scan.
         self._logged_cache: set[str] = set()
@@ -128,6 +129,42 @@ class BluezAdapter:
         finally:
             self._discovering = False
         logger.info("Device discovery stopped")
+
+    async def start_rssi_refresh(self) -> None:
+        """Start a silent discovery burst to refresh RSSI values.
+
+        Unlike start_discovery(), this does NOT clear the logged-device
+        cache (avoiding INFO-level "Skipping device" spam) and does not
+        set _discovering (so stop_discovery() won't interfere).  The
+        manager calls this without setting _scanning=True, so no UI
+        scan events are triggered.
+        """
+        if self._discovering or self._rssi_refreshing:
+            return
+        try:
+            await self._adapter_iface.call_set_discovery_filter(
+                {"Transport": Variant("s", "auto")}
+            )
+            await self._adapter_iface.call_start_discovery()
+            self._rssi_refreshing = True
+        except DBusError as e:
+            logger.debug("RSSI refresh start failed: %s", e)
+
+    async def stop_rssi_refresh(self) -> None:
+        """Stop the silent RSSI discovery burst."""
+        if not self._rssi_refreshing:
+            return
+        try:
+            await self._adapter_iface.call_stop_discovery()
+        except DBusError as e:
+            if "No discovery started" not in str(e):
+                logger.debug("RSSI refresh stop failed: %s", e)
+        finally:
+            self._rssi_refreshing = False
+
+    def clear_logged_cache(self) -> None:
+        """Clear the per-scan device log cache to prevent unbounded growth."""
+        self._logged_cache.clear()
 
     async def get_audio_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Enumerate discovered devices that can receive/play audio.
