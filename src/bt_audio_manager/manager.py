@@ -1627,7 +1627,7 @@ class BluetoothAudioManager:
             asyncio.ensure_future(self._broadcast_devices())
 
     @staticmethod
-    async def _hcitool_rssi(address: str) -> int | None:
+    async def _hcitool_rssi(address: str, hci_dev: str = "hci0") -> int | None:
         """Query live RSSI for a connected BR/EDR device via hcitool.
 
         Uses AF_BLUETOOTH sockets (not /dev/hci*), so AppArmor's deny on
@@ -1636,7 +1636,7 @@ class BluetoothAudioManager:
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "hcitool", "rssi", address,
+                "hcitool", "-i", hci_dev, "rssi", address,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -1662,9 +1662,11 @@ class BluetoothAudioManager:
                 # Poll connected devices via hcitool
                 connected_addrs = list(self._device_connect_time.keys())
                 changed = False
+                # Extract HCI device name (e.g. "hci0") from adapter path
+                hci_dev = self._adapter_path.rsplit("/", 1)[-1] if self._adapter_path else "hci0"
 
                 for addr in connected_addrs:
-                    rssi = await self._hcitool_rssi(addr)
+                    rssi = await self._hcitool_rssi(addr, hci_dev)
                     if rssi is None:
                         continue  # keep existing cached value on failure
                     prev = self._connected_rssi.get(addr)
