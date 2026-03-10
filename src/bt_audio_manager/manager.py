@@ -38,6 +38,21 @@ def _dbus_val(variant, default=None):
     return variant.value if hasattr(variant, "value") else variant
 
 
+def classify_signal(rssi: int | None) -> str | None:
+    """Classify RSSI (dBm) into a signal quality label."""
+    if rssi is None:
+        return None
+    if rssi > -50:
+        return "excellent"
+    if rssi > -65:
+        return "good"
+    if rssi > -75:
+        return "fair"
+    if rssi > -85:
+        return "weak"
+    return "very_weak"
+
+
 # Common Bluetooth USB vendor IDs → friendly vendor names.
 # Used as a last-resort fallback when both sysfs and the Supervisor's
 # udev database lack a human-readable product name.
@@ -82,6 +97,8 @@ class BluetoothAudioManager:
         self._web_server = None
         self.event_bus = EventBus()
         self._sink_poll_task: asyncio.Task | None = None
+        self._rssi_poll_task: asyncio.Task | None = None
+        self._connected_rssi: dict[str, int | None] = {}  # addr → last RSSI
         self._last_sink_snapshot: str = ""
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
@@ -614,6 +631,7 @@ class BluetoothAudioManager:
 
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
+        self._rssi_poll_task = asyncio.create_task(self._rssi_poll_loop())
 
         logger.info("Bluetooth Audio Manager started successfully")
 
@@ -621,13 +639,14 @@ class BluetoothAudioManager:
         """Graceful teardown in reverse order."""
         logger.info("Shutting down Bluetooth Audio Manager...")
 
-        # Stop sink polling
-        if self._sink_poll_task and not self._sink_poll_task.done():
-            self._sink_poll_task.cancel()
-            try:
-                await self._sink_poll_task
-            except asyncio.CancelledError:
-                pass
+        # Stop sink and RSSI polling
+        for task in (self._sink_poll_task, self._rssi_poll_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         # Cancel any running scan
         if self._scan_task and not self._scan_task.done():
@@ -1281,6 +1300,20 @@ class BluetoothAudioManager:
                     }
                 )
 
+        # Enrich with polled RSSI for connected devices + signal quality
+        for device in discovered:
+            addr = device["address"]
+            # Use polled RSSI for connected devices (more current than D-Bus)
+            if device["connected"] and addr in self._connected_rssi:
+                device["rssi"] = self._connected_rssi[addr]
+            rssi = device.get("rssi")
+            quality = classify_signal(rssi)
+            device["signal_quality"] = quality
+            device["signal_warning"] = (
+                "Weak signal \u2014 audio may stutter or drop"
+                if quality in ("weak", "very_weak") else None
+            )
+
         return discovered
 
     async def get_audio_sinks(self) -> list[dict]:
@@ -1562,6 +1595,46 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("Sink poll error: %s", e)
 
+    # -- RSSI polling --
+
+    RSSI_POLL_INTERVAL = 30  # seconds
+
+    async def _rssi_poll_loop(self) -> None:
+        """Periodically poll RSSI for connected devices via hcitool."""
+        while True:
+            try:
+                await asyncio.sleep(self.RSSI_POLL_INTERVAL)
+                connected_addrs = [
+                    addr for addr, dev in self.managed_devices.items()
+                    if dev.connected
+                ]
+                if not connected_addrs:
+                    continue
+
+                changed = False
+                for addr in connected_addrs:
+                    rssi = await BluezAdapter.get_connected_rssi(addr)
+                    prev = self._connected_rssi.get(addr)
+                    self._connected_rssi[addr] = rssi
+                    # Broadcast only on significant change (>=3 dBm) or None transition
+                    if prev is None and rssi is None:
+                        continue
+                    if prev is None or rssi is None or abs(rssi - prev) >= 3:
+                        changed = True
+
+                # Clean up disconnected devices
+                for addr in list(self._connected_rssi):
+                    if addr not in self.managed_devices or not self.managed_devices[addr].connected:
+                        del self._connected_rssi[addr]
+                        changed = True
+
+                if changed:
+                    await self._broadcast_devices()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.debug("RSSI poll error: %s", e)
+
     # -- SSE broadcast helpers --
 
     async def _broadcast_devices(self, *, cod_fallback: bool = False) -> None:
@@ -1595,6 +1668,7 @@ class BluetoothAudioManager:
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
         self._last_pa_volume.pop(address, None)
+        self._connected_rssi.pop(address, None)
         # Clean up running sink tracking for this device
         addr_underscored = address.replace(":", "_")
         self._running_sinks = {s for s in self._running_sinks if addr_underscored not in s}
