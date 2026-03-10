@@ -9,7 +9,6 @@ import collections
 import json
 import logging
 import os
-import re
 import time
 
 from dbus_next.aio import MessageBus
@@ -76,7 +75,8 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
-    RSSI_POLL_INTERVAL = 30  # seconds between hcitool RSSI polls
+    RSSI_REFRESH_INTERVAL = 60  # seconds between silent discovery bursts
+    RSSI_REFRESH_DURATION = 5   # seconds per silent discovery burst
     MAX_RECENT_EVENTS = 50  # ring buffer size for MPRIS/AVRCP events
 
     def __init__(self, config: AppConfig):
@@ -637,7 +637,7 @@ class BluetoothAudioManager:
 
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
-        self._rssi_poll_task = asyncio.create_task(self._rssi_poll_loop())
+        self._rssi_poll_task = asyncio.create_task(self._rssi_refresh_loop())
 
         logger.info("Bluetooth Audio Manager started successfully")
 
@@ -1306,7 +1306,7 @@ class BluetoothAudioManager:
                     }
                 )
 
-        # Enrich with cached RSSI (D-Bus discovery + hcitool polling) + signal quality
+        # Enrich with cached RSSI (D-Bus discovery + silent refresh bursts) + signal quality
         for device in discovered:
             addr = device["address"]
             # Use cached RSSI for devices currently visible to BlueZ
@@ -1602,7 +1602,7 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("Sink poll error: %s", e)
 
-    # -- RSSI tracking (D-Bus events + hcitool polling) --
+    # -- RSSI tracking (D-Bus discovery events + silent refresh bursts) --
 
     def _handle_rssi_update(self, dbus_path: str, rssi_variant) -> None:
         """Extract RSSI from a D-Bus PropertiesChanged signal and cache it.
@@ -1626,69 +1626,57 @@ class BluetoothAudioManager:
         if prev is None or abs(rssi - prev) >= 3:
             asyncio.ensure_future(self._broadcast_devices())
 
-    @staticmethod
-    async def _hcitool_rssi(address: str, hci_dev: str = "hci0") -> int | None:
-        """Query live RSSI for a connected BR/EDR device via hcitool.
+    async def _rssi_refresh_loop(self) -> None:
+        """Periodically run silent discovery bursts to refresh RSSI.
 
-        Uses AF_BLUETOOTH sockets (not /dev/hci*), so AppArmor's deny on
-        HCI character devices does not block this.  Returns RSSI in dBm,
-        or None on any failure.
+        BlueZ only emits RSSI via PropertiesChanged during active
+        discovery.  This loop runs short discovery bursts without
+        setting _scanning=True, so RSSI signals are captured and
+        cached by _handle_rssi_update() but no UI scan activity is
+        triggered (no "device discovered" logs, no scan_started events).
+
+        Skips the burst if a user-initiated scan is already running.
         """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "hcitool", "-i", hci_dev, "rssi", address,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-            # Output format: "RSSI return value: -52"
-            match = re.search(r"(-?\d+)", stdout.decode())
-            return int(match.group(1)) if match else None
-        except FileNotFoundError:
-            logger.debug("hcitool not found — RSSI polling unavailable")
-            return None
-        except asyncio.TimeoutError:
-            proc.kill()
-            return None
-        except Exception:
-            return None
-
-    async def _rssi_poll_loop(self) -> None:
-        """Poll RSSI for connected devices via hcitool and clean stale entries."""
         while True:
             try:
-                await asyncio.sleep(self.RSSI_POLL_INTERVAL)
+                await asyncio.sleep(self.RSSI_REFRESH_INTERVAL)
 
-                # Poll connected devices via hcitool
-                connected_addrs = list(self._device_connect_time.keys())
-                changed = False
-                # Extract HCI device name (e.g. "hci0") from adapter path
-                hci_dev = self._adapter_path.rsplit("/", 1)[-1] if self._adapter_path else "hci0"
+                # Skip if user scan is active — discovery is already running
+                if self._scanning:
+                    continue
 
-                for addr in connected_addrs:
-                    rssi = await self._hcitool_rssi(addr, hci_dev)
-                    if rssi is None:
-                        continue  # keep existing cached value on failure
-                    prev = self._connected_rssi.get(addr)
-                    self._connected_rssi[addr] = rssi
-                    if prev is None or abs(rssi - prev) >= 3:
-                        changed = True
+                # Skip if no connected devices need RSSI
+                if not self._device_connect_time:
+                    # Cleanup stale entries while we're here
+                    self._rssi_cleanup()
+                    continue
 
-                # Cleanup: remove entries for devices no longer known
-                for addr in list(self._connected_rssi):
-                    if addr in self.managed_devices:
-                        continue
-                    if addr in self._device_connect_time:
-                        continue
-                    del self._connected_rssi[addr]
-                    changed = True
+                try:
+                    await self.adapter.start_rssi_refresh()
+                    await asyncio.sleep(self.RSSI_REFRESH_DURATION)
+                finally:
+                    await self.adapter.stop_rssi_refresh()
 
-                if changed:
-                    await self._broadcast_devices()
+                # Cleanup stale entries
+                self._rssi_cleanup()
+
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.debug("RSSI poll error: %s", e)
+                logger.debug("RSSI refresh error: %s", e)
+
+    def _rssi_cleanup(self) -> None:
+        """Remove stale RSSI entries for devices no longer visible."""
+        changed = False
+        for addr in list(self._connected_rssi):
+            if addr in self.managed_devices:
+                continue
+            if addr in self._device_connect_time:
+                continue
+            del self._connected_rssi[addr]
+            changed = True
+        if changed:
+            asyncio.ensure_future(self._broadcast_devices())
 
     # -- SSE broadcast helpers --
 
