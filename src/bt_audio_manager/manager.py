@@ -295,7 +295,11 @@ class BluetoothAudioManager:
                     changed = msg.body[1] if len(msg.body) > 1 else {}
                     prop_names = list(changed.keys()) if isinstance(changed, dict) else []
 
-                    # Silently discard noisy RSSI / ManufacturerData / TxPower
+                    # Cache RSSI from any Device1 signal before noise filtering
+                    if iface_name == "org.bluez.Device1" and "RSSI" in changed:
+                        self._handle_rssi_update(msg.path, changed["RSSI"])
+
+                    # Silently discard noisy ManufacturerData / TxPower / ServiceData
                     # churn — these fire many times per second per device and
                     # provide no actionable information for this app.
                     _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower", "ServiceData"}
@@ -631,7 +635,7 @@ class BluetoothAudioManager:
 
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
-        self._rssi_poll_task = asyncio.create_task(self._rssi_poll_loop())
+        self._rssi_poll_task = asyncio.create_task(self._rssi_cleanup_loop())
 
         logger.info("Bluetooth Audio Manager started successfully")
 
@@ -1300,11 +1304,12 @@ class BluetoothAudioManager:
                     }
                 )
 
-        # Enrich with polled RSSI for connected devices + signal quality
+        # Enrich with cached RSSI from D-Bus events + signal quality
         for device in discovered:
             addr = device["address"]
-            # Use polled RSSI for connected devices (more current than D-Bus)
-            if device["connected"] and addr in self._connected_rssi:
+            # Use cached RSSI for devices currently visible to BlueZ
+            # (connected or discovered) — skip synthetic stored-only entries
+            if addr in self._connected_rssi and (device["connected"] or device.get("rssi") is not None):
                 device["rssi"] = self._connected_rssi[addr]
             rssi = device.get("rssi")
             quality = classify_signal(rssi)
@@ -1595,48 +1600,48 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("Sink poll error: %s", e)
 
-    # -- RSSI polling --
+    # -- RSSI tracking (D-Bus event-driven) --
 
-    RSSI_POLL_INTERVAL = 30  # seconds
+    def _handle_rssi_update(self, dbus_path: str, rssi_variant) -> None:
+        """Extract RSSI from a D-Bus PropertiesChanged signal and cache it.
 
-    async def _rssi_poll_loop(self) -> None:
-        """Periodically poll RSSI for connected devices via hcitool."""
+        BlueZ sends RSSI updates on org.bluez.Device1 during discovery
+        scanning.  We capture these instead of discarding them so the
+        frontend can show signal strength.
+        """
+        try:
+            rssi = rssi_variant.value if hasattr(rssi_variant, "value") else int(rssi_variant)
+        except (TypeError, ValueError):
+            return
+        # Path format: /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF
+        parts = dbus_path.rsplit("/", 1)
+        if len(parts) < 2 or not parts[1].startswith("dev_"):
+            return
+        address = parts[1][4:].replace("_", ":").upper()
+        prev = self._connected_rssi.get(address)
+        self._connected_rssi[address] = rssi
+        # Broadcast only on significant change (>=3 dBm) or None→value transition
+        if prev is None or abs(rssi - prev) >= 3:
+            asyncio.ensure_future(self._broadcast_devices())
+
+    async def _rssi_cleanup_loop(self) -> None:
+        """Periodically remove stale RSSI entries for devices no longer visible."""
         while True:
             try:
-                await asyncio.sleep(self.RSSI_POLL_INTERVAL)
-                connected_addrs = [
-                    addr for addr, dev in self.managed_devices.items()
-                    if dev.connected
-                ]
-                if not connected_addrs:
-                    if self._connected_rssi:
-                        self._connected_rssi.clear()
-                        await self._broadcast_devices()
-                    continue
-
+                await asyncio.sleep(60)
                 changed = False
-                for addr in connected_addrs:
-                    rssi = await BluezAdapter.get_connected_rssi(addr)
-                    prev = self._connected_rssi.get(addr)
-                    self._connected_rssi[addr] = rssi
-                    # Broadcast only on significant change (>=3 dBm) or None transition
-                    if prev is None and rssi is None:
-                        continue
-                    if prev is None or rssi is None or abs(rssi - prev) >= 3:
-                        changed = True
-
-                # Clean up disconnected devices
                 for addr in list(self._connected_rssi):
-                    if addr not in self.managed_devices or not self.managed_devices[addr].connected:
-                        del self._connected_rssi[addr]
-                        changed = True
-
+                    # Keep RSSI for any device still known to BlueZ
+                    if addr in self.managed_devices:
+                        continue
+                    del self._connected_rssi[addr]
+                    changed = True
                 if changed:
                     await self._broadcast_devices()
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.debug("RSSI poll error: %s", e)
+                logger.debug("RSSI cleanup error: %s", e)
 
     # -- SSE broadcast helpers --
 
