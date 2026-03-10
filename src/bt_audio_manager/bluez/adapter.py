@@ -318,6 +318,7 @@ class BluezAdapter:
             logger.debug("hcitool not found — RSSI polling unavailable")
             return None
         except asyncio.TimeoutError:
+            proc.kill()
             return None
         except Exception:
             return None
