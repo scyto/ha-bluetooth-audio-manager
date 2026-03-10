@@ -494,9 +494,10 @@ function renderDevices(devices) {
         }
       }
 
+      const staleClass = d._stale ? " device-stale" : "";
       return `
         <div class="col-md-6 col-lg-4">
-          <div class="card device-card h-100">
+          <div class="card device-card h-100${staleClass}">
             <div class="card-body">
               <div class="d-flex justify-content-between align-items-start mb-2">
                 <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
@@ -1276,24 +1277,93 @@ function connectWebSocket() {
 }
 
 // Cache last known devices for re-rendering when sinks change
-let lastDevices = null;
+let lastDevices = null;    // Final merged+sorted list (includes stale)
+let _lastRawDevices = null; // Raw devices from server (no stale entries)
 
 function refreshDevicesFromCache() {
-  if (lastDevices) {
-    renderDevices(lastDevices);
+  if (_lastRawDevices) {
+    renderDevices(_lastRawDevices);
   }
 }
 
-// Wrap renderDevices to cache
-const _origRenderDevices = renderDevices;
-// We need to intercept — override via reassignment pattern
+// --- Debounced removal & stable sort ---
+// Track last-seen timestamps and full device data for graceful fade-out
+const _deviceLastSeen = new Map();   // address -> timestamp (ms)
+const _deviceCache = new Map();      // address -> device object (last known state)
+const DEVICE_STALE_MS = 20000;       // Keep disappeared devices visible for 20s
+let _staleCleanupTimer = null;
+
+function _sortDevicesStable(devices) {
+  // Priority: connected (0) > paired/stored (1) > discovered (2), then by address
+  const priority = (d) => d.connected ? 0 : (d.paired || d.stored) ? 1 : 2;
+  return devices.slice().sort((a, b) => {
+    const pa = priority(a), pb = priority(b);
+    if (pa !== pb) return pa - pb;
+    return a.address.localeCompare(b.address);
+  });
+}
+
+// Wrap renderDevices to cache, debounce removal, and stabilize sort order
 (function () {
-  const grid = null; // Will be resolved at call time
   const origFn = renderDevices;
 
   window.renderDevices = function (devices) {
-    lastDevices = devices;
-    origFn(devices);
+    const now = Date.now();
+    const currentAddresses = new Set();
+
+    // Save raw (non-stale) devices for refreshDevicesFromCache
+    _lastRawDevices = devices;
+
+    // Update last-seen and cache for all devices in this update
+    if (devices) {
+      for (const d of devices) {
+        currentAddresses.add(d.address);
+        _deviceLastSeen.set(d.address, now);
+        _deviceCache.set(d.address, d);
+      }
+    }
+
+    // Merge in stale devices that disappeared recently (discovered-only, not paired/connected)
+    const merged = devices ? [...devices] : [];
+    const mergedAddresses = new Set(currentAddresses);
+
+    for (const [addr, lastSeen] of _deviceLastSeen) {
+      if (mergedAddresses.has(addr)) continue;
+      const age = now - lastSeen;
+      if (age < DEVICE_STALE_MS) {
+        const cached = _deviceCache.get(addr);
+        if (cached && !cached.paired && !cached.stored && !cached.connected) {
+          // Mark as stale so the renderer can dim it
+          merged.push({ ...cached, _stale: true });
+          mergedAddresses.add(addr);
+        }
+      } else {
+        // Expired — clean up
+        _deviceLastSeen.delete(addr);
+        _deviceCache.delete(addr);
+      }
+    }
+
+    // Stable sort so tiles don't jump around
+    const sorted = _sortDevicesStable(merged);
+
+    lastDevices = sorted;
+    origFn(sorted);
+
+    // Schedule cleanup to remove stale devices after they expire
+    if (!_staleCleanupTimer) {
+      _staleCleanupTimer = setInterval(() => {
+        const hasStale = [..._deviceLastSeen.entries()].some(
+          ([addr, ts]) => !lastDevices?.find((d) => d.address === addr && !d._stale) && Date.now() - ts < DEVICE_STALE_MS
+        );
+        if (hasStale) {
+          refreshDevicesFromCache();
+        } else {
+          clearInterval(_staleCleanupTimer);
+          _staleCleanupTimer = null;
+        }
+      }, 5000);
+    }
   };
 })();
 
