@@ -295,14 +295,16 @@ class BluetoothAudioManager:
                     changed = msg.body[1] if len(msg.body) > 1 else {}
                     prop_names = list(changed.keys()) if isinstance(changed, dict) else []
 
+                    # Cache RSSI from any Device1 signal before noise filtering
+                    if iface_name == "org.bluez.Device1" and "RSSI" in changed:
+                        self._handle_rssi_update(msg.path, changed["RSSI"])
+
                     # Silently discard noisy ManufacturerData / TxPower / ServiceData
                     # churn — these fire many times per second per device and
                     # provide no actionable information for this app.
-                    # RSSI is extracted and cached before discarding.
                     _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower", "ServiceData"}
                     if iface_name == "org.bluez.Device1" and set(prop_names) <= _NOISY_PROPS:
-                        if "RSSI" in changed:
-                            self._handle_rssi_update(msg.path, changed["RSSI"])
+                        pass
                     else:
                         # Log values for key interfaces; just names for the rest.
                         # Adapter1 changes (UUIDs, Class) are demoted to debug —
@@ -1305,8 +1307,9 @@ class BluetoothAudioManager:
         # Enrich with cached RSSI from D-Bus events + signal quality
         for device in discovered:
             addr = device["address"]
-            # Use cached RSSI (from D-Bus PropertiesChanged) if available
-            if addr in self._connected_rssi:
+            # Use cached RSSI for devices currently visible to BlueZ
+            # (connected or discovered) — skip synthetic stored-only entries
+            if addr in self._connected_rssi and (device["connected"] or device.get("rssi") is not None):
                 device["rssi"] = self._connected_rssi[addr]
             rssi = device.get("rssi")
             quality = classify_signal(rssi)
