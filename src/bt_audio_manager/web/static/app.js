@@ -1353,12 +1353,14 @@ function _sortDevicesStable(devices) {
     // Schedule cleanup to remove stale devices after they expire
     if (!_staleCleanupTimer) {
       _staleCleanupTimer = setInterval(() => {
+        // Check if any stale entries remain (not yet expired)
+        const now = Date.now();
         const hasStale = [..._deviceLastSeen.entries()].some(
-          ([addr, ts]) => !lastDevices?.find((d) => d.address === addr && !d._stale) && Date.now() - ts < DEVICE_STALE_MS
+          ([addr, ts]) => !_lastRawDevices?.find((d) => d.address === addr) && now - ts < DEVICE_STALE_MS
         );
-        if (hasStale) {
-          refreshDevicesFromCache();
-        } else {
+        // Always re-render to flush out just-expired entries
+        refreshDevicesFromCache();
+        if (!hasStale) {
           clearInterval(_staleCleanupTimer);
           _staleCleanupTimer = null;
         }
