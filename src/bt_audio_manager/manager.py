@@ -1610,6 +1610,11 @@ class BluetoothAudioManager:
         BlueZ sends RSSI updates on org.bluez.Device1 during discovery
         scanning.  We capture these instead of discarding them so the
         frontend can show signal strength.
+
+        During user-initiated scans (_scanning=True), RSSI is cached for
+        any device.  During silent refresh bursts, only devices we're
+        tracking (connected or managed) are cached to avoid UI churn
+        from random nearby devices in RF-dense environments.
         """
         try:
             rssi = rssi_variant.value if hasattr(rssi_variant, "value") else int(rssi_variant)
@@ -1620,6 +1625,10 @@ class BluetoothAudioManager:
         if len(parts) < 2 or not parts[1].startswith("dev_"):
             return
         address = parts[1][4:].replace("_", ":").upper()
+        # During silent refresh bursts, only track devices we care about
+        if not self._scanning:
+            if address not in self._device_connect_time and address not in self.managed_devices:
+                return
         prev = self._connected_rssi.get(address)
         self._connected_rssi[address] = rssi
         # Broadcast only on significant change (>=3 dBm) or None→value transition
@@ -1656,6 +1665,9 @@ class BluetoothAudioManager:
                     await asyncio.sleep(self.RSSI_REFRESH_DURATION)
                 finally:
                     await self.adapter.stop_rssi_refresh()
+                    # Clear logged-device cache to prevent unbounded growth
+                    # from rotating BLE addresses in RF-dense environments
+                    self.adapter.clear_logged_cache()
 
                 # Cleanup stale entries
                 self._rssi_cleanup()

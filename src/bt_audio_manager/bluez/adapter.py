@@ -162,6 +162,10 @@ class BluezAdapter:
         finally:
             self._rssi_refreshing = False
 
+    def clear_logged_cache(self) -> None:
+        """Clear the per-scan device log cache to prevent unbounded growth."""
+        self._logged_cache.clear()
+
     async def get_audio_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Enumerate discovered devices that can receive/play audio.
 
