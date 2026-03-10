@@ -343,6 +343,12 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: var(--shadow-card-hover);
 }
 
+.device-card.device-stale {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+
 .device-card .card-title {
   font-size: 1rem;
   font-weight: 600;
