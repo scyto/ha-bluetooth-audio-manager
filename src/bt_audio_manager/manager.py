@@ -1309,9 +1309,16 @@ class BluetoothAudioManager:
         # Enrich with cached RSSI (D-Bus discovery + silent refresh bursts) + signal quality
         for device in discovered:
             addr = device["address"]
-            # Use cached RSSI for devices currently visible to BlueZ
-            # (connected or discovered) — skip synthetic stored-only entries
-            if addr in self._connected_rssi and (device["connected"] or device.get("rssi") is not None):
+            # Use cached RSSI when: device is connected (live data), BlueZ
+            # still reports RSSI (active discovery), or device is discovered-
+            # only (not stored) — preserves signal warnings after scan ends.
+            # Excludes stored-but-offline devices to avoid stale RSSI that
+            # _rssi_cleanup() keeps indefinitely for managed_devices.
+            if addr in self._connected_rssi and (
+                device["connected"]
+                or device.get("rssi") is not None
+                or not device.get("stored")
+            ):
                 device["rssi"] = self._connected_rssi[addr]
             rssi = device.get("rssi")
             quality = classify_signal(rssi)
