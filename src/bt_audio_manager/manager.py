@@ -1665,9 +1665,11 @@ class BluetoothAudioManager:
                     await asyncio.sleep(self.RSSI_REFRESH_DURATION)
                 finally:
                     await self.adapter.stop_rssi_refresh()
-                    # Clear logged-device cache to prevent unbounded growth
-                    # from rotating BLE addresses in RF-dense environments
-                    self.adapter.clear_logged_cache()
+                    # Trim (don't clear) logged-device cache to prevent
+                    # unbounded growth from rotating BLE addresses while
+                    # preserving entries so get_audio_devices() doesn't
+                    # re-log every device after each RSSI burst
+                    self.adapter.trim_logged_cache()
 
                 # Cleanup stale entries
                 self._rssi_cleanup()

@@ -166,6 +166,15 @@ class BluezAdapter:
         """Clear the per-scan device log cache to prevent unbounded growth."""
         self._logged_cache.clear()
 
+    def trim_logged_cache(self, max_size: int = 200) -> None:
+        """Trim the log cache if it has grown too large (rotating BLE addresses).
+
+        Unlike clear_logged_cache(), this preserves most entries so that
+        subsequent get_audio_devices() calls don't re-log every device.
+        """
+        if len(self._logged_cache) > max_size:
+            self._logged_cache.clear()
+
     async def get_audio_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Enumerate discovered devices that can receive/play audio.
 
