@@ -321,7 +321,10 @@ function buildCapBadges(device) {
       badges.push('<span class="cap-badge bg-warning text-dark" title="Media buttons disabled">AVRCP \u2717</span>');
     }
   }
-  return `<div class="d-flex flex-wrap gap-1 mb-1 cap-badge-row">${badges.join("")}</div>`;
+  if (badges.length === 0) {
+    badges.push('<span class="cap-badge" style="visibility:hidden">\u00A0</span>');
+  }
+  return `<div class="d-flex flex-wrap gap-1 mb-1">${badges.join("")}</div>`;
 }
 
 function buildFeatureBadges(device) {
