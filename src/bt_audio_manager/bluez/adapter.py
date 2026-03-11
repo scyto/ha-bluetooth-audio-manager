@@ -103,6 +103,11 @@ class BluezAdapter:
         BlueZ reference-counts discovery per D-Bus client, so our session
         does not interfere with HA's passive BLE scanning.
         """
+        # Stop any in-progress RSSI refresh burst so we don't hit
+        # BlueZ's "Already discovering" error
+        if self._rssi_refreshing:
+            await self.stop_rssi_refresh()
+
         await self._adapter_iface.call_set_discovery_filter(
             {
                 "Transport": Variant("s", "auto"),
