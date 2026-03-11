@@ -236,7 +236,8 @@ class BluezAdapter:
                         f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
                         if cod_raw else "(none)"
                     )
-                    logger.debug(
+                    _log = logger.info if cod_fallback else logger.debug
+                    _log(
                         "Skipping device %s (%s) — %s. UUIDs: %s CoD: %s",
                         name, addr, reason,
                         sorted(uuids) if uuids else "(none)",
