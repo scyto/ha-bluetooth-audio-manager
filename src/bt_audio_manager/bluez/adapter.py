@@ -228,8 +228,9 @@ class BluezAdapter:
                 addr = addr_v.value if addr_v else "??:??"
                 name_v = props.get("Name")
                 name = name_v.value if name_v else "unknown"
-                # Log each rejection once per scan session at INFO
-                if addr not in self._logged_cache:
+                # Log skipped devices: always at INFO during user scans
+                # (cod_fallback=True), otherwise once per session at DEBUG
+                if cod_fallback or addr not in self._logged_cache:
                     self._logged_cache.add(addr)
                     reason = _classify_rejection(uuids)
                     cod_str = (
