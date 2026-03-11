@@ -450,11 +450,6 @@ h1, h2, h3, h4, h5, h6 {
   text-align: center;
 }
 
-/* Badge row — reserve height even when empty so cards align */
-.cap-badge-row {
-  min-height: 1.1rem;
-}
-
 /* Active capability badges on device cards */
 .cap-badge {
   font-size: 0.65rem;
