@@ -103,6 +103,11 @@ class BluezAdapter:
         BlueZ reference-counts discovery per D-Bus client, so our session
         does not interfere with HA's passive BLE scanning.
         """
+        # Stop any in-progress RSSI refresh burst so we don't hit
+        # BlueZ's "Already discovering" error
+        if self._rssi_refreshing:
+            await self.stop_rssi_refresh()
+
         await self._adapter_iface.call_set_discovery_filter(
             {
                 "Transport": Variant("s", "auto"),
@@ -228,9 +233,12 @@ class BluezAdapter:
                 addr = addr_v.value if addr_v else "??:??"
                 name_v = props.get("Name")
                 name = name_v.value if name_v else "unknown"
-                # Log each rejection once per scan session at INFO
+                # User scans (cod_fallback=True): log at INFO, dedup via cache.
+                # Background calls: log at DEBUG, don't populate cache so
+                # they can't steal dedup slots from the next user scan.
                 if addr not in self._logged_cache:
-                    self._logged_cache.add(addr)
+                    if cod_fallback:
+                        self._logged_cache.add(addr)
                     reason = _classify_rejection(uuids)
                     cod_str = (
                         f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
