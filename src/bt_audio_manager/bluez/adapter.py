@@ -175,7 +175,7 @@ class BluezAdapter:
         if len(self._logged_cache) > max_size:
             self._logged_cache.clear()
 
-    async def get_audio_devices(self, *, cod_fallback: bool = False, verbose: bool = False) -> list[dict]:
+    async def get_audio_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Enumerate discovered devices that can receive/play audio.
 
         Uses ObjectManager to list all /org/bluez/hci0/dev_* objects
@@ -236,7 +236,7 @@ class BluezAdapter:
                         f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
                         if cod_raw else "(none)"
                     )
-                    _log = logger.info if verbose else logger.debug
+                    _log = logger.info if cod_fallback else logger.debug
                     _log(
                         "Skipping device %s (%s) — %s. UUIDs: %s CoD: %s",
                         name, addr, reason,
@@ -390,7 +390,7 @@ class BluezAdapter:
         await self.start_discovery()
         await asyncio.sleep(seconds)
         await self.stop_discovery()
-        return await self.get_audio_devices(cod_fallback=True, verbose=True)
+        return await self.get_audio_devices(cod_fallback=True)
 
     @property
     def adapter_path(self) -> str:
