@@ -233,10 +233,12 @@ class BluezAdapter:
                 addr = addr_v.value if addr_v else "??:??"
                 name_v = props.get("Name")
                 name = name_v.value if name_v else "unknown"
-                # Log skipped devices: always at INFO during user scans
-                # (cod_fallback=True), otherwise once per session at DEBUG
-                if cod_fallback or addr not in self._logged_cache:
-                    self._logged_cache.add(addr)
+                # User scans (cod_fallback=True): log at INFO, dedup via cache.
+                # Background calls: log at DEBUG, don't populate cache so
+                # they can't steal dedup slots from the next user scan.
+                if addr not in self._logged_cache:
+                    if cod_fallback:
+                        self._logged_cache.add(addr)
                     reason = _classify_rejection(uuids)
                     cod_str = (
                         f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
