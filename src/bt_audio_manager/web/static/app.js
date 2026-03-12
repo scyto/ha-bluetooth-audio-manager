@@ -330,7 +330,7 @@ function buildCapBadges(device) {
   if (badges.length === 0) {
     badges.push('<span class="cap-badge" style="visibility:hidden">\u00A0</span>');
   }
-  return `<div class="d-flex flex-wrap gap-1 mb-1">${badges.join("")}</div>`;
+  return badges.join("");
 }
 
 function buildFeatureBadges(device) {
@@ -379,6 +379,168 @@ function renderAddDeviceTile() {
   }
 }
 
+function buildDeviceCard(d) {
+  // --- Status badge ---
+  const badgeClass = d.connected
+    ? "badge-connected"
+    : d.paired
+      ? "badge-paired"
+      : "badge-discovered";
+  const statusText = d.connected
+    ? "Connected"
+    : d.paired
+      ? "Paired"
+      : "Discovered";
+
+  // --- Kebab menu (paired/stored only) ---
+  let kebab = "";
+  if (d.stored || d.paired) {
+    const audioProfile = d.audio_profile || "a2dp";
+    const idleMode = d.idle_mode || "default";
+    const kaMethod = d.keep_alive_method || "infrasound";
+    const powerSaveDelay = d.power_save_delay ?? 0;
+    const autoDisconnectMinutes = d.auto_disconnect_minutes ?? 30;
+    const mpdEnabled = d.mpd_enabled || false;
+    const mpdPort = d.mpd_port || "";
+    const mpdHwVolume = d.mpd_hw_volume ?? 100;
+    const avrcpEnabled = d.avrcp_enabled ?? true;
+    const safeName = safeJsString(d.name);
+    const uuidsJson = safeJsString(JSON.stringify(d.uuids || []));
+    kebab = `
+      <div class="dropdown">
+        <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
+                data-bs-toggle="dropdown" title="Device options">
+          <i class="fas fa-ellipsis-v"></i>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
+            <i class="fas fa-cog me-2"></i>Settings
+          </a></li>
+          ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
+            <i class="fas fa-sync me-2"></i>Force Reconnect
+          </a></li>` : ""}
+          <li><hr class="dropdown-divider"></li>
+          <li><a class="dropdown-item text-danger" href="#" onclick="forgetDevice('${d.address}'); return false;">
+            <i class="fas fa-trash me-2"></i>Forget Device
+          </a></li>
+        </ul>
+      </div>
+    `;
+  }
+
+  // --- RSSI display ---
+  let rssiHtml = "";
+  if (d.rssi != null) {
+    const colorClass =
+      d.signal_quality === "excellent" || d.signal_quality === "good" ? "text-success"
+      : d.signal_quality === "fair" ? "text-warning"
+      : "text-danger";
+    const clipPct = { excellent: 0, good: 20, fair: 45, weak: 70, very_weak: 70 };
+    const clip = clipPct[d.signal_quality] || 0;
+    const clipStyle = clip ? ` style="clip-path:inset(0 ${clip}% 0 0)"` : "";
+    rssiHtml = ` <i class="fas fa-signal ${colorClass}"${clipStyle} title="${d.signal_quality || "unknown"}"></i> <small class="text-muted">${d.rssi} dBm</small>`;
+  }
+
+  // --- Profiles text (always rendered in a fixed-height slot) ---
+  const profiles = profileLabels(d.uuids);
+  let profilesHtml = "";
+  if (d.cod_matched && !d.paired) {
+    profilesHtml = '<span class="text-warning-emphasis"><i class="fas fa-info-circle me-1"></i>Detected by device class \u2014 pair to confirm audio support</span>';
+  } else if (d.paired && !profiles) {
+    profilesHtml = '<span class="text-warning-emphasis"><i class="fas fa-exclamation-triangle me-1"></i>Paired but no audio profiles found</span>';
+  } else if (profiles) {
+    profilesHtml = `<span class="text-muted">${escapeHtml(profiles)}</span>`;
+  }
+
+  // --- Signal warning ---
+  const signalHtml = d.signal_warning
+    ? `<div class="device-slot-warning device-meta-text text-warning-emphasis"><i class="fas fa-exclamation-triangle me-1"></i>${escapeHtml(d.signal_warning)}</div>`
+    : "";
+
+  // --- Sink info (connected only) ---
+  let sinkHtml = "";
+  if (d.connected) {
+    const macNorm = d.address.replace(/:/g, "_").toLowerCase();
+    const matchedSink = currentSinks.find(
+      (s) => s.name && s.name.toLowerCase().includes(macNorm),
+    );
+    if (matchedSink) {
+      const audioParts = [
+        matchedSink.sample_rate ? `${(matchedSink.sample_rate / 1000).toFixed(1)} kHz` : null,
+        matchedSink.channels ? `${matchedSink.channels}ch` : null,
+        matchedSink.format || null,
+      ].filter(Boolean);
+      const vol = matchedSink.mute ? "Muted" : `${matchedSink.volume}%`;
+      const stateMap = { running: "Streaming", idle: "Idle", suspended: "Suspended" };
+      const stateLabel = stateMap[matchedSink.state] || matchedSink.state;
+      sinkHtml = `
+        <div class="device-slot-sink small text-muted">
+          <i class="fas fa-music me-1"></i>${audioParts.length ? escapeHtml(audioParts.join(" / ")) + " &middot; " : ""}${escapeHtml(vol)}
+          <span class="badge bg-secondary ms-1">${escapeHtml(stateLabel)}</span>
+        </div>
+      `;
+    }
+  }
+
+  // --- Feature badges ---
+  const featureBadgesHtml = buildFeatureBadges(d);
+
+  // --- Action buttons ---
+  let actionsHtml = "";
+  if (d.connected) {
+    actionsHtml = `
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="disconnectDevice('${d.address}')">
+        <i class="fas fa-unlink me-1"></i>Disconnect
+      </button>
+    `;
+  } else if (d.paired || d.stored) {
+    actionsHtml = `
+      <button type="button" class="btn btn-sm btn-success" onclick="connectDevice('${d.address}')">
+        <i class="fas fa-link me-1"></i>Connect
+      </button>
+    `;
+  } else {
+    actionsHtml = `
+      <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${d.address}')">
+        <i class="fas fa-handshake me-1"></i>Pair
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" onclick="dismissDevice('${d.address}')" title="Dismiss">
+        <i class="fas fa-times"></i>
+      </button>
+    `;
+  }
+
+  const staleClass = d._stale ? " device-stale" : "";
+
+  // --- Single unified template ---
+  // Every card renders every slot; empty slots use fixed-height placeholders
+  // so that rows align across cards regardless of device state.
+  return `
+    <div class="col-md-6 col-lg-4">
+      <div class="card device-card h-100${staleClass}">
+        <div class="card-body">
+          <div class="device-slot-header">
+            <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
+            <div class="d-flex align-items-center gap-1">
+              <span class="badge ${badgeClass}">${statusText}</span>
+              ${kebab}
+            </div>
+          </div>
+          <div class="device-slot-badges">${buildCapBadges(d)}</div>
+          <div class="device-slot-meta device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiHtml}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
+          <div class="device-slot-profiles device-meta-text">${profilesHtml}</div>
+          ${signalHtml}
+          ${sinkHtml}
+          ${featureBadgesHtml ? `<div class="device-slot-features device-feature-badges d-flex gap-2 flex-wrap">${featureBadgesHtml}</div>` : ""}
+          <div class="device-actions">
+            ${actionsHtml}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderDevices(devices) {
   const grid = $("#devices-grid");
   renderAddDeviceTile();
@@ -388,146 +550,7 @@ function renderDevices(devices) {
     return;
   }
 
-  grid.innerHTML = devices
-    .map((d) => {
-      const badgeClass = d.connected
-        ? "badge-connected"
-        : d.paired
-          ? "badge-paired"
-          : "badge-discovered";
-      const statusText = d.connected
-        ? "Connected"
-        : d.paired
-          ? "Paired"
-          : "Discovered";
-
-      // Action buttons (primary actions only — Forget is in kebab menu)
-      let actions = "";
-      if (d.connected) {
-        actions = `
-          <button type="button" class="btn btn-sm btn-outline-danger" onclick="disconnectDevice('${d.address}')">
-            <i class="fas fa-unlink me-1"></i>Disconnect
-          </button>
-        `;
-      } else if (d.paired || d.stored) {
-        actions = `
-          <button type="button" class="btn btn-sm btn-success" onclick="connectDevice('${d.address}')">
-            <i class="fas fa-link me-1"></i>Connect
-          </button>
-        `;
-      } else {
-        actions = `
-          <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${d.address}')">
-            <i class="fas fa-handshake me-1"></i>Pair
-          </button>
-          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="dismissDevice('${d.address}')" title="Dismiss">
-            <i class="fas fa-times"></i>
-          </button>
-        `;
-      }
-
-      // Kebab dropdown for paired/stored devices (Settings + Forget)
-      const idleMode = (d.stored || d.paired) ? (d.idle_mode || "default") : "default";
-      let kebab = "";
-      if (d.stored || d.paired) {
-        const audioProfile = d.audio_profile || "a2dp";
-        const kaMethod = d.keep_alive_method || "infrasound";
-        const powerSaveDelay = d.power_save_delay ?? 0;
-        const autoDisconnectMinutes = d.auto_disconnect_minutes ?? 30;
-        const mpdEnabled = d.mpd_enabled || false;
-        const mpdPort = d.mpd_port || "";
-        const mpdHwVolume = d.mpd_hw_volume ?? 100;
-        const avrcpEnabled = d.avrcp_enabled ?? true;
-        const safeName = safeJsString(d.name);
-        const uuidsJson = safeJsString(JSON.stringify(d.uuids || []));
-        kebab = `
-          <div class="dropdown">
-            <button class="btn btn-sm btn-link text-muted p-0 ms-2" type="button"
-                    data-bs-toggle="dropdown" title="Device options">
-              <i class="fas fa-ellipsis-v"></i>
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
-                <i class="fas fa-cog me-2"></i>Settings
-              </a></li>
-              ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
-                <i class="fas fa-sync me-2"></i>Force Reconnect
-              </a></li>` : ""}
-              <li><hr class="dropdown-divider"></li>
-              <li><a class="dropdown-item text-danger" href="#" onclick="forgetDevice('${d.address}'); return false;">
-                <i class="fas fa-trash me-2"></i>Forget Device
-              </a></li>
-            </ul>
-          </div>
-        `;
-      }
-
-      let rssiDisplay = "";
-      if (d.rssi != null) {
-        const colorClass =
-          d.signal_quality === "excellent" || d.signal_quality === "good" ? "text-success"
-          : d.signal_quality === "fair" ? "text-warning"
-          : "text-danger";
-        // Clip fa-signal icon to show fewer bars for weaker signals
-        const clipPct = { excellent: 0, good: 20, fair: 45, weak: 70, very_weak: 70 };
-        const clip = clipPct[d.signal_quality] || 0;
-        const clipStyle = clip ? ` style="clip-path:inset(0 ${clip}% 0 0)"` : "";
-        rssiDisplay = ` <i class="fas fa-signal ${colorClass}"${clipStyle} title="${d.signal_quality || "unknown"}"></i> <small class="text-muted">${d.rssi} dBm</small>`;
-      }
-      const profiles = profileLabels(d.uuids);
-
-      // Merge sink info for connected devices
-      let sinkInfo = "";
-      if (d.connected) {
-        const macNorm = d.address.replace(/:/g, "_").toLowerCase();
-        const matchedSink = currentSinks.find(
-          (s) => s.name && s.name.toLowerCase().includes(macNorm),
-        );
-        if (matchedSink) {
-          const audioParts = [
-            matchedSink.sample_rate ? `${(matchedSink.sample_rate / 1000).toFixed(1)} kHz` : null,
-            matchedSink.channels ? `${matchedSink.channels}ch` : null,
-            matchedSink.format || null,
-          ].filter(Boolean);
-          const vol = matchedSink.mute ? "Muted" : `${matchedSink.volume}%`;
-          const stateMap = { running: "Streaming", idle: "Idle", suspended: "Suspended" };
-          const stateLabel = stateMap[matchedSink.state] || matchedSink.state;
-          sinkInfo = `
-            <div class="mt-2 small text-muted">
-              <i class="fas fa-music me-1"></i>${audioParts.length ? escapeHtml(audioParts.join(" / ")) + " &middot; " : ""}${escapeHtml(vol)}
-              <span class="badge bg-secondary ms-1">${escapeHtml(stateLabel)}</span>
-            </div>
-          `;
-        }
-      }
-
-      const staleClass = d._stale ? " device-stale" : "";
-      return `
-        <div class="col-md-6 col-lg-4">
-          <div class="card device-card h-100${staleClass}">
-            <div class="card-body">
-              <div class="d-flex justify-content-between align-items-start mb-2">
-                <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
-                <div class="d-flex align-items-center gap-1">
-                  <span class="badge ${badgeClass}">${statusText}</span>
-                  ${kebab}
-                </div>
-              </div>
-              ${buildCapBadges(d)}
-              <div class="device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiDisplay}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
-              ${d.cod_matched && !d.paired ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-info-circle me-1"></i>Detected by device class \u2014 pair to confirm audio support</div>' : d.paired && !profiles ? '<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-exclamation-triangle me-1"></i>Paired but no audio profiles found</div>' : profiles ? `<div class="device-meta-text device-profiles-text mt-1 text-muted">${escapeHtml(profiles)}</div>` : ""}
-              ${d.signal_warning ? `<div class="device-meta-text mt-1 text-warning-emphasis"><i class="fas fa-exclamation-triangle me-1"></i>${escapeHtml(d.signal_warning)}</div>` : ""}
-              ${sinkInfo}
-              ${(() => { const fb = buildFeatureBadges(d); return fb ? `<div class="device-feature-badges d-flex gap-2 flex-wrap">${fb}</div>` : ""; })()}
-              <div class="device-actions">
-                ${actions}
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    })
-    .join("");
+  grid.innerHTML = devices.map((d) => buildDeviceCard(d)).join("");
 }
 
 function renderSinks(sinks) {
