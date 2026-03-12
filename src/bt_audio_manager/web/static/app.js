@@ -285,7 +285,9 @@ function profileLabels(uuids) {
 }
 
 function buildCapBadges(device) {
-  if (!device.connected) return "";
+  if (!device.connected) {
+    return '<div class="d-flex flex-wrap gap-1 mb-1"><span class="cap-badge" style="visibility:hidden">\u00A0</span></div>';
+  }
   const badges = [];
   // Bearer type (BR/EDR, LE)
   if (device.bearers) {
