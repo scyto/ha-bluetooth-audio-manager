@@ -101,6 +101,8 @@ class BluetoothAudioManager:
         self._sink_poll_task: asyncio.Task | None = None
         self._rssi_poll_task: asyncio.Task | None = None
         self._connected_rssi: dict[str, int | None] = {}  # addr → last RSSI
+        self._rssi_timestamp: dict[str, float] = {}  # addr → time.time() of last RSSI update
+        self._last_rssi_refresh: float = 0.0  # time.time() when last refresh burst ended
         self._last_sink_snapshot: str = ""
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
@@ -285,6 +287,12 @@ class BluetoothAudioManager:
                         cod_str,
                         extra_str,
                     )
+                    # Cache RSSI from InterfacesAdded so newly discovered
+                    # devices (especially BR/EDR-only) have signal strength
+                    # before any PropertiesChanged fires.
+                    dev_rssi = _v("RSSI")
+                    if dev_rssi is not None:
+                        self._handle_rssi_update(obj_path, dev_rssi)
                     self._schedule_scan_broadcast()
             elif (
                 msg.message_type == MessageType.SIGNAL
@@ -821,6 +829,7 @@ class BluetoothAudioManager:
             return
         finally:
             self._scanning = False
+            self._last_rssi_refresh = time.time()
             self._cancel_scan_debounce()
             try:
                 await self.adapter.stop_discovery()
@@ -1327,6 +1336,14 @@ class BluetoothAudioManager:
                 "Weak signal \u2014 audio may stutter or drop"
                 if quality in ("weak", "very_weak") else None
             )
+            # Mark RSSI as stale if the device didn't respond during
+            # the most recent refresh burst (BR/EDR-only devices can't
+            # be measured while connected — show grey instead of green).
+            if rssi is not None and self._last_rssi_refresh > 0:
+                ts = self._rssi_timestamp.get(addr, 0)
+                device["rssi_stale"] = ts < self._last_rssi_refresh
+            else:
+                device["rssi_stale"] = False
 
         return discovered
 
@@ -1638,6 +1655,7 @@ class BluetoothAudioManager:
                 return
         prev = self._connected_rssi.get(address)
         self._connected_rssi[address] = rssi
+        self._rssi_timestamp[address] = time.time()
         # Broadcast only on significant change (>=3 dBm) or None→value transition
         if prev is None or abs(rssi - prev) >= 3:
             asyncio.ensure_future(self._broadcast_devices())
@@ -1672,6 +1690,7 @@ class BluetoothAudioManager:
                     await asyncio.sleep(self.RSSI_REFRESH_DURATION)
                 finally:
                     await self.adapter.stop_rssi_refresh()
+                    self._last_rssi_refresh = time.time()
                     # Trim (don't clear) logged-device cache to prevent
                     # unbounded growth from rotating BLE addresses while
                     # preserving entries so get_audio_devices() doesn't
@@ -1695,6 +1714,7 @@ class BluetoothAudioManager:
             if addr in self._device_connect_time:
                 continue
             del self._connected_rssi[addr]
+            self._rssi_timestamp.pop(addr, None)
             changed = True
         if changed:
             asyncio.ensure_future(self._broadcast_devices())
@@ -1733,6 +1753,7 @@ class BluetoothAudioManager:
         self._last_signaled_volume.pop(address, None)
         self._last_pa_volume.pop(address, None)
         self._connected_rssi.pop(address, None)
+        self._rssi_timestamp.pop(address, None)
         # Clean up running sink tracking for this device
         addr_underscored = address.replace(":", "_")
         self._running_sinks = {s for s in self._running_sinks if addr_underscored not in s}

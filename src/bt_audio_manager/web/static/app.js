@@ -431,14 +431,16 @@ function buildDeviceCard(d) {
   // --- RSSI display ---
   let rssiHtml = "";
   if (d.rssi != null) {
-    const colorClass =
-      d.signal_quality === "excellent" || d.signal_quality === "good" ? "text-success"
+    const stale = !!d.rssi_stale;
+    const colorClass = stale ? "text-secondary"
+      : d.signal_quality === "excellent" || d.signal_quality === "good" ? "text-success"
       : d.signal_quality === "fair" ? "text-warning"
       : "text-danger";
     const clipPct = { excellent: 0, good: 20, fair: 45, weak: 70, very_weak: 70 };
     const clip = clipPct[d.signal_quality] || 0;
     const clipStyle = clip ? ` style="clip-path:inset(0 ${clip}% 0 0)"` : "";
-    rssiHtml = ` <i class="fas fa-signal ${colorClass}"${clipStyle} title="${d.signal_quality || "unknown"}"></i> <small class="text-muted">${d.rssi} dBm</small>`;
+    const title = stale ? `${d.signal_quality || "unknown"} (last seen during scan)` : (d.signal_quality || "unknown");
+    rssiHtml = ` <i class="fas fa-signal ${colorClass}"${clipStyle} title="${title}"></i> <small class="${stale ? "text-secondary" : "text-muted"}">${d.rssi} dBm</small>`;
   }
 
   // --- Profiles text (always rendered in a fixed-height slot) ---
