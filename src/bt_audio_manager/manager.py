@@ -38,6 +38,21 @@ def _dbus_val(variant, default=None):
     return variant.value if hasattr(variant, "value") else variant
 
 
+def classify_signal(rssi: int | None) -> str | None:
+    """Classify RSSI (dBm) into a signal quality label."""
+    if rssi is None:
+        return None
+    if rssi > -50:
+        return "excellent"
+    if rssi > -65:
+        return "good"
+    if rssi > -75:
+        return "fair"
+    if rssi > -85:
+        return "weak"
+    return "very_weak"
+
+
 # Common Bluetooth USB vendor IDs → friendly vendor names.
 # Used as a last-resort fallback when both sysfs and the Supervisor's
 # udev database lack a human-readable product name.
@@ -60,6 +75,8 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    RSSI_REFRESH_INTERVAL = 60  # seconds between silent discovery bursts
+    RSSI_REFRESH_DURATION = 5   # seconds per silent discovery burst
     MAX_RECENT_EVENTS = 50  # ring buffer size for MPRIS/AVRCP events
 
     def __init__(self, config: AppConfig):
@@ -82,6 +99,10 @@ class BluetoothAudioManager:
         self._web_server = None
         self.event_bus = EventBus()
         self._sink_poll_task: asyncio.Task | None = None
+        self._rssi_poll_task: asyncio.Task | None = None
+        self._connected_rssi: dict[str, int | None] = {}  # addr → last RSSI
+        self._rssi_timestamp: dict[str, float] = {}  # addr → time.time() of last RSSI update
+        self._last_rssi_refresh_start: float = 0.0  # time.time() when last refresh burst started
         self._last_sink_snapshot: str = ""
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
@@ -266,6 +287,12 @@ class BluetoothAudioManager:
                         cod_str,
                         extra_str,
                     )
+                    # Cache RSSI from InterfacesAdded so newly discovered
+                    # devices (especially BR/EDR-only) have signal strength
+                    # before any PropertiesChanged fires.
+                    dev_rssi = _v("RSSI")
+                    if dev_rssi is not None:
+                        self._handle_rssi_update(obj_path, dev_rssi)
                     self._schedule_scan_broadcast()
             elif (
                 msg.message_type == MessageType.SIGNAL
@@ -278,7 +305,11 @@ class BluetoothAudioManager:
                     changed = msg.body[1] if len(msg.body) > 1 else {}
                     prop_names = list(changed.keys()) if isinstance(changed, dict) else []
 
-                    # Silently discard noisy RSSI / ManufacturerData / TxPower
+                    # Cache RSSI from any Device1 signal before noise filtering
+                    if iface_name == "org.bluez.Device1" and "RSSI" in changed:
+                        self._handle_rssi_update(msg.path, changed["RSSI"])
+
+                    # Silently discard noisy ManufacturerData / TxPower / ServiceData
                     # churn — these fire many times per second per device and
                     # provide no actionable information for this app.
                     _NOISY_PROPS = {"RSSI", "ManufacturerData", "TxPower", "ServiceData"}
@@ -614,6 +645,7 @@ class BluetoothAudioManager:
 
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
+        self._rssi_poll_task = asyncio.create_task(self._rssi_refresh_loop())
 
         logger.info("Bluetooth Audio Manager started successfully")
 
@@ -621,13 +653,14 @@ class BluetoothAudioManager:
         """Graceful teardown in reverse order."""
         logger.info("Shutting down Bluetooth Audio Manager...")
 
-        # Stop sink polling
-        if self._sink_poll_task and not self._sink_poll_task.done():
-            self._sink_poll_task.cancel()
-            try:
-                await self._sink_poll_task
-            except asyncio.CancelledError:
-                pass
+        # Stop sink and RSSI polling
+        for task in (self._sink_poll_task, self._rssi_poll_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         # Cancel any running scan
         if self._scan_task and not self._scan_task.done():
@@ -779,6 +812,7 @@ class BluetoothAudioManager:
             await self.adapter.stop_discovery()
 
         self._scanning = True
+        self._last_rssi_refresh_start = time.time()
         self.event_bus.emit("scan_started", {"duration": duration})
         self._scan_task = asyncio.create_task(self._run_scan(duration))
 
@@ -1281,6 +1315,36 @@ class BluetoothAudioManager:
                     }
                 )
 
+        # Enrich with cached RSSI (D-Bus discovery + silent refresh bursts) + signal quality
+        for device in discovered:
+            addr = device["address"]
+            # Use cached RSSI when: device is connected (live data), BlueZ
+            # still reports RSSI (active discovery), or device is discovered-
+            # only (not stored) — preserves signal warnings after scan ends.
+            # Excludes stored-but-offline devices to avoid stale RSSI that
+            # _rssi_cleanup() keeps indefinitely for managed_devices.
+            if addr in self._connected_rssi and (
+                device["connected"]
+                or device.get("rssi") is not None
+                or not device.get("stored")
+            ):
+                device["rssi"] = self._connected_rssi[addr]
+            rssi = device.get("rssi")
+            quality = classify_signal(rssi)
+            device["signal_quality"] = quality
+            device["signal_warning"] = (
+                "Weak signal \u2014 audio may stutter or drop"
+                if quality in ("weak", "very_weak") else None
+            )
+            # Mark RSSI as stale if the device didn't respond during
+            # the most recent refresh burst (BR/EDR-only devices can't
+            # be measured while connected — show grey instead of green).
+            if rssi is not None and self._last_rssi_refresh_start > 0:
+                ts = self._rssi_timestamp.get(addr, 0)
+                device["rssi_stale"] = ts < self._last_rssi_refresh_start
+            else:
+                device["rssi_stale"] = False
+
         return discovered
 
     async def get_audio_sinks(self) -> list[dict]:
@@ -1562,6 +1626,99 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.debug("Sink poll error: %s", e)
 
+    # -- RSSI tracking (D-Bus discovery events + silent refresh bursts) --
+
+    def _handle_rssi_update(self, dbus_path: str, rssi_variant) -> None:
+        """Extract RSSI from a D-Bus PropertiesChanged signal and cache it.
+
+        BlueZ sends RSSI updates on org.bluez.Device1 during discovery
+        scanning.  We capture these instead of discarding them so the
+        frontend can show signal strength.
+
+        During user-initiated scans (_scanning=True), RSSI is cached for
+        any device.  During silent refresh bursts, only devices we're
+        tracking (connected or managed) are cached to avoid UI churn
+        from random nearby devices in RF-dense environments.
+        """
+        try:
+            rssi = rssi_variant.value if hasattr(rssi_variant, "value") else int(rssi_variant)
+        except (TypeError, ValueError):
+            return
+        # Path format: /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF
+        parts = dbus_path.rsplit("/", 1)
+        if len(parts) < 2 or not parts[1].startswith("dev_"):
+            return
+        address = parts[1][4:].replace("_", ":").upper()
+        # During silent refresh bursts, only track devices we care about
+        if not self._scanning:
+            if address not in self._device_connect_time and address not in self.managed_devices:
+                return
+        prev = self._connected_rssi.get(address)
+        self._connected_rssi[address] = rssi
+        self._rssi_timestamp[address] = time.time()
+        # Broadcast only on significant change (>=3 dBm) or None→value transition
+        if prev is None or abs(rssi - prev) >= 3:
+            asyncio.ensure_future(self._broadcast_devices(cod_fallback=self._scanning))
+
+    async def _rssi_refresh_loop(self) -> None:
+        """Periodically run silent discovery bursts to refresh RSSI.
+
+        BlueZ only emits RSSI via PropertiesChanged during active
+        discovery.  This loop runs short discovery bursts without
+        setting _scanning=True, so RSSI signals are captured and
+        cached by _handle_rssi_update() but no UI scan activity is
+        triggered (no "device discovered" logs, no scan_started events).
+
+        Skips the burst if a user-initiated scan is already running.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self.RSSI_REFRESH_INTERVAL)
+
+                # Skip if user scan is active — discovery is already running
+                if self._scanning:
+                    continue
+
+                # Skip if no connected devices need RSSI
+                if not self._device_connect_time:
+                    # Cleanup stale entries while we're here
+                    self._rssi_cleanup()
+                    continue
+
+                self._last_rssi_refresh_start = time.time()
+                try:
+                    await self.adapter.start_rssi_refresh()
+                    await asyncio.sleep(self.RSSI_REFRESH_DURATION)
+                finally:
+                    await self.adapter.stop_rssi_refresh()
+                    # Trim (don't clear) logged-device cache to prevent
+                    # unbounded growth from rotating BLE addresses while
+                    # preserving entries so get_audio_devices() doesn't
+                    # re-log every device after each RSSI burst
+                    self.adapter.trim_logged_cache()
+
+                # Cleanup stale entries
+                self._rssi_cleanup()
+
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.debug("RSSI refresh error: %s", e)
+
+    def _rssi_cleanup(self) -> None:
+        """Remove stale RSSI entries for devices no longer visible."""
+        changed = False
+        for addr in list(self._connected_rssi):
+            if addr in self.managed_devices:
+                continue
+            if addr in self._device_connect_time:
+                continue
+            del self._connected_rssi[addr]
+            self._rssi_timestamp.pop(addr, None)
+            changed = True
+        if changed:
+            asyncio.ensure_future(self._broadcast_devices())
+
     # -- SSE broadcast helpers --
 
     async def _broadcast_devices(self, *, cod_fallback: bool = False) -> None:
@@ -1595,6 +1752,8 @@ class BluetoothAudioManager:
         self._device_connect_time.pop(address, None)
         self._last_signaled_volume.pop(address, None)
         self._last_pa_volume.pop(address, None)
+        self._connected_rssi.pop(address, None)
+        self._rssi_timestamp.pop(address, None)
         # Clean up running sink tracking for this device
         addr_underscored = address.replace(":", "_")
         self._running_sinks = {s for s in self._running_sinks if addr_underscored not in s}

@@ -343,6 +343,12 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: var(--shadow-card-hover);
 }
 
+.device-card.device-stale {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+
 .device-card .card-title {
   font-size: 1rem;
   font-weight: 600;
@@ -401,11 +407,35 @@ h1, h2, h3, h4, h5, h6 {
   flex-direction: column;
 }
 
-.device-meta-text {
-  font-size: 0.75rem;
+/* ---- Unified card slot layout ---- */
+
+/* Row 1: device name + status badge + kebab */
+.device-slot-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  min-height: 1.75rem;       /* consistent even without kebab */
+  margin-bottom: 0.375rem;
 }
 
-.device-profiles-text {
+/* Row 2: capability badges (BR/EDR, A2DP, HFP, AVRCP) */
+.device-slot-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-height: 1.35rem;        /* one badge row height */
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+/* Row 3: MAC address + RSSI + adapter */
+.device-slot-meta {
+  min-height: 1.125rem;
+  margin-bottom: 0.25rem;
+}
+
+/* Row 4: profiles / CoD warning (fixed 2-line slot) */
+.device-slot-profiles {
   line-height: 1.25;
   min-height: 2.5em;
   max-height: 2.5em;
@@ -413,15 +443,31 @@ h1, h2, h3, h4, h5, h6 {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+  margin-bottom: 0.25rem;
+}
+
+/* Row 5: signal warning (conditional, no fixed height) */
+.device-slot-warning {
+  margin-bottom: 0.25rem;
+}
+
+/* Row 6: sink audio info (conditional, no fixed height) */
+.device-slot-sink {
+  margin-bottom: 0.25rem;
+}
+
+/* Row 7: feature badges (conditional, no fixed height) */
+.device-slot-features {
+  margin-top: 0.25rem;
+}
+
+.device-meta-text {
+  font-size: 0.75rem;
 }
 
 /* Container minimum height to prevent collapse during loading */
 #devices-grid {
   min-height: 200px;
-}
-
-.device-card .device-feature-badges {
-  margin-top: 0.5rem;
 }
 
 .device-card .device-actions {

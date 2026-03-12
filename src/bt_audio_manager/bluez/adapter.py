@@ -63,6 +63,7 @@ class BluezAdapter:
         self._adapter_iface = None
         self._properties_iface = None
         self._discovering = False
+        self._rssi_refreshing = False
         # Tracks addresses already logged during this scan session,
         # so each device is logged at INFO only once per scan.
         self._logged_cache: set[str] = set()
@@ -102,6 +103,11 @@ class BluezAdapter:
         BlueZ reference-counts discovery per D-Bus client, so our session
         does not interfere with HA's passive BLE scanning.
         """
+        # Stop any in-progress RSSI refresh burst so we don't hit
+        # BlueZ's "Already discovering" error
+        if self._rssi_refreshing:
+            await self.stop_rssi_refresh()
+
         await self._adapter_iface.call_set_discovery_filter(
             {
                 "Transport": Variant("s", "auto"),
@@ -128,6 +134,51 @@ class BluezAdapter:
         finally:
             self._discovering = False
         logger.info("Device discovery stopped")
+
+    async def start_rssi_refresh(self) -> None:
+        """Start a silent discovery burst to refresh RSSI values.
+
+        Unlike start_discovery(), this does NOT clear the logged-device
+        cache (avoiding INFO-level "Skipping device" spam) and does not
+        set _discovering (so stop_discovery() won't interfere).  The
+        manager calls this without setting _scanning=True, so no UI
+        scan events are triggered.
+        """
+        if self._discovering or self._rssi_refreshing:
+            return
+        try:
+            await self._adapter_iface.call_set_discovery_filter(
+                {"Transport": Variant("s", "auto")}
+            )
+            await self._adapter_iface.call_start_discovery()
+            self._rssi_refreshing = True
+        except DBusError as e:
+            logger.debug("RSSI refresh start failed: %s", e)
+
+    async def stop_rssi_refresh(self) -> None:
+        """Stop the silent RSSI discovery burst."""
+        if not self._rssi_refreshing:
+            return
+        try:
+            await self._adapter_iface.call_stop_discovery()
+        except DBusError as e:
+            if "No discovery started" not in str(e):
+                logger.debug("RSSI refresh stop failed: %s", e)
+        finally:
+            self._rssi_refreshing = False
+
+    def clear_logged_cache(self) -> None:
+        """Clear the per-scan device log cache to prevent unbounded growth."""
+        self._logged_cache.clear()
+
+    def trim_logged_cache(self, max_size: int = 200) -> None:
+        """Trim the log cache if it has grown too large (rotating BLE addresses).
+
+        Unlike clear_logged_cache(), this preserves most entries so that
+        subsequent get_audio_devices() calls don't re-log every device.
+        """
+        if len(self._logged_cache) > max_size:
+            self._logged_cache.clear()
 
     async def get_audio_devices(self, *, cod_fallback: bool = False) -> list[dict]:
         """Enumerate discovered devices that can receive/play audio.
@@ -182,15 +233,19 @@ class BluezAdapter:
                 addr = addr_v.value if addr_v else "??:??"
                 name_v = props.get("Name")
                 name = name_v.value if name_v else "unknown"
-                # Log each rejection once per scan session at INFO
+                # User scans (cod_fallback=True): log at INFO, dedup via cache.
+                # Background calls: log at DEBUG, don't populate cache so
+                # they can't steal dedup slots from the next user scan.
                 if addr not in self._logged_cache:
-                    self._logged_cache.add(addr)
+                    if cod_fallback:
+                        self._logged_cache.add(addr)
                     reason = _classify_rejection(uuids)
                     cod_str = (
                         f"0x{cod_raw:06X}({cod_major_label(cod_raw)})"
                         if cod_raw else "(none)"
                     )
-                    logger.info(
+                    _log = logger.info if cod_fallback else logger.debug
+                    _log(
                         "Skipping device %s (%s) — %s. UUIDs: %s CoD: %s",
                         name, addr, reason,
                         sorted(uuids) if uuids else "(none)",
@@ -295,6 +350,7 @@ class BluezAdapter:
                 parts.append(f"{cod_accepted} matched by CoD fallback")
             logger.info("get_audio_devices: %s", ", ".join(parts))
         return devices
+
 
     async def remove_device(self, device_path: str) -> None:
         """Remove a device from the adapter (unpair)."""
