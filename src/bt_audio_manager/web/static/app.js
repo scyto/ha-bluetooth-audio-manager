@@ -285,37 +285,43 @@ function profileLabels(uuids) {
 }
 
 function buildCapBadges(device) {
-  if (!device.connected) return "";
   const badges = [];
+  const connected = device.connected;
   // Bearer type (BR/EDR, LE)
   if (device.bearers) {
     for (const b of device.bearers) {
       badges.push(`<span class="cap-badge bg-secondary" title="${b === "BR/EDR" ? "Classic Bluetooth" : "Bluetooth Low Energy"}">${escapeHtml(b)}</span>`);
     }
   }
-  // Audio profile badges — show selected profile with checkmark
+  // Audio profile badges — checkmarks only when connected
   const uuids = (device.uuids || []).map((u) => u.toLowerCase());
   const activeProfile = device.audio_profile || "a2dp";
   const hasA2dpSink = uuids.some((u) => u.startsWith("0000110b"));
   const hasHfpHsp = uuids.some((u) => u.startsWith("0000111e") || u.startsWith("00001108"));
   if (hasA2dpSink) {
-    if (window._hfpSwitchingEnabled && activeProfile !== "a2dp") {
+    if (!connected) {
+      badges.push('<span class="cap-badge bg-info" title="A2DP stereo audio available">A2DP</span>');
+    } else if (window._hfpSwitchingEnabled && activeProfile !== "a2dp") {
       badges.push('<span class="cap-badge bg-info" title="A2DP stereo audio available">A2DP</span>');
     } else {
       badges.push('<span class="cap-badge bg-success" title="A2DP stereo audio (active)">A2DP \u2713</span>');
     }
   }
-  if (window._hfpSwitchingEnabled && hasHfpHsp) {
-    if (activeProfile === "hfp") {
+  if (hasHfpHsp) {
+    if (!connected) {
+      badges.push('<span class="cap-badge bg-info" title="Hands-Free / Headset Profile available">HFP</span>');
+    } else if (window._hfpSwitchingEnabled && activeProfile === "hfp") {
       badges.push('<span class="cap-badge bg-success" title="HFP/HSP mono + mic (active)">HFP \u2713</span>');
-    } else {
+    } else if (window._hfpSwitchingEnabled) {
       badges.push('<span class="cap-badge bg-info" title="Hands-Free / Headset Profile available">HFP</span>');
     }
   }
   // AVRCP
   const hasAvrcp = uuids.some((u) => u.startsWith("0000110c") || u.startsWith("0000110e"));
   if (hasAvrcp) {
-    if (device.avrcp_enabled !== false) {
+    if (!connected) {
+      badges.push('<span class="cap-badge bg-info" title="AVRCP media control available">AVRCP</span>');
+    } else if (device.avrcp_enabled !== false) {
       badges.push('<span class="cap-badge bg-success" title="Media buttons enabled">AVRCP \u2713</span>');
     } else {
       badges.push('<span class="cap-badge bg-warning text-dark" title="Media buttons disabled">AVRCP \u2717</span>');
