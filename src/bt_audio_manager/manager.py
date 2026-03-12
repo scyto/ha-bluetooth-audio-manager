@@ -1658,7 +1658,7 @@ class BluetoothAudioManager:
         self._rssi_timestamp[address] = time.time()
         # Broadcast only on significant change (>=3 dBm) or None→value transition
         if prev is None or abs(rssi - prev) >= 3:
-            asyncio.ensure_future(self._broadcast_devices())
+            asyncio.ensure_future(self._broadcast_devices(cod_fallback=self._scanning))
 
     async def _rssi_refresh_loop(self) -> None:
         """Periodically run silent discovery bursts to refresh RSSI.
