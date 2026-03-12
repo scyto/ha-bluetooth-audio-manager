@@ -102,7 +102,7 @@ class BluetoothAudioManager:
         self._rssi_poll_task: asyncio.Task | None = None
         self._connected_rssi: dict[str, int | None] = {}  # addr → last RSSI
         self._rssi_timestamp: dict[str, float] = {}  # addr → time.time() of last RSSI update
-        self._last_rssi_refresh: float = 0.0  # time.time() when last refresh burst ended
+        self._last_rssi_refresh_start: float = 0.0  # time.time() when last refresh burst started
         self._last_sink_snapshot: str = ""
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
@@ -812,6 +812,7 @@ class BluetoothAudioManager:
             await self.adapter.stop_discovery()
 
         self._scanning = True
+        self._last_rssi_refresh_start = time.time()
         self.event_bus.emit("scan_started", {"duration": duration})
         self._scan_task = asyncio.create_task(self._run_scan(duration))
 
@@ -829,7 +830,6 @@ class BluetoothAudioManager:
             return
         finally:
             self._scanning = False
-            self._last_rssi_refresh = time.time()
             self._cancel_scan_debounce()
             try:
                 await self.adapter.stop_discovery()
@@ -1339,9 +1339,9 @@ class BluetoothAudioManager:
             # Mark RSSI as stale if the device didn't respond during
             # the most recent refresh burst (BR/EDR-only devices can't
             # be measured while connected — show grey instead of green).
-            if rssi is not None and self._last_rssi_refresh > 0:
+            if rssi is not None and self._last_rssi_refresh_start > 0:
                 ts = self._rssi_timestamp.get(addr, 0)
-                device["rssi_stale"] = ts < self._last_rssi_refresh
+                device["rssi_stale"] = ts < self._last_rssi_refresh_start
             else:
                 device["rssi_stale"] = False
 
@@ -1685,12 +1685,12 @@ class BluetoothAudioManager:
                     self._rssi_cleanup()
                     continue
 
+                self._last_rssi_refresh_start = time.time()
                 try:
                     await self.adapter.start_rssi_refresh()
                     await asyncio.sleep(self.RSSI_REFRESH_DURATION)
                 finally:
                     await self.adapter.stop_rssi_refresh()
-                    self._last_rssi_refresh = time.time()
                     # Trim (don't clear) logged-device cache to prevent
                     # unbounded growth from rotating BLE addresses while
                     # preserving entries so get_audio_devices() doesn't
