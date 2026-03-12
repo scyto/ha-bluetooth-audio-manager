@@ -163,6 +163,9 @@ The `BluetoothAudioManager` class is the central orchestrator. It coordinates al
 | `_pending_suspends` | `dict[str, Task]` | Delayed power-save suspend timers |
 | `_auto_disconnect_tasks` | `dict[str, Task]` | Delayed auto-disconnect timers |
 | `_device_lifecycle_locks` | `dict[str, Lock]` | Per-device serialization locks |
+| `_connected_rssi` | `dict[str, int]` | Cached RSSI (dBm) per device address |
+| `_rssi_timestamp` | `dict[str, float]` | When each RSSI reading was captured |
+| `_last_rssi_refresh_start` | `float` | Start time of last RSSI refresh burst |
 
 ### Device Connection Flow
 
@@ -191,6 +194,32 @@ Every 5 seconds, the manager queries PulseAudio for all Bluetooth sinks and trac
 - **running → idle**: Audio stopped. Start power-save delay timer or auto-disconnect timer based on idle mode.
 
 Only broadcasts `devices_changed` events when the snapshot actually differs from the previous poll.
+
+### RSSI / Signal Strength
+
+BlueZ only emits RSSI values during active discovery scanning. The manager captures RSSI from two sources:
+
+1. **`PropertiesChanged` signals** — BlueZ fires these for already-known devices during discovery. Handled by the D-Bus message filter.
+2. **`InterfacesAdded` signals** — BlueZ fires these for newly discovered devices. The initial RSSI is extracted from the device properties in the signal body.
+
+**Silent refresh bursts:** Every 60 seconds, a background loop starts a short (5-second) discovery burst without setting `_scanning=True`. This triggers RSSI updates for nearby devices without emitting UI scan events. Only RSSI for connected or managed devices is cached during silent bursts to avoid churn from random BLE devices.
+
+**Stale RSSI detection:** Each RSSI reading is timestamped. After each refresh burst, devices whose RSSI timestamp predates the burst start are marked `rssi_stale=True`. The frontend renders stale readings in grey instead of the normal signal-quality color.
+
+**BR/EDR vs dual-mode devices:** Dual-mode devices (BLE + BR/EDR, e.g. Bose speakers) continue to emit BLE advertisements while connected, so their RSSI is refreshed every cycle. BR/EDR-only devices (e.g. Jabra speakerphones) stop responding to inquiry scans once connected — their RSSI is captured once during discovery and marked stale thereafter.
+
+**Signal quality classification:**
+
+| RSSI (dBm)  | Quality   | UI Color |
+| ----------- | --------- | -------- |
+| > −50       | Excellent | Green    |
+| −50 to −65  | Good      | Green    |
+| −65 to −75  | Fair      | Yellow   |
+| −75 to −85  | Weak      | Red      |
+| ≤ −85       | Very weak | Red      |
+| (stale)     | Any       | Grey     |
+
+Significant-change debouncing (≥3 dBm delta) prevents excessive `devices_changed` broadcasts from minor RSSI fluctuations.
 
 ---
 
@@ -615,6 +644,10 @@ Ports 6600–6609 allow a maximum of 10 simultaneous MPD instances. Devices them
 ### PA Profile Name Variance
 
 PulseAudio profile names for HFP differ between backends (native vs oFono). The app tries both known names plus hyphenated variants, but an unknown backend could require updates to the profile name list.
+
+### BR/EDR-Only Devices: No Live RSSI
+
+BlueZ only provides RSSI from radio scan responses (inquiry or BLE advertisements). BR/EDR-only devices (e.g. Jabra speakerphones, older speakers without BLE) stop responding to inquiry scans once connected. Their RSSI is captured once at discovery time and cannot be refreshed while connected. The UI shows these readings in grey to indicate they are stale. Dual-mode devices (BLE + BR/EDR) continue advertising and get live RSSI updates every 60 seconds.
 
 ### AVRCP MediaPlayer Discovery Timing
 

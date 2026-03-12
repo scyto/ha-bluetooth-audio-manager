@@ -66,6 +66,14 @@ Discovered devices appear incrementally as the scan progresses.
   gray *Discovered*
 - **Capability badges** (connected devices) — BR/EDR, A2DP, HFP, AVRCP
   with checkmarks (e.g. "A2DP ✓") for active profiles
+- **Signal strength** (connected devices) — RSSI in dBm with a color-coded
+  signal icon. Colors indicate live vs stale readings:
+  - **Green** — excellent or good signal, actively updated
+  - **Yellow** — fair signal, actively updated
+  - **Red** — weak or very weak signal, actively updated (audio may stutter)
+  - **Grey** — last known signal from discovery time. The device is BR/EDR-only
+    (Classic Bluetooth) and cannot be measured while connected. Dual-mode
+    devices (BLE + BR/EDR) refresh automatically every 60 seconds.
 - **Audio sink info** (connected devices) — sample rate, channels, codec,
   volume percentage, and streaming state (Streaming / Idle / Suspended)
 - **Feature badges** — enabled per-device features: Power Save, Stay Awake,
