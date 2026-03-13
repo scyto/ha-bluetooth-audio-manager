@@ -1,0 +1,27 @@
+name: Link Device Issues to Megathread
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  link-to-megathread:
+    if: contains(github.event.issue.labels.*.name, 'Device Issue')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Add as sub-issue of megathread (#39)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api graphql -f query='
+            mutation {
+              addSubIssue(input: {
+                issueId: "I_kwDORMlHL87qJGEO",
+                subIssueId: "${{ github.event.issue.node_id }}"
+              }) {
+                issue { id }
+                subIssue { id }
+              }
+            }'

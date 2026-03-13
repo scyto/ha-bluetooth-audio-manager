@@ -1,0 +1,10 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Start the Bluetooth Audio Manager service
+# ==============================================================================
+
+bashio::log.info "Starting Bluetooth Audio Manager v${BUILD_VERSION:-unknown} (${BUILD_SHA:-no-sha})..."
+bashio::log.info "PYTHONPATH=${PYTHONPATH} | PULSE_SERVER=${PULSE_SERVER:-<unset>}"
+
+exec python3 -m bt_audio_manager

@@ -1,0 +1,16 @@
+configuration:
+  log_level:
+    name: Log Level
+    description: Logging verbosity for the app.
+  auto_reconnect:
+    name: Auto Reconnect
+    description: Automatically reconnect to paired devices when they become available.
+  reconnect_interval_seconds:
+    name: Reconnect Interval
+    description: Initial delay in seconds between reconnection attempts.
+  reconnect_max_backoff_seconds:
+    name: Max Reconnect Backoff
+    description: Maximum delay in seconds between reconnection attempts (exponential backoff cap).
+  scan_duration_seconds:
+    name: Scan Duration
+    description: How long to scan for discoverable Bluetooth audio devices (in seconds).

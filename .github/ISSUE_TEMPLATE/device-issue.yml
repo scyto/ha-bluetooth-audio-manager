@@ -1,0 +1,102 @@
+name: Device Discovery / Pairing Issue
+description: Report a problem with Bluetooth device discovery, pairing, connection, button issues — not for general add-on bugs
+title: "Device: "
+labels: ["Device Issue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template is for issues with a **specific Bluetooth device** — discovery, pairing, connection, audio playback, or stability.
+        For general add-on bugs (UI, settings, crashes) use the **Bug Report** template instead.
+
+        **Before opening an issue:**
+        Check the [Device Issues Megathread](https://github.com/scyto/ha-bluetooth-audio-manager/issues/39) to see if your device is already listed.
+        Please attach **full logs** — issues without logs may be closed.
+
+  - type: input
+    id: device-name
+    attributes:
+      label: Device name & model
+      placeholder: e.g. JBL Flip 6, Sony WH-1000XM5
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device-type
+    attributes:
+      label: Device type
+      options:
+        - Speaker
+        - Headphones
+        - Soundbar
+        - Car audio
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: bt-adapter
+    attributes:
+      label: Bluetooth adapter
+      placeholder: e.g. built-in / TP-Link UB500
+    validations:
+      required: true
+
+  - type: input
+    id: haos-version
+    attributes:
+      label: HAOS version
+      placeholder: e.g. 14.1
+    validations:
+      required: true
+
+  - type: input
+    id: addon-version
+    attributes:
+      label: App version
+      placeholder: e.g. 0.3.5
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      placeholder: e.g. RPi 4, Home Assistant Green, Yellow, x86 NUC
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: diagnostics
+    attributes:
+      label: What doesn't work (check all that apply)
+      options:
+        - label: Device is not discovered
+        - label: Pairing fails
+        - label: No audio after pairing
+        - label: Disconnects frequently
+        - label: Device buttons kill connection
+        - label: Reconnect fails
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: Issue
+      description: Brief description of the problem
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+      description: Any workaround found, or "None known"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste full add-on logs here. Go to Settings → Add-ons → Bluetooth Audio Manager → Log tab.
+      render: text
+    validations:
+      required: true
