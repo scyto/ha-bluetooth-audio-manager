@@ -1,0 +1,106 @@
+#include <tunables/global>
+
+profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Capabilities (minimum for Bluetooth adapter control)
+  capability net_admin,
+  capability net_raw,
+
+  # S6-overlay and shell — rix needed because /init is a shell script
+  # that /bin/sh must read to interpret (matches dnsmasq, Argon One apps)
+  /init rix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/lib/** ix,
+  /run/{s6,s6-rc*,service}/** rwix,
+  /run/** rwk,
+  /package/** rix,
+  /command/** rix,
+  /etc/s6-overlay/** rix,
+  /etc/cont-init.d/** rwix,
+
+  # D-Bus socket (required for BlueZ communication)
+  /run/dbus/system_bus_socket rw,
+
+  # D-Bus messaging — BlueZ calls methods on our exported MPRIS
+  # player and pairing agent using our dynamic unique bus name
+  # (:1.xxx), which cannot be allowlisted by peer name.  Broad
+  # send/receive on the system bus is the standard pattern for
+  # HA apps that interact with BlueZ (cf. dnsmasq, Argon One).
+  dbus send    bus=system,
+  dbus receive bus=system,
+
+  # PulseAudio (HAOS mounts socket at /run/audio/ when audio: true)
+  /run/audio/ r,
+  /run/audio/** rw,
+  /run/pulse/** rw,
+  /etc/pulse/** r,
+  /tmp/pulse-*/** rw,
+  /root/.config/pulse/ rwk,
+  /root/.config/pulse/** rwk,
+
+  # Persistent data storage (k = flock, needed by MPD state/database)
+  /data/** rwk,
+  /data/ r,
+
+  # Persistent config storage (survives reinstall via addon_config)
+  /config/** rwk,
+  /config/ r,
+
+  # Temporary files (k = flock, needed by MPD state/database)
+  /tmp/** rwk,
+
+  # Python runtime
+  /usr/lib/python3*/** r,
+  /usr/bin/python3* ix,
+
+  # Application code (PYTHONPATH=/usr/src)
+  # /usr/src/ r, is needed separately — /** covers children but not the
+  # directory itself, and Python's import needs to scandir() the parent.
+  /usr/src/ r,
+  /usr/src/** r,
+
+  # System libraries
+  /usr/lib/libpulse* r,
+  /usr/lib/libbluetooth* r,
+  /usr/lib/libdbus* r,
+  /lib/** r,
+
+  # Shared data (ICU unicode data required by MPD, MIME types)
+  /usr/share/** r,
+
+  # SSL certificates (MPD curl plugin needs these for HTTPS TTS URLs)
+  /etc/ssl/** r,
+
+  # DNS resolution (required for Supervisor API calls via hostname)
+  /etc/resolv.conf r,
+  /etc/nsswitch.conf r,
+  /etc/hosts r,
+  /etc/host.conf r,
+
+  # Read-only system info
+  /proc/*/status r,
+  /sys/class/bluetooth/** r,
+  /sys/devices/**/bluetooth/** r,
+  # Parent USB device attributes (idVendor, idProduct, manufacturer, product)
+  # needed to identify which USB Bluetooth adapter is which
+  /sys/devices/**/idVendor r,
+  /sys/devices/**/idProduct r,
+  /sys/devices/**/manufacturer r,
+  /sys/devices/**/product r,
+
+  # Network (ingress web UI, PulseAudio, D-Bus)
+  network inet stream,
+  network inet dgram,
+  network unix stream,
+  network unix dgram,
+  network bluetooth,
+
+  # Block raw HCI character-device access — all Bluetooth configuration
+  # MUST go through BlueZ D-Bus to avoid interfering with HA's passive
+  # BLE scanning and other integrations.
+  deny /dev/hci* rw,
+  deny /sys/kernel/** rw,
+  deny /proc/sys/** w,
+}

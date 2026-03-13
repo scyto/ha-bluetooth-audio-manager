@@ -1,0 +1,906 @@
+/* Bluetooth Audio Manager — Design tokens over Bootstrap 5.3 */
+
+/* ============================================
+   CSS Variables & Theme Setup
+   ============================================ */
+
+:root {
+  --accent-primary: #3b82f6;
+  --accent-primary-hover: #2563eb;
+  --accent-success: #10b981;
+  --accent-warning: #f59e0b;
+  --accent-danger: #ef4444;
+
+  --header-gradient: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+  --header-text: #f8fafc;
+  --header-text-muted: rgba(248, 250, 252, 0.7);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --shadow-card-hover: 0 8px 25px -5px rgba(0, 0, 0, 0.15), 0 4px 10px -4px rgba(0, 0, 0, 0.1);
+
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+}
+
+[data-bs-theme="dark"] {
+  --header-gradient: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -2px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
+  --shadow-card-hover: 0 8px 25px -5px rgba(0, 0, 0, 0.5), 0 4px 10px -4px rgba(0, 0, 0, 0.4);
+}
+
+/* ============================================
+   Base Styles
+   ============================================ */
+
+body {
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* ============================================
+   Base Components
+   ============================================ */
+
+.card {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-base);
+}
+
+.btn {
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.btn-sm {
+  font-size: 0.8125rem;
+  padding: 0.375rem 0.625rem;
+}
+
+.btn-outline-secondary {
+  border-color: var(--bs-border-color);
+}
+
+.badge {
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+}
+
+.form-control, .form-select {
+  border-radius: var(--radius-sm);
+  border-color: var(--bs-border-color);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.form-control:focus, .form-select:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.spinner-border {
+  color: var(--accent-primary);
+}
+
+/* ============================================
+   Toast z-index (moved from inline style)
+   ============================================ */
+
+.toast-z { z-index: 1090; }
+
+/* ============================================
+   Header
+   ============================================ */
+
+.app-header {
+  background: var(--header-gradient);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.app-header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--header-text);
+}
+
+.app-header p {
+  color: var(--header-text-muted);
+  font-size: 0.875rem;
+}
+
+.app-header .btn-outline-light {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--header-text);
+  font-weight: 500;
+  font-size: 0.875rem;
+  padding: 0.5rem 1rem;
+  transition: all var(--transition-fast);
+}
+
+.app-header .btn-outline-light:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+.app-header .btn-outline-light:focus,
+.app-header .btn-outline-light:active,
+.app-header .btn-outline-light.show {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+  box-shadow: none;
+}
+
+.app-header .dropdown-menu {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.5rem;
+}
+
+.app-header .dropdown-item {
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  transition: background var(--transition-fast);
+}
+
+/* Build info pill */
+.build-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.build-label {
+  color: var(--header-text-muted);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.build-version {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  color: var(--header-text);
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.app-header .btn-light {
+  background: #fff;
+  color: #1e293b;
+  font-weight: 500;
+  font-size: 0.875rem;
+  padding: 0.5rem 1rem;
+  border: none;
+  transition: all var(--transition-fast);
+}
+
+.app-header .btn-light:hover {
+  background: #f1f5f9;
+  transform: translateY(-1px);
+}
+
+/* Server unavailable — dims device cards and disables interaction */
+.server-unavailable .device-card {
+  opacity: 0.45;
+  pointer-events: none;
+  filter: grayscale(40%);
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+
+/* ============================================
+   Alert overrides (borderless, translucent)
+   ============================================ */
+
+.alert {
+  border-radius: var(--radius-md);
+  border: none;
+  font-size: 0.9375rem;
+}
+
+.alert-info {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-success {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-warning {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--bs-body-color);
+}
+
+.alert-danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--bs-body-color);
+}
+
+/* ============================================
+   Devices Layout (Add-Device in left margin)
+   ============================================ */
+
+.devices-layout {
+  position: relative;
+}
+
+/* Default: horizontal pill above the grid */
+#add-device-wrapper {
+  margin-bottom: 0.75rem;
+}
+
+.add-device-tile {
+  border: 2px dashed var(--bs-border-color);
+  cursor: pointer;
+  display: inline-block;
+  transition: transform var(--transition-base), border-color var(--transition-base);
+}
+
+.add-device-tile .card-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  color: var(--bs-secondary-color);
+  font-weight: 500;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.add-device-tile .card-body i {
+  font-size: 1rem;
+}
+
+.add-device-tile:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent-primary);
+}
+
+.add-device-tile:hover .card-body {
+  color: var(--accent-primary);
+}
+
+.add-device-tile.scanning {
+  border-color: var(--accent-primary);
+  animation: scan-pulse 2s ease-in-out infinite;
+}
+
+.add-device-tile.scanning .card-body {
+  color: var(--accent-primary);
+}
+
+@keyframes scan-pulse {
+  0%, 100% { border-color: var(--accent-primary); opacity: 1; }
+  50% { border-color: var(--bs-border-color); opacity: 0.7; }
+}
+
+/* Wide screens: vertical button in the left margin, stretched to grid height */
+@media (min-width: 1440px) {
+  .devices-layout {
+    min-height: 120px;  /* ensure wrapper has height even when grid is empty */
+  }
+
+  #add-device-wrapper {
+    position: absolute;
+    right: calc(100% + 0.75rem);
+    top: 1rem;   /* match Bootstrap g-3 gutter-y so top aligns with first card */
+    bottom: 0;
+    margin-bottom: 0;
+  }
+
+  .add-device-tile {
+    display: flex;
+    height: 100%;
+  }
+
+  .add-device-tile .card-body {
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.75rem 0.5rem;
+    font-size: 0.75rem;
+    white-space: normal;
+    text-align: center;
+  }
+}
+
+/* ============================================
+   Device Cards
+   ============================================ */
+
+.device-card {
+  transition: transform var(--transition-base), box-shadow var(--transition-base);
+}
+
+.device-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.device-card.device-stale {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+
+.device-card .card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: calc(100% - 130px);
+}
+
+/* Kebab dropdown on device cards */
+.device-card .dropdown .btn-link {
+  opacity: 0.4;
+  transition: opacity var(--transition-fast);
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.device-card:hover .dropdown .btn-link {
+  opacity: 0.7;
+}
+
+.device-card .dropdown .btn-link:hover {
+  opacity: 1;
+}
+
+.device-card .dropdown-menu {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.5rem;
+  min-width: 160px;
+}
+
+.device-card .dropdown-item {
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  transition: background var(--transition-fast);
+}
+
+/* Keep-alive heartbeat indicator */
+.keep-alive-indicator {
+  font-size: 0.75rem;
+  animation: heartbeat 1.5s ease-in-out infinite;
+}
+
+@keyframes heartbeat {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.device-card .card-body {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Unified card slot layout ---- */
+
+/* Row 1: device name + status badge + kebab */
+.device-slot-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  min-height: 1.75rem;       /* consistent even without kebab */
+  margin-bottom: 0.375rem;
+}
+
+/* Row 2: capability badges (BR/EDR, A2DP, HFP, AVRCP) */
+.device-slot-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-height: 1.35rem;        /* one badge row height */
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+/* Row 3: MAC address + RSSI + adapter */
+.device-slot-meta {
+  min-height: 1.125rem;
+  margin-bottom: 0.25rem;
+}
+
+/* Row 4: profiles / CoD warning (fixed 2-line slot) */
+.device-slot-profiles {
+  line-height: 1.25;
+  min-height: 2.5em;
+  max-height: 2.5em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  margin-bottom: 0.25rem;
+}
+
+/* Row 5: signal warning (conditional, no fixed height) */
+.device-slot-warning {
+  margin-bottom: 0.25rem;
+}
+
+/* Row 6: sink audio info (conditional, no fixed height) */
+.device-slot-sink {
+  margin-bottom: 0.25rem;
+}
+
+/* Row 7: feature badges (conditional, no fixed height) */
+.device-slot-features {
+  margin-top: 0.25rem;
+}
+
+.device-meta-text {
+  font-size: 0.75rem;
+}
+
+/* Container minimum height to prevent collapse during loading */
+#devices-grid {
+  min-height: 200px;
+}
+
+.device-card .device-actions {
+  margin-top: auto;
+  padding-top: 0.5rem;
+  text-align: center;
+}
+
+/* Status badges */
+.badge-connected { background-color: var(--accent-success) !important; }
+.badge-paired { background-color: var(--accent-warning) !important; }
+.badge-discovered { background-color: var(--bs-secondary) !important; }
+
+.device-card .badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.25rem 0.5rem;
+  min-width: 70px;
+  text-align: center;
+}
+
+/* Active capability badges on device cards */
+.cap-badge {
+  font-size: 0.65rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  display: inline-block;
+  line-height: 1.2;
+  min-width: unset;
+}
+
+/* Feature indicator badges in action row */
+.feature-badge {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid;
+  background: transparent;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+/* ============================================
+   Events Log
+   ============================================ */
+
+.events-log-container {
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.event-entry {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--bs-border-color-translucent);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.event-entry:hover {
+  background: var(--bs-tertiary-bg);
+}
+
+.event-time {
+  color: var(--bs-secondary-color);
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+}
+
+.event-type {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.625rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  min-width: 60px;
+  text-align: center;
+}
+
+.event-type.mpris {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-warning);
+}
+
+.event-type.avrcp {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-primary);
+}
+
+.event-type.transport {
+  background: rgba(20, 184, 166, 0.15);
+  color: #14b8a6;
+}
+
+.event-content {
+  flex: 1;
+  word-break: break-word;
+}
+
+/* ============================================
+   Logs Viewer
+   ============================================ */
+
+.subview-header,
+.logs-toolbar {
+  z-index: 9;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.logs-container {
+  height: calc(100vh - 200px);
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 0;
+}
+
+.log-entry {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--bs-border-color-translucent);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  transition: background var(--transition-fast);
+}
+
+.log-entry:hover {
+  background: var(--bs-tertiary-bg);
+}
+
+.log-entry.new {
+  animation: log-highlight 2s ease-out;
+}
+
+@keyframes log-highlight {
+  from { background: rgba(59, 130, 246, 0.15); }
+  to { background: transparent; }
+}
+
+.log-timestamp {
+  color: var(--bs-secondary-color);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 65px;
+  font-size: 0.6875rem;
+}
+
+.log-level {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.625rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  min-width: 60px;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.log-level.debug {
+  background: var(--bs-secondary-bg);
+  color: var(--bs-secondary-color);
+}
+
+.log-level.info {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-primary);
+}
+
+.log-level.warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-warning);
+}
+
+.log-level.error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-danger);
+}
+
+.log-logger {
+  color: var(--accent-primary);
+  font-weight: 600;
+  flex-shrink: 0;
+  min-width: 55px;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.log-message {
+  flex: 1;
+  word-break: break-word;
+  color: var(--bs-body-color);
+}
+
+/* ============================================
+   Empty State
+   ============================================ */
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 2rem;
+  color: var(--bs-secondary-color);
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-state i {
+  font-size: 3.5rem;
+  margin-bottom: 1rem;
+  opacity: 0.4;
+}
+
+.empty-state h5 {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--bs-body-color);
+}
+
+.empty-state p {
+  font-size: 0.9375rem;
+  max-width: 300px;
+  margin: 0 auto;
+}
+
+/* ============================================
+   Toast Notifications
+   ============================================ */
+
+.toast-container {
+  width: 100%;
+  max-width: 400px;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: all;
+  background: var(--bs-body-bg);
+  border: 1px solid rgba(var(--bs-body-color-rgb), 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: var(--radius-md);
+  min-width: 250px;
+  max-width: 100%;
+  margin-bottom: 0.5rem;
+}
+
+.toast-header {
+  background: transparent;
+  border-bottom: 1px solid rgba(var(--bs-body-color-rgb), 0.1);
+  color: var(--bs-body-color);
+  padding: 0.5rem 0.75rem;
+}
+
+.toast-body {
+  padding: 0.75rem;
+  color: var(--bs-body-color);
+  font-size: 0.9375rem;
+}
+
+[data-bs-theme="dark"] .toast {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+/* ============================================
+   Adapter Cards (inside modal)
+   ============================================ */
+
+.adapter-card {
+  transition: transform var(--transition-base), box-shadow var(--transition-base);
+}
+
+.adapter-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+/* ============================================
+   Modal styling
+   ============================================ */
+
+.modal-content {
+  border: none;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.modal-header {
+  border-bottom: 1px solid var(--bs-border-color);
+  padding: 1rem 1.25rem;
+}
+
+.modal-title {
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.modal-body {
+  padding: 1.25rem;
+}
+
+.modal-footer {
+  border-top: 1px solid var(--bs-border-color);
+  padding: 1rem 1.25rem;
+}
+
+/* ============================================
+   Footer
+   ============================================ */
+
+.app-footer {
+  font-size: 0.75rem;
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+
+@media (max-width: 768px) {
+  .app-header {
+    padding: 1rem 0 !important;
+  }
+
+  .app-header h1 {
+    font-size: 1.25rem;
+  }
+
+  .app-header .col-auto {
+    margin-top: 0.75rem;
+    width: 100%;
+  }
+
+  .app-header .btn {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+  }
+
+  .logs-container {
+    height: calc(100vh - 260px);
+    font-size: 11px;
+  }
+
+  .log-entry {
+    padding: 0.375rem 0.5rem;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .log-timestamp {
+    font-size: 0.625rem;
+    min-width: 50px;
+  }
+
+  .log-level {
+    font-size: 0.5625rem;
+    min-width: 50px;
+  }
+
+  .log-message {
+    flex: 1 1 100%;
+    margin-top: 0.25rem;
+    font-size: 0.6875rem;
+  }
+
+  /* Touch-friendly targets (44px minimum per Apple HIG) */
+  .btn-sm {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .dropdown-item {
+    padding: 0.75rem 1rem;
+  }
+}
+
+@media (max-width: 576px) {
+  .toast-container {
+    width: calc(100% - 2rem);
+    left: 1rem !important;
+    transform: none !important;
+  }
+
+  .toast {
+    min-width: 100%;
+  }
+}
+
+/* ============================================
+   Scrollbar
+   ============================================ */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bs-secondary-bg);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--bs-tertiary-color);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bs-secondary-bg) transparent;
+}
+
+/* ============================================
+   Touch optimization
+   ============================================ */
+
+button, input, select, textarea,
+.btn, .form-control, .form-select, .form-check-input {
+  touch-action: manipulation;
+}
