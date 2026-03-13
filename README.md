@@ -107,3 +107,7 @@ Configuration options and per-device settings are documented in the
 - [Report a Device Issue](https://github.com/scyto/ha-bluetooth-audio-manager/issues/new?template=device-issue.yml)
 - [All Issues](https://github.com/scyto/ha-bluetooth-audio-manager/issues)
 - [Sponsor this project](https://github.com/sponsors/scyto)
+
+## About This Project
+
+This project was developed with the assistance of AI (Claude by Anthropic) via Claude Code. A human provided direction, reviewed outputs, and made decisions, but the implementation was AI-assisted.
