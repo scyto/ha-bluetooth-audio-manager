@@ -1,0 +1,45 @@
+{
+  "$schema": "https://wvw.dev/apps.schema.json",
+  "store": {
+    "name": "scyto",
+    "developer": "scyto",
+    "tagline": "Home Assistant add-ons for smart home audio",
+    "github": "https://github.com/scyto"
+  },
+  "categories": [
+    { "id": "utilities", "name": "Utilities" },
+    { "id": "music", "name": "Music" }
+  ],
+  "apps": [
+    {
+      "id": "ha-bluetooth-audio-manager",
+      "name": "Bluetooth Audio Manager",
+      "subtitle": "A2DP Bluetooth audio for Home Assistant",
+      "description": "Home Assistant add-on for managing Bluetooth audio device connections (A2DP) with persistent pairing, auto-reconnect, and AppArmor security.",
+      "longDescription": "Bluetooth Audio Manager is a Home Assistant add-on that turns your HA instance into a Bluetooth audio hub. It supports A2DP streaming with persistent device pairing, automatic reconnection, RSSI-based device monitoring, and full AppArmor security. Manage everything through an integrated ingress UI with real-time WebSocket updates. Includes optional per-device MPD instances for TTS and media playback automations.",
+      "icon": "https://raw.githubusercontent.com/scyto/ha-bluetooth-audio-manager/main/bluetooth_audio_manager/icon.png",
+      "category": ["utilities", "music"],
+      "platform": "Docker",
+      "price": "Free",
+      "github": "https://github.com/scyto/ha-bluetooth-audio-manager",
+      "language": "Python",
+      "requirements": "Home Assistant OS or Supervised installation with Bluetooth adapter",
+      "features": [
+        "One-click scan, pair, connect, and disconnect from the web UI",
+        "Auto-reconnect with configurable exponential backoff",
+        "Per-device idle modes: Power Save, Stay Awake, or Auto-Disconnect",
+        "Per-device MPD instances exposed as media_player entities for TTS",
+        "AVRCP media buttons for hardware volume and playback control",
+        "Multi-adapter support with friendly USB device names",
+        "Real-time Events view and filterable Logs viewer",
+        "Dark mode with automatic system theme detection",
+        "Custom AppArmor profile enforcing least-privilege access"
+      ],
+      "screenshots": [
+        "https://github.com/user-attachments/assets/a1dd24b9-9f99-4049-80fc-918e3a5f8909",
+        "https://github.com/user-attachments/assets/da5e60d5-69ef-41e2-8d8b-27af8fdac120",
+        "https://github.com/user-attachments/assets/64a12aae-c423-49a1-9e2e-48ff310dc9b0"
+      ]
+    }
+  ]
+}
