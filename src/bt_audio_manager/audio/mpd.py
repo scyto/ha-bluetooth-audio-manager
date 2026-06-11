@@ -125,6 +125,12 @@ class MPDManager:
                 type    "pulse"
                 name    "{speaker_name}"
                 sink    "{sink}"
+                # software mixer is always "online", so MPD always reports a
+                # "volume" field — even when stopped. The pulse mixer (MPD's
+                # default for this plugin) only reports volume while a
+                # sink-input exists (i.e. during playback), so HA's MPD
+                # integration would hide the volume slider whenever idle. (#274)
+                mixer_type    "software"
             }}
 
             input {{
