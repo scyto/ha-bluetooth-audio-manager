@@ -201,9 +201,9 @@ class PulseAudioManager:
                     await _pe.connect()
                 try:
                     retry_delay = 2  # reset on successful connection
-                    logger.info("PA event subscription started (sink events)")
-                    async for event in _pe.subscribe_events("sink", "server"):
-                        if event.t == "change" and self._pulse:
+                    logger.info("PA event subscription started (sink and sink-input events)")
+                    async for event in _pe.subscribe_events("sink", "sink_input", "server"):
+                        if event.facility == "sink" and event.t == "change" and self._pulse:
                             try:
                                 sink = await self._pulse.sink_info(event.index)
                                 if "bluez" in sink.name.lower():
@@ -228,8 +228,10 @@ class PulseAudioManager:
                                             self._idle_callback(sink.name)
                             except Exception as e:
                                 logger.debug("PA event handler error: %s", e)
-                        elif event.t in ("new", "remove"):
+                        elif event.facility == "sink" and event.t in ("new", "remove"):
                             logger.info("PA sink %s: index=%d", event.t, event.index)
+                        elif event.facility == "sink_input" and event.t == "new":
+                            await self._normalize_new_mpd_stream(event.index)
                 finally:
                     _pe.close()
             except asyncio.CancelledError:
@@ -538,6 +540,34 @@ class PulseAudioManager:
             logger.warning("Sink not found for resume: %s", sink_name)
         except Exception as e:
             logger.warning("Failed to resume sink %s: %s", sink_name, e)
+        return False
+
+    async def _normalize_new_mpd_stream(self, stream_index: int) -> bool:
+        """Set a newly-created MPD stream to full volume on a Bluetooth sink.
+
+        MPD uses a software mixer, so its PulseAudio stream must stay at full
+        volume. PulseAudio's ``module-stream-restore`` can otherwise restore
+        a stale per-role volume for ``media.role=music`` when the stream is
+        created, causing attenuation that MPD and Home Assistant cannot see.
+        """
+        if not self._pulse:
+            return False
+        try:
+            stream = await self._pulse.sink_input_info(stream_index)
+            props = getattr(stream, "proplist", {})
+            if (
+                props.get("application.name") != "Music Player Daemon"
+                or props.get("application.process.binary") != "mpd"
+            ):
+                return False
+            sink = await self._pulse.sink_info(stream.sink)
+            if not sink.name.lower().startswith("bluez_sink."):
+                return False
+            await self._pulse.volume_set_all_chans(stream, 1.0)
+            logger.info("MPD stream volume set to 100%% on %s", sink.name)
+            return True
+        except Exception as e:
+            logger.debug("Failed to normalize new MPD stream %d: %s", stream_index, e)
         return False
 
     async def set_sink_volume(self, sink_name: str, volume_pct: int) -> bool:
