@@ -215,15 +215,20 @@ class BluezAdapter:
 
             uuid_matched = bool(uuids.intersection(SINK_UUIDS))
 
-            # CoD fallback (scan-only): device advertises no UUIDs but
-            # has an audio-sink CoD (headphones, speaker, etc.).  These
-            # are budget BR/EDR devices that only expose profiles after
-            # pairing triggers SDP.  Gated to cod_fallback=True to avoid
-            # surfacing stale BlueZ cache entries as ghost devices.
+            # CoD fallback (scan-only): device doesn't match a known sink
+            # UUID but has an audio-sink CoD (headphones, speaker, etc.).
+            # Covers two cases: (a) budget BR/EDR devices that advertise
+            # no UUIDs at all until pairing triggers SDP, and (b) devices
+            # that advertise UUIDs, but only non-standard/vendor-specific
+            # ones (e.g. Anker Soundcore's proprietary PartyCast UUID)
+            # rather than the standard A2DP Sink UUID. In both cases the
+            # CoD alone is sufficient to identify the device as a
+            # speaker per the Bluetooth spec.  Gated to cod_fallback=True
+            # to avoid surfacing stale BlueZ cache entries as ghost
+            # devices.
             cod_matched = (
                 cod_fallback
                 and not uuid_matched
-                and not uuids
                 and is_cod_audio_sink(cod_raw)
             )
 
@@ -282,10 +287,13 @@ class BluezAdapter:
                 else:
                     state = "unpaired"
                 if cod_matched:
+                    uuid_note = (
+                        "UUIDs will resolve after pairing." if not uuids
+                        else f"non-standard UUIDs advertised: {sorted(uuids)}."
+                    )
                     logger.info(
-                        "Accepted device %s (%s) [%s] — CoD fallback %s. "
-                        "UUIDs will resolve after pairing.",
-                        name, addr, state, cod_str,
+                        "Accepted device %s (%s) [%s] — CoD fallback %s. %s",
+                        name, addr, state, cod_str, uuid_note,
                     )
                 else:
                     matched = sorted(uuids.intersection(SINK_UUIDS))
