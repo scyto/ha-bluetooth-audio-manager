@@ -1,0 +1,73 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/FUNDING.yml"
+      - "repository.json"
+      - "LICENSE"
+  pull_request:
+    branches:
+      - dev
+      - main
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/FUNDING.yml"
+      - "repository.json"
+      - "LICENSE"
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the python3 shipped in the HA base image (Alpine 3.20)
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docker/requirements.txt
+
+      - name: Install libpulse
+        # pulsectl dlopen()s libpulse.so.0 at import time, so anything
+        # importing bt_audio_manager.audio (or manager) needs it present.
+        run: sudo apt-get update && sudo apt-get install -y libpulse0
+
+      - name: Install dependencies
+        run: pip install -r docker/requirements.txt
+
+      - name: Byte-compile all sources
+        run: python -m compileall -q src tests
+
+      - name: Check every module imports
+        # Tests skip themselves when libpulse is missing so contributors on
+        # macOS aren't blocked; this step makes sure that never silently
+        # hides a broken import in CI.
+        env:
+          PYTHONPATH: src
+        run: |
+          python -c "
+          import importlib, pkgutil
+          import bt_audio_manager
+          for m in pkgutil.walk_packages(bt_audio_manager.__path__, 'bt_audio_manager.'):
+              importlib.import_module(m.name)
+              print('ok', m.name)
+          "
+
+      - name: Run unit tests
+        env:
+          PYTHONPATH: src
+        # -t . so the tests package __init__ runs (it silences add-on logging)
+        run: python -m unittest discover -s tests -t . -v
