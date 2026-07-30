@@ -2,6 +2,8 @@
 
 Status: **Planned** — backlog of tests to add on top of the suite introduced in PR #290. Each item is independently actionable; work top-down.
 
+Non-test backlog items live in [roadmap.md](roadmap.md).
+
 ## Constraints
 
 CI has no Bluetooth adapter, no D-Bus, and no PulseAudio server. Everything here is exercisable with plain data. Anything needing a live `org.bluez` object, a real PA connection, or an actual speaker stays a manual hardware check.
