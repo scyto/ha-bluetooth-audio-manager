@@ -170,6 +170,36 @@ class MPDManager:
         except Exception as e:
             logger.debug("Could not determine MPD version: %s", e)
 
+    def _daemon_env(self) -> dict[str, str]:
+        """Build the environment for the MPD subprocess.
+
+        Gives each MPD instance a private PulseAudio stream-restore entry.
+
+        MPD's pulse output plugin sets ``media.role=music`` on its stream
+        (it does its own ``setenv("PULSE_PROP_media.role", "music")``).
+        PulseAudio's ``module-stream-restore`` derives the key for its
+        saved per-stream volume from the proplist in a fixed order —
+        ``module-stream-restore.id``, then ``media.role``, then
+        application id/name (``pa_proplist_get_stream_group()``).  Role
+        wins, so every MPD instance would share the single
+        ``sink-input-by-media-role:music`` entry with every other
+        ``media.role=music`` client on HAOS's shared PulseAudio server:
+        HA's own players, Music Assistant, other add-ons.  Whatever
+        volume one of them last saved is then applied to our sink-input
+        at creation — invisible to both MPD and HA, because MPD's
+        software mixer is a separate layer from the PA stream volume.
+
+        Setting ``module-stream-restore.id`` per speaker takes precedence
+        over the role and isolates us from that shared entry.  libpulse
+        reads ``PULSE_PROP_<key>`` verbatim at context creation (key up
+        to the first '=', value is the rest, no unescaping), so the
+        hyphens in the key and the colons in the MAC are both safe.
+        (#285)
+        """
+        env = dict(os.environ)
+        env["PULSE_PROP_module-stream-restore.id"] = f"bt-audio-manager:{self._address}"
+        return env
+
     async def _start_daemon(self) -> None:
         """Start MPD in foreground mode as a subprocess."""
         await self._log_mpd_version()
@@ -177,6 +207,7 @@ class MPDManager:
             "mpd", "--no-daemon", "--stderr", self._conf_path,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            env=self._daemon_env(),
         )
         # Give MPD a moment to initialize
         await asyncio.sleep(0.5)
