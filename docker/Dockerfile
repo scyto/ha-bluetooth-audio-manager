@@ -14,7 +14,10 @@ RUN apk add --no-cache \
     dbus-libs \
     pulseaudio-utils \
     python3 \
-    py3-pip
+    py3-pip \
+    # PyYAML for the OpenAPI docs endpoint. From apk, not pip: PyPI has no
+    # musl wheel for armv7, and this image has no toolchain to build one.
+    py3-yaml
 
 COPY docker/requirements.txt /tmp/
 RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
