@@ -428,31 +428,35 @@ An `aiohttp` application running on port 8099, exposed through HA's ingress prox
 
 ### REST API (`web/api.py`)
 
-All endpoints are under `/api/`:
+All endpoints are under `/api/`. **The reference is the add-on's own Swagger UI at `/api/docs`** — reachable from the Settings menu in the UI, and complete with request/response schemas, validation rules, and working "Try it out" buttons. This document deliberately no longer lists the endpoints, so there is only one place to keep current.
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/health` | Health check (used by Supervisor watchdog) |
-| GET | `/api/info` | Version, adapter info |
-| GET | `/api/adapters` | List Bluetooth adapters |
-| POST | `/api/set-adapter` | Switch active adapter |
-| GET | `/api/devices` | List all devices with status |
-| POST | `/api/scan` | Start Bluetooth discovery |
-| GET | `/api/scan/status` | Check if scan is running |
-| POST | `/api/pair` | Pair a discovered device |
-| POST | `/api/connect` | Connect a paired device |
-| POST | `/api/disconnect` | Disconnect a device |
-| POST | `/api/forget` | Unpair and remove a device |
-| POST | `/api/force-reconnect` | Force disconnect + reconnect cycle |
-| PUT | `/api/devices/{addr}/settings` | Update per-device settings |
-| GET | `/api/settings` | Get app settings |
-| PUT | `/api/settings` | Update app settings |
-| POST | `/api/restart` | Restart add-on via Supervisor |
+The spec lives at `web/static/openapi.yaml` and is served as JSON at `/api/openapi.json`.
+
+**Why it is hand-written.** Every handler has the signature `(request: web.Request) -> web.Response`; the payload shapes only exist as statements inside the function bodies, so nothing can generate the spec by reflection the way Swashbuckle does for typed C# endpoints. `tests/test_openapi_spec.py` asserts a 1:1 match between the registered routes and the documented operations, so CI fails if an endpoint is added without documenting it — but it cannot detect a stale request or response body. See [roadmap.md](roadmap.md) for the deferred plan to generate the spec instead.
+
+**Ingress and the base URL.** Swagger UI builds "Try it out" URLs from `servers[0].url`, but behind ingress the app is mounted under an opaque per-session prefix. `/api/openapi.json` rewrites that field per request from the `X-Ingress-Path` header that ingress supplies. Swagger UI's assets are vendored under `web/static/swagger/` — no CDN, so the page works on an installation with no internet access.
 
 BlueZ D-Bus errors are mapped to user-friendly messages:
 - "Page Timeout" → "Device not responding. Make sure it is in pairing mode and nearby."
 - "In Progress" → "A pairing attempt is already in progress."
 - "Already Exists" → "Device is already paired."
+
+### Calling the API from Home Assistant
+
+The add-on is reachable from HA Core over the internal Supervisor network — **no `ports:` entry and no authentication token required**. The Supervisor sets the container hostname to the add-on slug with underscores replaced by hyphens, and registers it with its CoreDNS plugin, which HA Core resolves through.
+
+`GET /api/info` returns that hostname in its `hostname` field, so the add-on knows its own reachable address. The `/api/docs` page uses this to generate a ready-to-paste `rest_command:` block:
+
+```yaml
+rest_command:
+  bt_audio_connect:
+    url: "http://<repo-hash>-bluetooth-audio-manager:8099/api/connect"
+    method: post
+    content_type: "application/json"
+    payload: '{"address": "AA:BB:CC:DD:EE:FF"}'
+```
+
+This is the supported path for driving connections from automations when Auto Reconnect is deliberately off (see #281). Note the API is unauthenticated: that is acceptable on the Supervisor network, which is why the add-on must **not** grow a `ports:` entry — that would expose it to the LAN.
 
 ### WebSocket Events (`web/events.py`)
 

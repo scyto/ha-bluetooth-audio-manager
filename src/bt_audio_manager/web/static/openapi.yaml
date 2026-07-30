@@ -1,0 +1,1257 @@
+openapi: 3.0.3
+
+# ---------------------------------------------------------------------------
+# HAND-MAINTAINED SPEC.
+#
+# aiohttp handlers are all `(request: web.Request) -> web.Response`, so nothing
+# can derive this file from the code.  When you add, remove, or change an
+# endpoint in src/bt_audio_manager/web/api.py, update this file in the SAME
+# commit.  tests/test_openapi_spec.py fails CI when an endpoint is missing
+# here, but it cannot detect a stale request/response body — check those by
+# hand.
+#
+# See docs/roadmap.md for the deferred plan to generate this automatically.
+# ---------------------------------------------------------------------------
+
+info:
+  title: Bluetooth Audio Manager API
+  version: "1.0"
+  description: |
+    REST API for managing Bluetooth A2DP audio devices — discovery, pairing,
+    connection lifecycle, per-device audio settings, and diagnostics.
+
+    ## Calling this API from Home Assistant
+
+    Every endpoint below can be called from a Home Assistant automation. The
+    add-on is reachable from HA Core over the internal Supervisor network by
+    DNS name — **no `ports:` entry and no authentication token are required**.
+
+    The **"Home Assistant integration"** panel at the top of this page shows a
+    ready-to-paste `rest_command:` block with your installation's actual
+    hostname filled in.
+
+    ## Try it out
+
+    The **Try it out** buttons work directly from this page, including through
+    Home Assistant ingress — requests are sent to this add-on, against your
+    real Bluetooth hardware. Treat destructive operations (`/api/forget`,
+    `/api/restart`, `/api/set-adapter`) accordingly.
+
+    ## Real-time updates
+
+    This API is polling-friendly, but the UI is driven by a WebSocket at
+    `/api/ws`. OpenAPI cannot describe WebSockets; see the
+    `GET /api/ws` entry below for the message catalogue.
+  license:
+    name: Repository
+    url: https://github.com/scyto/ha-bluetooth-audio-manager
+
+servers:
+  # Rewritten per-request by GET /api/openapi.json from the X-Ingress-Path
+  # header so that "Try it out" works behind Home Assistant ingress.
+  - url: /
+
+tags:
+  - name: Status
+    description: Health, version, and combined state.
+  - name: Devices
+    description: Discovery, pairing, and connection lifecycle.
+  - name: Device settings
+    description: Per-device audio behaviour.
+  - name: Adapters
+    description: Bluetooth adapter selection.
+  - name: Audio
+    description: PulseAudio sinks.
+  - name: Settings
+    description: App-wide runtime settings.
+  - name: Diagnostics
+    description: Logs and MPRIS/AVRCP troubleshooting.
+  - name: Debug
+    description: >
+      Interactive AVRCP/MPRIS recovery actions. Intended for troubleshooting
+      with maintainers; these manipulate live profile state.
+  - name: Real-time
+    description: WebSocket stream.
+  - name: Documentation
+    description: This page and the spec behind it.
+
+paths:
+
+  # ---------------------------------------------------------------- Status --
+
+  /api/health:
+    get:
+      tags: [Status]
+      summary: Liveness check
+      description: >
+        Used by the Home Assistant watchdog and the Docker healthcheck.
+        Returns as soon as the web server is listening.
+      responses:
+        "200":
+          description: Server is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/info:
+    get:
+      tags: [Status]
+      summary: App version and adapter info
+      description: >
+        The `hostname` field is the add-on's DNS name on the Supervisor
+        network — this is the host to use when calling the API from a Home
+        Assistant `rest_command`.
+      responses:
+        "200":
+          description: App info.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    description: Build version, or `dev` for local runs.
+                    example: sha-ebff2f6
+                  adapter:
+                    type: string
+                    example: hci0
+                  adapter_path:
+                    type: string
+                    example: /org/bluez/hci0
+                  adapter_mac:
+                    type: string
+                    nullable: true
+                    description: Set only when the adapter is pinned by MAC.
+                    example: "AA:BB:CC:DD:EE:FF"
+                  hfp_switching_enabled:
+                    type: boolean
+                    description: False when SCO is unavailable, which hides the HFP profile option.
+                  hostname:
+                    type: string
+                    description: Container hostname; reachable from HA Core on port 8099.
+                    example: a1b2c3d4-bluetooth-audio-manager
+                  mpd_password_set:
+                    type: boolean
+
+  /api/state:
+    get:
+      tags: [Status]
+      summary: Combined state for polling
+      description: >
+        Returns devices, sinks, and recent MPRIS/AVRCP events in a single
+        request. Pass the `ts` of the last event you saw to receive only newer
+        ones. Prefer the WebSocket at `/api/ws` for live UIs.
+      parameters:
+        - name: mpris_after
+          in: query
+          required: false
+          schema: { type: number, default: 0 }
+          description: Return only MPRIS events with `ts` greater than this Unix timestamp.
+        - name: avrcp_after
+          in: query
+          required: false
+          schema: { type: number, default: 0 }
+          description: Return only AVRCP events with `ts` greater than this Unix timestamp.
+      responses:
+        "200":
+          description: Combined state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: "#/components/schemas/Device" }
+                  sinks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Sink" }
+                  mpris_events:
+                    type: array
+                    items: { $ref: "#/components/schemas/MprisEvent" }
+                  avrcp_events:
+                    type: array
+                    items: { $ref: "#/components/schemas/AvrcpEvent" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  # --------------------------------------------------------------- Devices --
+
+  /api/devices:
+    get:
+      tags: [Devices]
+      summary: List all discovered and paired devices
+      description: >
+        Merges devices currently visible to BlueZ with devices in the
+        persistent store. Stored devices that are not currently visible are
+        returned with `connected: false` and an empty `uuids` list.
+
+
+        Returns an empty list while the adapter is still initialising.
+      responses:
+        "200":
+          description: Device list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: "#/components/schemas/Device" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/scan:
+    post:
+      tags: [Devices]
+      summary: Start a discovery scan
+      description: >
+        Returns immediately; discovery runs in the background. Newly found
+        devices arrive as `devices_changed` events on the WebSocket, or on the
+        next call to `/api/devices`.
+
+
+        Calling this while a scan is already running is not an error — the
+        response is `{"scanning": true}` without a `duration`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                duration:
+                  type: integer
+                  description: Scan length in seconds. Defaults to the app's `scan_duration_seconds` setting.
+                  example: 30
+      responses:
+        "200":
+          description: Scan started, or already in progress.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scanning: { type: boolean, example: true }
+                  duration: { type: integer, example: 30 }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/scan/status:
+    get:
+      tags: [Devices]
+      summary: Check whether a scan is running
+      responses:
+        "200":
+          description: Scan state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scanning: { type: boolean }
+
+  /api/pair:
+    post:
+      tags: [Devices]
+      summary: Pair, trust, and connect a device
+      description: >
+        Runs the full onboarding sequence: pair, mark trusted, persist to the
+        device store, then connect. The device must be in pairing mode.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Pairing completed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+                  name: { type: string, example: Kitchen Speaker }
+                  connected: { type: boolean }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  /api/connect:
+    post:
+      tags: [Devices]
+      summary: Connect a paired device
+      description: |
+        Connects a device that is already paired. This is the endpoint to call
+        from a Home Assistant automation when Auto Reconnect is deliberately
+        turned off — for example to power on an amplifier on a schedule
+        without the add-on competing for the speaker the rest of the time.
+
+        ```yaml
+        rest_command:
+          bt_audio_connect:
+            url: "http://<addon-hostname>:8099/api/connect"
+            method: post
+            content_type: "application/json"
+            payload: '{"address": "AA:BB:CC:DD:EE:FF"}'
+        ```
+
+        `connected: false` with HTTP 200 means the attempt completed but the
+        device did not come up — usually powered off or out of range.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Connection attempt completed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected: { type: boolean }
+                  address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  /api/disconnect:
+    post:
+      tags: [Devices]
+      summary: Disconnect a device
+      description: Drops the connection but keeps the device paired and stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Disconnected.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disconnected: { type: boolean, example: true }
+                  address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  /api/force-reconnect:
+    post:
+      tags: [Devices]
+      summary: Force a disconnect/reconnect cycle
+      description: >
+        Recovery path for "zombie" connections — BlueZ reports the device as
+        connected but no audio transport exists. Disconnects and reconnects in
+        one operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Cycle completed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reconnected: { type: boolean }
+                  address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  /api/forget:
+    post:
+      tags: [Devices]
+      summary: Unpair and remove a device
+      description: >
+        **Destructive.** Unpairs the device in BlueZ and deletes it from the
+        persistent store along with its per-device settings. Re-adding it
+        requires putting the device back into pairing mode.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Device removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  forgotten: { type: boolean, example: true }
+                  address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  # ------------------------------------------------------- Device settings --
+
+  /api/devices/{address}/settings:
+    put:
+      tags: [Device settings]
+      summary: Update per-device settings
+      description: >
+        Partial update — only the keys you send are changed. Unrecognised keys
+        are ignored, but a body containing *no* recognised key is a 400.
+
+
+        A paired device that BlueZ knows about but the store does not is
+        auto-imported on first call rather than returning 404.
+
+
+        `audio_profile` is silently dropped when HFP switching is unavailable
+        (see `hfp_switching_enabled` in `/api/info`).
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$"
+          example: "AA:BB:CC:DD:EE:FF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceSettingsUpdate" }
+            examples:
+              keepAlive:
+                summary: Keep the speaker awake with inaudible tone
+                value:
+                  idle_mode: keep_alive
+                  keep_alive_method: infrasound
+              autoDisconnect:
+                summary: Release the speaker after 15 idle minutes
+                value:
+                  idle_mode: auto_disconnect
+                  auto_disconnect_minutes: 15
+              mpd:
+                summary: Enable a per-device MPD instance
+                value:
+                  mpd_enabled: true
+                  mpd_port: 6600
+      responses:
+        "200":
+          description: Settings applied. Returns the full current settings, including auto-allocated values.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+                  settings: { $ref: "#/components/schemas/DeviceSettings" }
+        "400":
+          description: Invalid address, or no recognised setting supplied, or a value out of range.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Device is not in the store and could not be found in BlueZ.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Requested `mpd_port` is already assigned to another device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  # -------------------------------------------------------------- Adapters --
+
+  /api/adapters:
+    get:
+      tags: [Adapters]
+      summary: List Bluetooth adapters
+      description: >
+        `ha_managed` marks adapters that Home Assistant's own Bluetooth
+        integration is using — sharing one adapter between HA and this add-on
+        causes connection contention.
+      responses:
+        "200":
+          description: Adapter list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  adapters:
+                    type: array
+                    items: { $ref: "#/components/schemas/Adapter" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/set-adapter:
+    post:
+      tags: [Adapters]
+      summary: Select the Bluetooth adapter
+      description: >
+        Persists the selection to `settings.json`. **Requires a restart** to
+        take effect — the response always carries `restart_required: true`.
+
+
+        Setting `clean: true` disconnects and removes every device first;
+        this is destructive and cannot be undone.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [adapter]
+              properties:
+                adapter:
+                  type: string
+                  description: "`auto`, a MAC address, or a legacy `hciN` name."
+                  example: "AA:BB:CC:DD:EE:FF"
+                clean:
+                  type: boolean
+                  default: false
+                  description: Remove all paired devices before switching.
+      responses:
+        "200":
+          description: Selection saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  adapter: { type: string }
+                  restart_required: { type: boolean, example: true }
+                  cleaned: { type: boolean }
+        "400":
+          description: Missing adapter, or not `auto` / MAC / `hciN`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/restart:
+    post:
+      tags: [Adapters]
+      summary: Restart the add-on
+      description: >
+        Restarts via the Supervisor API. The HTTP response is sent before the
+        container goes down, so expect the connection to drop shortly after.
+        Requires `SUPERVISOR_TOKEN`, which is absent outside a Home Assistant
+        installation.
+      responses:
+        "200":
+          description: Restart requested.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  restarting: { type: boolean, example: true }
+        "500":
+          description: Supervisor API unavailable, or the restart call failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ----------------------------------------------------------------- Audio --
+
+  /api/audio/sinks:
+    get:
+      tags: [Audio]
+      summary: List Bluetooth PulseAudio sinks
+      description: Returns an empty list when PulseAudio is unreachable.
+      responses:
+        "200":
+          description: Sink list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sinks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Sink" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  # -------------------------------------------------------------- Settings --
+
+  /api/settings:
+    get:
+      tags: [Settings]
+      summary: Get app-wide runtime settings
+      responses:
+        "200":
+          description: Current settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeSettings" }
+    put:
+      tags: [Settings]
+      summary: Update app-wide runtime settings
+      description: >
+        Partial update, applied live — no restart required. Changes are
+        persisted and broadcast to connected WebSocket clients as a
+        `settings_changed` event. All validation errors are reported together,
+        joined by `; `.
+
+
+        Turning `auto_reconnect` off is the usual reason to drive
+        `/api/connect` from an automation instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RuntimeSettings" }
+            examples:
+              manualControl:
+                summary: Hand connection control to HA automations
+                value:
+                  auto_reconnect: false
+      responses:
+        "200":
+          description: Updated settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeSettings" }
+        "400":
+          description: Invalid JSON, or one or more values out of range.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ----------------------------------------------------------- Diagnostics --
+
+  /api/logs:
+    get:
+      tags: [Diagnostics]
+      summary: Recent log entries
+      description: Ring buffer of the most recent 500 entries. Empty when no log handler is attached.
+      responses:
+        "200":
+          description: Log entries, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items: { $ref: "#/components/schemas/LogEntry" }
+
+  /api/diagnostics/mpris:
+    get:
+      tags: [Diagnostics]
+      summary: MPRIS/AVRCP diagnostic dump
+      description: >
+        Reports whether our MPRIS player is registered and exported, and
+        enumerates every BlueZ object with its interfaces — including which
+        devices expose `MediaControl1` (AVRCP active) and `MediaTransport1`
+        (audio streaming). Use this when speaker buttons or volume sync are
+        not working.
+
+
+        Keys are added opportunistically; on failure an `*_error` key appears
+        in place of the value. The response is always HTTP 200.
+      responses:
+        "200":
+          description: Diagnostic results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MprisDiagnostics" }
+
+  # --------------------------------------------------------------- Debug --
+
+  /api/debug/avrcp-cycle:
+    post:
+      tags: [Debug]
+      summary: Cycle AVRCP profiles
+      description: Disconnects and reconnects the AVRCP profile only, leaving audio streaming alone.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Action completed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DebugResult" }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  /api/debug/mpris-reregister:
+    post:
+      tags: [Debug]
+      summary: Re-register the MPRIS player
+      description: Unregisters and re-registers our MPRIS player object on D-Bus.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Action completed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DebugResult" }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  /api/debug/mpris-avrcp-cycle:
+    post:
+      tags: [Debug]
+      summary: Re-register MPRIS around an AVRCP cycle
+      description: >
+        Unregisters MPRIS, cycles AVRCP, then re-registers MPRIS. Note that a
+        failure here returns HTTP 200 with an `error` key inside the result
+        rather than a 5xx.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Action completed, possibly with an embedded error.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DebugResult" }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  /api/debug/disconnect-hfp:
+    post:
+      tags: [Debug]
+      summary: Disconnect the HFP profile
+      description: >
+        Drops HFP to force the device onto AVRCP absolute volume. Some
+        headsets expose hardware volume only when HFP is not connected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Action completed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/DebugResult"
+                  - type: object
+                    properties:
+                      success: { type: boolean }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  /api/debug/hfp-reconnect-cycle:
+    post:
+      tags: [Debug]
+      summary: Full reconnect with HFP suppressed
+      description: Disconnects HFP, performs a full device reconnect, then disconnects HFP again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddressRequest" }
+      responses:
+        "200":
+          description: Action completed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DebugResult" }
+        "400":
+          $ref: "#/components/responses/BadAddress"
+        "500":
+          $ref: "#/components/responses/BluezError"
+
+  # ------------------------------------------------------------ Real-time --
+
+  /api/ws:
+    get:
+      tags: [Real-time]
+      summary: WebSocket event stream
+      description: |
+        **This is a WebSocket endpoint, not a normal GET.** "Try it out" will
+        not work — the request must be an HTTP upgrade. Connect with a
+        WebSocket client instead.
+
+        SSE is deliberately not offered: HA ingress compresses
+        `text/event-stream`, which breaks streaming (supervisor#6470).
+
+        On connect, the server replays current state before switching to live
+        events: `devices_changed`, `sinks_changed`, `scan_state`, then buffered
+        `mpris_command`, `avrcp_event`, and `log_entry` entries, then any
+        pending `toast`.
+
+        Every message is a JSON object with a `type` field:
+
+        | `type` | Payload |
+        |---|---|
+        | `devices_changed` | `devices`: array of Device |
+        | `sinks_changed` | `sinks`: array of Sink |
+        | `scan_state` | `scanning`: boolean |
+        | `settings_changed` | the RuntimeSettings fields |
+        | `log_entry` | `ts`, `level`, `logger`, `message` |
+        | `mpris_command` | `command`, `detail`, `ts`, `address` |
+        | `avrcp_event` | `address`, `property`, `value`, `ts` |
+        | `status` | `message`: progress text for the UI |
+        | `toast` | user-facing notification |
+
+        The connection uses a 30-second heartbeat. Clients should reconnect
+        with exponential backoff.
+      responses:
+        "101":
+          description: Switching protocols — WebSocket established.
+        "400":
+          description: Request was not a valid WebSocket upgrade.
+
+  # -------------------------------------------------------- Documentation --
+
+  /api/openapi.json:
+    get:
+      tags: [Documentation]
+      summary: This OpenAPI spec, as JSON
+      description: >
+        The spec is authored as YAML at `static/openapi.yaml` and served here
+        as JSON for tooling — Postman, client generators, and this page.
+
+
+        `servers[0].url` is rewritten per request from the `X-Ingress-Path`
+        header so that "Try it out" targets the right base path behind Home
+        Assistant ingress. On direct access to port 8099 it is `/`.
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/json:
+              schema:
+                type: object
+        "503":
+          description: Spec could not be loaded — the YAML parser is missing or the file is malformed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/docs:
+    get:
+      tags: [Documentation]
+      summary: This page
+      description: >
+        Self-contained Swagger UI. All assets are served from the add-on;
+        nothing is fetched from a CDN, so it works on an installation with no
+        internet access.
+      responses:
+        "200":
+          description: HTML page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+components:
+
+  responses:
+
+    BadAddress:
+      description: Missing or malformed Bluetooth address.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error: Invalid Bluetooth address format (expected XX:XX:XX:XX:XX:XX)
+
+    BluezError:
+      description: >
+        The operation failed. BlueZ errors are translated to user-facing text
+        where recognised; anything else returns a generic message and the
+        detail is written to the add-on log.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            pageTimeout:
+              value:
+                error: Device not responding. Make sure it is in pairing mode and nearby.
+            inProgress:
+              value:
+                error: A pairing or connection attempt is already in progress. Please wait.
+            unmapped:
+              value:
+                error: Operation failed. Check add-on logs for details.
+
+    ServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+
+    Error:
+      type: object
+      description: >
+        Every error response carries an `error` string suitable for display.
+        The web UI reads this field directly.
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    AddressRequest:
+      type: object
+      required: [address]
+      properties:
+        address:
+          type: string
+          pattern: "^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$"
+          description: Bluetooth MAC address, colon-separated.
+          example: "AA:BB:CC:DD:EE:FF"
+
+    Device:
+      type: object
+      description: >
+        A discovered and/or stored audio device. Settings fields
+        (`idle_mode` onward) are present only when `stored` is true.
+        `path` and `cod_matched` are present only for devices currently
+        visible to BlueZ.
+      properties:
+        address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        name: { type: string, example: Kitchen Speaker }
+        path:
+          type: string
+          description: BlueZ object path.
+          example: /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF
+        adapter:
+          type: string
+          description: Adapter the device was seen on. Empty for stored-but-offline devices.
+          example: hci0
+        paired: { type: boolean }
+        connected: { type: boolean }
+        stored:
+          type: boolean
+          description: Present in this add-on's persistent device store.
+        uuids:
+          type: array
+          description: Advertised service UUIDs. Empty for stored-but-offline devices.
+          items: { type: string }
+        bearers:
+          type: array
+          description: Currently connected transports.
+          items:
+            type: string
+            example: BR/EDR
+        has_transport:
+          type: boolean
+          description: >
+            A `MediaTransport1` object exists — audio is actually routable.
+            `connected: true` with `has_transport: false` is the "zombie"
+            state that `/api/force-reconnect` clears.
+        cod_matched:
+          type: boolean
+          description: >
+            Accepted via Class-of-Device fallback rather than a recognised
+            audio UUID. Only set during scans; profiles resolve after pairing.
+        rssi:
+          type: integer
+          nullable: true
+          description: Signal strength in dBm. Only populated during or shortly after discovery.
+          example: -62
+        rssi_stale:
+          type: boolean
+          description: The device did not respond to the most recent RSSI refresh burst.
+        signal_quality:
+          type: string
+          nullable: true
+          enum: [excellent, good, fair, weak, very_weak]
+          description: "Derived from `rssi`: > -50 excellent, > -65 good, > -75 fair, > -85 weak."
+        signal_warning:
+          type: string
+          nullable: true
+          description: Set when signal quality is weak or very_weak.
+        idle_mode: { $ref: "#/components/schemas/IdleMode" }
+        keep_alive_method: { $ref: "#/components/schemas/KeepAliveMethod" }
+        keep_alive_active:
+          type: boolean
+          description: A keep-alive stream is running right now.
+        power_save_delay: { type: integer }
+        auto_disconnect_minutes: { type: integer }
+        mpd_enabled: { type: boolean }
+        mpd_port: { type: integer, nullable: true }
+        mpd_hw_volume: { type: integer }
+        avrcp_enabled: { type: boolean }
+
+    IdleMode:
+      type: string
+      enum: [default, power_save, keep_alive, auto_disconnect]
+      description: >
+        What to do when audio stops. `keep_alive` streams inaudible sound to
+        stop the speaker sleeping; `power_save` suspends the sink after
+        `power_save_delay`; `auto_disconnect` drops the link after
+        `auto_disconnect_minutes`.
+
+    KeepAliveMethod:
+      type: string
+      enum: [silence, infrasound]
+      description: >
+        `silence` sends digital silence; `infrasound` sends a sub-audible tone
+        for speakers that ignore silence and sleep anyway.
+
+    DeviceSettingsUpdate:
+      type: object
+      minProperties: 1
+      description: >
+        At least one recognised key must be present. Unrecognised keys are
+        ignored silently.
+      properties:
+        audio_profile:
+          type: string
+          enum: [a2dp, hfp]
+          description: >
+            Ignored when `hfp_switching_enabled` is false in `/api/info`.
+        idle_mode: { $ref: "#/components/schemas/IdleMode" }
+        keep_alive_method: { $ref: "#/components/schemas/KeepAliveMethod" }
+        power_save_delay:
+          type: integer
+          minimum: 0
+          maximum: 300
+          description: Seconds of silence before suspending the sink.
+        auto_disconnect_minutes:
+          type: integer
+          minimum: 5
+          maximum: 60
+        mpd_enabled:
+          type: boolean
+          description: Run a dedicated MPD instance for this device.
+        mpd_port:
+          type: integer
+          minimum: 6600
+          maximum: 6609
+          description: Must be unique across devices; a clash returns 409.
+        mpd_hw_volume:
+          type: integer
+          minimum: 1
+          maximum: 100
+        avrcp_enabled:
+          type: boolean
+          description: Route the speaker's transport buttons to MPD.
+
+    DeviceSettings:
+      type: object
+      description: Full current settings for a device, including auto-allocated values.
+      properties:
+        audio_profile: { type: string, enum: [a2dp, hfp] }
+        idle_mode: { $ref: "#/components/schemas/IdleMode" }
+        keep_alive_method: { $ref: "#/components/schemas/KeepAliveMethod" }
+        power_save_delay: { type: integer }
+        auto_disconnect_minutes: { type: integer }
+        mpd_enabled: { type: boolean }
+        mpd_port: { type: integer, nullable: true }
+        mpd_hw_volume: { type: integer }
+        avrcp_enabled: { type: boolean }
+
+    RuntimeSettings:
+      type: object
+      description: App-wide settings. All fields optional on PUT; all present on GET.
+      properties:
+        auto_reconnect:
+          type: boolean
+          description: >
+            Automatically reconnect stored devices. Turn off to hand control
+            to Home Assistant automations calling `/api/connect`.
+        reconnect_interval_seconds:
+          type: integer
+          minimum: 5
+          maximum: 600
+        reconnect_max_backoff_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+        scan_duration_seconds:
+          type: integer
+          minimum: 5
+          maximum: 120
+
+    Adapter:
+      type: object
+      properties:
+        path: { type: string, example: /org/bluez/hci0 }
+        name: { type: string, example: hci0 }
+        address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        alias: { type: string }
+        hw_model:
+          type: string
+          description: Friendly hardware name, resolved from sysfs or the Supervisor hardware API.
+          example: Intel AX200 Bluetooth
+        modalias: { type: string }
+        usb_id: { type: string, example: "8087:0029" }
+        powered: { type: boolean }
+        discovering: { type: boolean }
+        selected:
+          type: boolean
+          description: The adapter this add-on is currently using.
+        ble_scanning:
+          type: boolean
+          description: Mirrors `discovering`; the adapter is running a scan.
+        ha_managed:
+          type: boolean
+          description: >
+            Also in use by Home Assistant's Bluetooth integration. Sharing an
+            adapter causes contention — prefer a dedicated one.
+
+    Sink:
+      type: object
+      description: A Bluetooth PulseAudio sink. Sample fields are null until the stream starts.
+      properties:
+        name: { type: string, example: bluez_sink.AA_BB_CC_DD_EE_FF.a2dp_sink }
+        description: { type: string, example: Kitchen Speaker }
+        state:
+          type: string
+          description: PulseAudio sink state.
+          example: RUNNING
+        volume:
+          type: integer
+          description: Percentage, 0-100.
+        mute: { type: boolean }
+        sample_rate: { type: integer, nullable: true, example: 44100 }
+        channels: { type: integer, nullable: true, example: 2 }
+        format: { type: string, nullable: true, example: s16le }
+
+    DebugResult:
+      type: object
+      description: >
+        Outcome of a debug action. `error` appears when the action failed but
+        the endpoint still returned HTTP 200.
+      properties:
+        action:
+          type: string
+          description: Echoes which action ran.
+          enum:
+            - avrcp_cycle
+            - mpris_reregister
+            - mpris_avrcp_cycle
+            - disconnect_hfp
+            - hfp_reconnect_cycle
+        address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        error: { type: string }
+
+    LogEntry:
+      type: object
+      properties:
+        ts: { type: number, description: Unix timestamp. }
+        level: { type: string, example: INFO }
+        logger: { type: string, example: bt_audio_manager.manager }
+        message: { type: string }
+
+    MprisEvent:
+      type: object
+      description: A transport command received from a speaker's buttons.
+      properties:
+        command: { type: string, example: Pause }
+        detail: { type: string }
+        ts: { type: number }
+        address:
+          type: string
+          description: Source device, when it could be resolved.
+
+    AvrcpEvent:
+      type: object
+      description: An AVRCP property change, such as absolute volume.
+      properties:
+        address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        property: { type: string, example: Volume }
+        value: { type: string, example: 45% }
+        ts: { type: number }
+
+    MprisDiagnostics:
+      type: object
+      description: >
+        Best-effort dump. Any step that fails contributes an `*_error` key
+        instead of its value, so treat all fields as optional.
+      properties:
+        player_registered: { type: boolean }
+        player_exported:
+          type: boolean
+          description: Our MPRIS interface is exported on the local D-Bus connection.
+        bus_name: { type: string, example: ":1.42" }
+        player_path: { type: string }
+        bus_name_active: { type: boolean }
+        bluez_media_players:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              status: { type: string }
+        bluez_devices:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              address: { type: string }
+              connected: { type: boolean }
+              interfaces:
+                type: array
+                items: { type: string }
+              has_media_control:
+                type: boolean
+                description: AVRCP is active on this device.
+              has_media_transport:
+                type: boolean
+                description: An audio transport exists.
+        bluez_transports:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              device: { type: string }
+              uuid: { type: string }
+              codec: { type: integer }
+              state: { type: string }
+              volume: { type: integer }
+              volume_supported:
+                type: boolean
+                description: Transport exposes a Volume property (absolute volume support).
+              all_properties:
+                type: array
+                items: { type: string }
+        error:
+          type: string
+          description: Present when D-Bus is not connected.
