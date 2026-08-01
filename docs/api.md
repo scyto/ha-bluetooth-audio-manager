@@ -247,12 +247,23 @@ rest:
              | selectattr('address', 'eq', 'AA:BB:CC:DD:EE:FF')
              | first | default(none) %}
           {{ 'connected' if d and d.connected else 'disconnected' }}
-        json_attributes_path: "$.devices[0]"
-        json_attributes:
-          - name
-          - rssi
-          - signal_quality
+
+      - name: "Kitchen Speaker Signal"
+        unique_id: kitchen_speaker_signal
+        unit_of_measurement: dBm
+        value_template: >-
+          {% set d = value_json.devices
+             | selectattr('address', 'eq', 'AA:BB:CC:DD:EE:FF')
+             | first | default(none) %}
+          {{ d.rssi if d is not none and d.rssi is not none else 'unknown' }}
 ```
+
+Every sensor under one `resource:` shares a single poll, so adding more costs no extra requests.
+
+> **Don't use `json_attributes_path: "$.devices[0]"` here.** `/api/devices` returns *all* devices
+> and the order is not stable, so a fixed index can pull attributes from a different speaker than
+> the one your `value_template` selected — giving you a sensor whose state and attributes disagree.
+> Select by address in each template instead, as above.
 
 Each device also reports `has_transport`. A device with `connected: true` but
 `has_transport: false` is in the zombie state described above — a useful thing to alert on.
@@ -285,6 +296,32 @@ actions:
 ```
 
 This takes effect immediately — no restart needed.
+
+### Known exception: add-on restarts
+
+⚠️ **Auto Reconnect off does not currently survive a restart.** When the add-on starts — after an
+update, a Home Assistant restart, or a host reboot — it reconnects every stored device regardless
+of the Auto Reconnect setting. The setting is honoured while the add-on is running (a device that
+drops will not be reconnected), but not during startup.
+
+If you are relying on manual control to keep a speaker free for a phone, a restart will still
+seize it. Until this is fixed, either disconnect explicitly after a restart:
+
+```yaml
+automation:
+  - alias: "Release speaker after add-on restart"
+    triggers:
+      - trigger: homeassistant
+        event: start
+    actions:
+      - delay: "00:01:00"    # let the add-on finish its startup reconnect
+      - action: rest_command.bt_audio_disconnect
+        data:
+          address: "AA:BB:CC:DD:EE:FF"
+```
+
+…or remove the device from the add-on's store entirely (`POST /api/forget`) and pair it on demand,
+though that is heavier-handed.
 
 ---
 
