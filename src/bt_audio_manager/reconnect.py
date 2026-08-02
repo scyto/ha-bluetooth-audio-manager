@@ -45,11 +45,18 @@ class ReconnectService:
         self._tasks.clear()
         logger.info("Reconnect service stopped")
 
+    def _reconnect_enabled(self) -> bool:
+        """Whether reconnection may proceed right now.
+
+        Checked before scheduling work *and* again after every sleep, so
+        turning Auto Reconnect off stops attempts that are already in flight
+        rather than only preventing new ones.
+        """
+        return self._running and self._manager.config.auto_reconnect
+
     def handle_disconnect(self, address: str) -> None:
         """Called when a device disconnects. Schedules reconnection."""
-        if not self._running:
-            return
-        if not self._manager.config.auto_reconnect:
+        if not self._reconnect_enabled():
             return
 
         # Check if device is in our persistent store with auto_connect
@@ -71,7 +78,19 @@ class ReconnectService:
             task.cancel()
 
     async def reconnect_all(self) -> None:
-        """Attempt to reconnect all auto-connect devices (called on startup)."""
+        """Attempt to reconnect all auto-connect devices (called on startup).
+
+        Honours the Auto Reconnect setting.  Without this guard the add-on
+        seized every stored device on startup even with the toggle off, so a
+        restart or host reboot would take back a speaker the user had
+        deliberately left free for another source (#281).
+        """
+        if not self._reconnect_enabled():
+            logger.info(
+                "Auto Reconnect is off — not reconnecting stored devices at startup"
+            )
+            return
+
         devices = self._manager.store.auto_connect_devices
         if not devices:
             return
@@ -105,7 +124,7 @@ class ReconnectService:
         )
         await asyncio.sleep(self.QUICK_RETRY_DELAY)
 
-        if not self._running:
+        if not self._reconnect_enabled():
             return
 
         try:
@@ -131,7 +150,7 @@ class ReconnectService:
         max_backoff = self._manager.config.reconnect_max_backoff_seconds
         attempt = 0
 
-        while self._running:
+        while self._reconnect_enabled():
             wait = min(interval * (2 ** attempt), max_backoff)
             jitter = random.uniform(0, wait * 0.1)
             total_wait = wait + jitter
@@ -146,7 +165,7 @@ class ReconnectService:
             )
             await asyncio.sleep(total_wait)
 
-            if not self._running:
+            if not self._reconnect_enabled():
                 return
 
             try:
