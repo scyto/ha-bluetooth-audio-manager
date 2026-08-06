@@ -105,6 +105,87 @@ class ReconnectAllTest(unittest.IsolatedAsyncioTestCase):
         await svc.reconnect_all()
 
 
+class CancelAllTest(unittest.IsolatedAsyncioTestCase):
+    """Turning the setting off must stop work already under way.
+
+    Checking the setting between attempts is not enough: a task can be sitting
+    inside connect_device() for tens of seconds and would still seize the
+    speaker after the user asked us to stop.
+    """
+
+    async def test_cancels_in_flight_tasks(self):
+        mgr = make_manager()
+        svc = ReconnectService(mgr)
+        svc._running = True
+
+        async def slow():
+            await asyncio.sleep(60)
+
+        task = asyncio.create_task(slow())
+        svc._tasks[ADDR] = task
+        await asyncio.sleep(0)  # let it start
+
+        svc.cancel_all()
+        self.assertEqual(svc._tasks, {})
+
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    async def test_clears_the_status_banner(self):
+        mgr = make_manager()
+        svc = ReconnectService(mgr)
+        svc._running = True
+        svc.cancel_all()
+        mgr._broadcast_status.assert_called_with("")
+
+    async def test_is_safe_with_no_tasks(self):
+        svc = ReconnectService(make_manager())
+        svc._running = True
+        svc.cancel_all()  # must not raise
+
+
+class AbandonTest(unittest.IsolatedAsyncioTestCase):
+    """A loop that gives up must not leave a spinner claiming it is still going.
+
+    web/static/app.js keeps a non-empty status visible until it receives an
+    empty one, so an abandoned loop that stays quiet strands the banner.
+    """
+
+    async def test_clears_status_when_nothing_else_is_retrying(self):
+        mgr = make_manager()
+        svc = ReconnectService(mgr)
+        svc._abandon(ADDR)
+        mgr._broadcast_status.assert_called_with("")
+
+    async def test_drops_the_task(self):
+        mgr = make_manager()
+        svc = ReconnectService(mgr)
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        svc._tasks[ADDR] = done
+        svc._abandon(ADDR)
+        self.assertNotIn(ADDR, svc._tasks)
+
+    async def test_keeps_status_when_another_device_is_still_retrying(self):
+        """Clearing unconditionally would hide the other device's live banner."""
+        mgr = make_manager()
+        svc = ReconnectService(mgr)
+
+        async def slow():
+            await asyncio.sleep(60)
+
+        other = asyncio.create_task(slow())
+        svc._tasks[ADDR2] = other
+        await asyncio.sleep(0)
+
+        svc._abandon(ADDR)
+        mgr._broadcast_status.assert_not_called()
+
+        other.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await other
+
+
 class HandleDisconnectTest(unittest.TestCase):
     """The disconnect path already honoured the setting — keep it that way."""
 
