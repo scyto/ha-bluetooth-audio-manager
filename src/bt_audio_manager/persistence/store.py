@@ -34,6 +34,18 @@ MPD_PORT_MIN = 6600
 MPD_PORT_MAX = 6609
 
 
+def normalize_address(address: str) -> str:
+    """Canonical form for a Bluetooth address: upper-case hex.
+
+    BlueZ always reports upper case, but callers do not: an HA template or
+    a hand-written REST call happily sends ``aa:bb:...``.  Without a single
+    canonical form those lookups miss an existing record, and the settings
+    endpoint then creates a *second* record from defaults — which reads to
+    the user as their MPD config silently resetting itself.
+    """
+    return address.upper() if isinstance(address, str) else address
+
+
 class PersistenceStore:
     """Manages persistent storage of paired Bluetooth audio devices."""
 
@@ -57,7 +69,7 @@ class PersistenceStore:
 
         try:
             data = json.loads(self._path.read_text())
-            self._devices = data.get("devices", [])
+            self._devices = self._canonicalise(data.get("devices", []))
             logger.info("Loaded %d paired device(s) from store", len(self._devices))
             for d in self._devices:
                 non_defaults = {
@@ -71,6 +83,35 @@ class PersistenceStore:
             logger.error("Failed to parse paired devices store: %s", e)
             self._devices = []
 
+    @staticmethod
+    def _canonicalise(devices: list[dict]) -> list[dict]:
+        """Upper-case stored addresses and drop case-duplicate records.
+
+        Heals stores already polluted by a mixed-case write.  The first
+        record for an address wins: duplicates are appended, so the first
+        is the original one carrying the user's real settings.
+        """
+        seen: dict[str, dict] = {}
+        result: list[dict] = []
+        for d in devices:
+            address = d.get("address")
+            if not isinstance(address, str):
+                logger.warning("Skipping store record with no usable address: %s", d)
+                continue
+            d["address"] = normalize_address(address)
+            kept = seen.get(d["address"])
+            if kept is not None:
+                logger.warning(
+                    "Discarding duplicate record for %s (address case mismatch); "
+                    "keeping the first, which has settings: %s",
+                    d["address"],
+                    {k: kept.get(k) for k in DEFAULT_DEVICE_SETTINGS if k in kept},
+                )
+                continue
+            seen[d["address"]] = d
+            result.append(d)
+        return result
+
     async def save(self) -> None:
         """Write current device list to disk (atomic via temp + rename)."""
         data = {"devices": self._devices}
@@ -83,6 +124,7 @@ class PersistenceStore:
         self, address: str, name: str, auto_connect: bool = True
     ) -> None:
         """Add or update a paired device."""
+        address = normalize_address(address)
         existing = self._find_device(address)
         if existing is not None:
             existing["name"] = name
@@ -101,6 +143,7 @@ class PersistenceStore:
 
     async def remove_device(self, address: str) -> None:
         """Remove a device from the store."""
+        address = normalize_address(address)
         self._devices = [d for d in self._devices if d["address"] != address]
         await self.save()
         logger.info("Removed device %s from store", address)
@@ -117,6 +160,7 @@ class PersistenceStore:
         return self._find_device(address)
 
     def _find_device(self, address: str) -> dict | None:
+        address = normalize_address(address)
         for d in self._devices:
             if d["address"] == address:
                 return d
@@ -185,6 +229,7 @@ class PersistenceStore:
         """
         if port < MPD_PORT_MIN or port > MPD_PORT_MAX:
             return False
+        address = normalize_address(address)
         device = self._find_device(address)
         if device is None:
             return False

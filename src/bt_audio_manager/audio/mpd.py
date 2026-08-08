@@ -95,7 +95,19 @@ class MPDManager:
 
     @property
     def is_running(self) -> bool:
-        return self._running and self._process is not None
+        """Whether the daemon is up *right now*.
+
+        The ``returncode`` check matters: MPD can exit on its own (its PA
+        sink disappearing during a Bluetooth drop is the common case).  A
+        holder that only asked "do I have an instance?" would then treat a
+        dead daemon as live and never restart it, leaving the media_player
+        entity permanently unavailable with nothing in the log.
+        """
+        return (
+            self._running
+            and self._process is not None
+            and self._process.returncode is None
+        )
 
     @property
     def port(self) -> int:
