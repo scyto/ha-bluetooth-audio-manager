@@ -11,6 +11,8 @@ from aiohttp import web
 from aiohttp.web import WebSocketResponse
 from dbus_next.errors import DBusError
 
+from ..persistence.store import normalize_address
+
 if TYPE_CHECKING:
     from ..manager import BluetoothAudioManager
     from .log_handler import WebSocketLogHandler
@@ -82,6 +84,9 @@ def _get_validated_address(body: dict) -> tuple[str | None, web.Response | None]
     """Extract and validate a Bluetooth MAC address from a request body.
 
     Returns (address, None) on success or (None, error_response) on failure.
+    The address is normalised to upper case — BlueZ object paths, the
+    manager's per-device dicts and the persistence store are all keyed that
+    way, so a lower-case address from a caller must not reach them.
     """
     address = body.get("address")
     if not address:
@@ -91,7 +96,7 @@ def _get_validated_address(body: dict) -> tuple[str | None, web.Response | None]
             {"error": "Invalid Bluetooth address format (expected XX:XX:XX:XX:XX:XX)"},
             status=400,
         )
-    return address, None
+    return normalize_address(address), None
 
 
 async def _ws_sender(
@@ -341,6 +346,7 @@ def create_api_routes(
                 {"error": "Invalid Bluetooth address format (expected XX:XX:XX:XX:XX:XX)"},
                 status=400,
             )
+        address = normalize_address(address)
         try:
             # Auto-store paired devices not yet in the persistence store
             # (can happen when BlueZ paired a device before the add-on tracked it,
