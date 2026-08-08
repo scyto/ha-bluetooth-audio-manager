@@ -2972,8 +2972,17 @@ class BluetoothAudioManager:
         settings = self.store.get_device_settings(address)
         if not settings.get("mpd_enabled", False):
             return
-        if address in self._mpd_instances:
-            return  # already running
+        existing = self._mpd_instances.get(address)
+        if existing is not None:
+            if existing.is_running:
+                return  # already running
+            # Daemon exited on its own (e.g. its PA sink vanished mid-drop).
+            # Drop the corpse so the restart below can take over — otherwise
+            # every later connect sees "already running" and MPD stays dead.
+            logger.warning(
+                "MPD for %s is no longer running — restarting it", address
+            )
+            await self._stop_mpd(address)
         if not self.pulse:
             return
 
@@ -3055,7 +3064,9 @@ class BluetoothAudioManager:
     async def _stop_mpd(self, address: str) -> None:
         """Stop the MPD instance for a specific device (keeps port assigned)."""
         mpd = self._mpd_instances.pop(address, None)
-        if mpd and mpd.is_running:
+        if mpd:
+            # Unconditional: a daemon that already exited still leaves a
+            # connected client and a stderr reader task behind.
             await mpd.stop()
 
     async def update_device_settings(self, address: str, settings: dict) -> dict | None:

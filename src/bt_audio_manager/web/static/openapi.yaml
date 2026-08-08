@@ -429,6 +429,10 @@ paths:
         - name: address
           in: path
           required: true
+          description: >-
+            Case-insensitive; normalised to upper case before lookup, so a
+            lower-case address updates the existing device rather than
+            creating a second record.
           schema:
             type: string
             pattern: "^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$"
@@ -940,7 +944,10 @@ components:
         address:
           type: string
           pattern: "^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$"
-          description: Bluetooth MAC address, colon-separated.
+          description: >-
+            Bluetooth MAC address, colon-separated. Case-insensitive: the
+            address is normalised to upper case, which is the form BlueZ
+            uses and the form returned by every response.
           example: "AA:BB:CC:DD:EE:FF"
 
     Device:
