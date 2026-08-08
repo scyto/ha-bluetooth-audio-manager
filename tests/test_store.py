@@ -79,6 +79,80 @@ class TestDeviceRecords(StoreTestCase):
         self.assertEqual(len(self.store.devices), 1)
 
 
+class TestAddressNormalisation(StoreTestCase):
+    """BlueZ reports upper case; REST callers and HA templates often don't.
+
+    Without one canonical form a lower-case lookup misses the record and
+    the settings endpoint creates a second one from defaults, which reads
+    to the user as their MPD config resetting itself (issue #299).
+    """
+
+    async def test_address_is_stored_upper_case(self):
+        await self.store.add_device(ADDR_A.lower(), "A")
+        self.assertEqual(self.store.devices[0]["address"], ADDR_A)
+
+    async def test_lookups_ignore_case(self):
+        await self.store.add_device(ADDR_A, "A")
+        self.assertIsNotNone(self.store.get_device(ADDR_A.lower()))
+        self.assertEqual(self.store.get_device_settings(ADDR_A.lower())["audio_profile"], "a2dp")
+
+    async def test_a_lower_case_write_updates_rather_than_duplicating(self):
+        await self.store.add_device(ADDR_A, "A")
+        await self.store.update_device_settings(ADDR_A.lower(), {"mpd_enabled": True})
+        await self.store.set_mpd_port(ADDR_A.lower(), 6604)
+
+        self.assertEqual(len(self.store.devices), 1)
+        settings = self.store.get_device_settings(ADDR_A)
+        self.assertIs(settings["mpd_enabled"], True)
+        self.assertEqual(settings["mpd_port"], 6604)
+
+    async def test_lower_case_add_does_not_duplicate_an_existing_record(self):
+        await self.store.add_device(ADDR_A, "A")
+        await self.store.update_device_settings(ADDR_A, {"mpd_enabled": True})
+        await self.store.add_device(ADDR_A.lower(), "A")
+
+        self.assertEqual(len(self.store.devices), 1)
+        self.assertIs(self.store.get_device_settings(ADDR_A)["mpd_enabled"], True)
+
+    async def test_remove_ignores_case(self):
+        await self.store.add_device(ADDR_A, "A")
+        await self.store.remove_device(ADDR_A.lower())
+        self.assertEqual(self.store.devices, [])
+
+    async def test_port_pool_sees_a_lower_case_record_as_taken(self):
+        self.path.write_text(json.dumps({"devices": [
+            {"address": ADDR_A.lower(), "name": "A", "mpd_port": MPD_PORT_MIN},
+            {"address": ADDR_B, "name": "B"},
+        ]}))
+        store = PersistenceStore(str(self.path))
+        await store.load()
+        self.assertEqual(await store.allocate_mpd_port(ADDR_B), MPD_PORT_MIN + 1)
+
+    async def test_load_heals_a_store_already_split_across_cases(self):
+        # What a polluted store looks like: the real record, then the
+        # default one a lower-case settings write appended after it.
+        self.path.write_text(json.dumps({"devices": [
+            {"address": ADDR_A, "name": "A", "mpd_enabled": True, "mpd_port": 6602},
+            {"address": ADDR_A.lower(), "name": "A", "mpd_enabled": False, "mpd_port": None},
+        ]}))
+        store = PersistenceStore(str(self.path))
+        await store.load()
+
+        self.assertEqual(len(store.devices), 1)
+        settings = store.get_device_settings(ADDR_A)
+        self.assertIs(settings["mpd_enabled"], True)
+        self.assertEqual(settings["mpd_port"], 6602)
+
+    async def test_healed_store_is_persisted_on_the_next_write(self):
+        self.path.write_text(json.dumps({"devices": [{"address": ADDR_A.lower(), "name": "A"}]}))
+        store = PersistenceStore(str(self.path))
+        await store.load()
+        await store.update_device_settings(ADDR_A, {"idle_mode": "power_save"})
+
+        written = json.loads(self.path.read_text())["devices"]
+        self.assertEqual([d["address"] for d in written], [ADDR_A])
+
+
 class TestPersistenceMechanics(StoreTestCase):
     async def test_save_is_atomic_and_leaves_no_temp_file(self):
         await self.store.add_device(ADDR_A, "A")
