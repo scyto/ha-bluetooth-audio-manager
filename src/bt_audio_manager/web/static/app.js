@@ -69,7 +69,9 @@ function escapeAttr(text) {
 function safeJsString(text) {
   // Escape for embedding in a JS single-quoted string inside an HTML attribute.
   // Order matters: backslashes first, then quotes, then HTML-significant chars.
-  return (text || "")
+  // Coerce first: callers pass numeric fields (mpd_port) too, and .replace()
+  // on a number throws.
+  return String(text ?? "")
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'")
     .replace(/"/g, "\\x22")
@@ -422,7 +424,7 @@ function buildDeviceCard(d) {
     const powerSaveDelay = Number(d.power_save_delay) || 0;
     const autoDisconnectMinutes = Number(d.auto_disconnect_minutes ?? 30) || 0;
     const mpdEnabled = !!d.mpd_enabled;
-    const mpdPort = safeJsString(d.mpd_port || "");
+    const mpdPort = safeJsString(d.mpd_port ?? "");
     const mpdHwVolume = Number(d.mpd_hw_volume ?? 100) || 0;
     const avrcpEnabled = !!(d.avrcp_enabled ?? true);
     const safeName = safeJsString(d.name);
