@@ -67,14 +67,18 @@ ha-bluetooth-audio-manager/
 │       ├── api.py                       # REST endpoints
 │       ├── events.py                    # EventBus + WebSocket pub/sub
 │       ├── log_handler.py              # Log streaming to UI
-│       └── static/                      # Frontend (HTML/JS/CSS)
+│       └── static/                      # Frontend (HTML/JS/CSS + Swagger UI)
+├── tests/                               # Hardware-free test suite (Python)
 ├── docker/                              # Container build
 │   ├── Dockerfile                       # Alpine 3.20 image
 │   ├── requirements.txt                 # Python dependencies
 │   └── rootfs/etc/                      # s6-overlay init scripts
 ├── bluetooth_audio_manager/             # HA add-on manifest (stable)
 ├── bluetooth_audio_manager_dev/         # HA add-on manifest (dev channel)
-├── .github/workflows/build.yaml         # CI/CD pipeline
+├── .github/workflows/
+│   ├── build.yaml                       # Multi-arch image build & publish
+│   ├── test.yaml                        # Unit tests
+│   └── link-device-issues.yaml          # Issue automation
 └── docs/                                # Documentation
 ```
 
@@ -348,7 +352,7 @@ Two methods:
 
 **File:** `src/bt_audio_manager/persistence/store.py`
 
-Devices are stored in `/data/paired_devices.json`:
+Devices are stored in `/config/paired_devices.json` — the `addon_config` mapping, which survives a reinstall. (`/data/paired_devices.json` is the legacy location and is migrated on first read; the Supervisor deletes `/data/` unconditionally on uninstall, which is why the store moved out of it.)
 
 ```json
 {
@@ -414,7 +418,11 @@ Backoff multiplier is 1.5× with jitter to prevent thundering herd.
 - Device exists in the persistent store
 - Disconnect was **not** user-initiated (user disconnects set `_suppress_reconnect`)
 
-On app startup, `reconnect_all()` attempts to reconnect every stored device that has `auto_connect=true`.
+The global setting is checked in one place, `_reconnect_enabled()`, both **before** scheduling work and **again after every backoff sleep**. Turning Auto Reconnect off therefore stops attempts already in flight, rather than letting a loop that is mid-backoff run to completion.
+
+On app startup, `reconnect_all()` reconnects stored devices with `auto_connect=true` **only when the global setting is enabled**. With Auto Reconnect off, startup reconnection is skipped entirely, so a speaker deliberately left free for a phone stays free across add-on updates, HA restarts, and host reboots (#281).
+
+This never disturbs a device that is already connected: BlueZ holds the Bluetooth link across an add-on restart, and the reconnect loop skips anything already reporting connected. The setting governs whether the add-on *initiates* a connection — it never tears one down.
 
 ---
 
@@ -498,6 +506,8 @@ A single-page application built with vanilla JavaScript, Bootstrap 5, and Font A
 - **Events** — Real-time MPRIS/AVRCP event log
 - **Logs** — Live application log with filtering
 
+Plus a separate **API Reference** page (`docs.html`, served at `/api/docs`) — a self-hosted Swagger UI over `openapi.yaml`, reachable from Settings.
+
 **WebSocket reconnection:** On disconnect, shows a banner with elapsed time and attempts reconnection with randomized backoff (1–10 seconds).
 
 ---
@@ -510,9 +520,11 @@ Three-tier configuration with fallback:
 
 | Priority | Source | File | Managed By |
 |----------|--------|------|------------|
-| 1 | Runtime settings | `/data/settings.json` | Web UI (no restart needed) |
+| 1 | Runtime settings | `/config/settings.json` | Web UI (no restart needed) |
 | 2 | HA options | `/data/options.json` | HA config page (restart needed) |
 | 3 | Defaults | In-memory | Hardcoded |
+
+Runtime settings live under `addon_config` (`/config/`) so they survive a reinstall; `/data/settings.json` is the legacy path and is migrated on first read. `options.json` stays in `/data/` because the Supervisor injects it there.
 
 **HA options** only controls `log_level`. All other settings (adapter, reconnect params, scan duration) are managed through the web UI and persisted in `settings.json`.
 
@@ -527,9 +539,11 @@ The `bt_adapter` setting supports three formats:
 
 ## CI/CD Pipeline
 
-**File:** `.github/workflows/build.yaml`
+**Files:** `.github/workflows/build.yaml` (image build & publish) and
+`.github/workflows/test.yaml` (unit tests)
 
-See [docs/ci-workflow.md](ci-workflow.md) for detailed CI documentation.
+See [docs/ci-workflow.md](ci-workflow.md) for detailed CI documentation, and
+[tests/README.md](../tests/README.md) for what the suite does and does not cover.
 
 ### Dual-Channel Release
 
