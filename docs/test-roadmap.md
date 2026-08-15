@@ -1,6 +1,6 @@
 # Test Roadmap
 
-Status: **Planned** — backlog of tests to add on top of the suite introduced in PR #290. Each item is independently actionable; work top-down.
+Status: **In progress** — backlog of tests to add on top of the suite introduced in PR #290. Each item is independently actionable; work top-down. Completed items are struck through and kept for context rather than deleted.
 
 Non-test backlog items live in [roadmap.md](roadmap.md).
 
@@ -11,8 +11,12 @@ CI has no Bluetooth adapter, no D-Bus, and no PulseAudio server. Everything here
 Run the suite with:
 
 ```bash
-PYTHONPATH=src python -m unittest discover -s tests -t . -v
+PYTHONPATH=src python -m unittest discover -s tests -t . -v   # Python
+node tests/js/test_escaping.js                                # frontend escaping
 ```
+
+Both run in CI. The Playwright browser suite (`tests/e2e/`) is local-only — see
+[tests/README.md](../tests/README.md).
 
 ## The habit that matters most
 
@@ -27,7 +31,7 @@ Every issue with a log attached is a potential test fixture. That is the cheapes
 ### 1. `get_audio_devices()` end-to-end with a fake ObjectManager
 
 **Where:** new `tests/test_get_audio_devices.py`
-**Depends on:** #288 (assert the post-fix behaviour, so land it there or after)
+**Unblocked** — #288 shipped in v2.1.0, so assert the post-fix behaviour
 
 `tests/test_discovery_filter.py` covers the helpers, but not the filter itself — the code that broke in #286 and that #288 changes. It consumes a `GetManagedObjects()` dict and returns a device list, which is entirely fakeable.
 
@@ -88,17 +92,18 @@ Also worth: 404 on unknown device, 400 on malformed body, and that error respons
 
 **Why:** small, and the WebSocket path is load-bearing for the whole UI.
 
-### 6. Reconnect backoff schedule
+### ~~6. Reconnect backoff schedule~~ — **done in #298**
 
-**Where:** new `tests/test_reconnect.py`
-**May need a small refactor**
+**Where:** `tests/test_reconnect.py`
 
-`src/bt_audio_manager/reconnect.py`. If the delay schedule is a pure function of attempt count, assert the curve and the ceiling directly. If it is interleaved with `asyncio.sleep`, extract the schedule first.
+Landed alongside the fix for #281. The tests assert the *decision* rather than the delay curve: given the global setting and service state, does a reconnect task get created? Covers startup, the disconnect path, the `_reconnect_enabled()` truth table, and that the device store isn't read at all when the setting is off.
+
+The backoff curve itself is still untested — it remains interleaved with `asyncio.sleep`, so asserting it would need the schedule extracted into a pure function first. Worth doing only if the curve changes.
 
 ### 7. `MPDManager._daemon_env()`
 
 **Where:** extend `tests/test_mpd_config.py`
-**Depends on:** #289
+**Unblocked** — #289 shipped in v2.1.0
 
 Assert `PULSE_PROP_module-stream-restore.id` is set to the per-speaker value, and that the rest of the inherited environment survives (`PATH`, `PULSE_SERVER`).
 
@@ -126,12 +131,15 @@ Compare `bluetooth_audio_manager/config.yaml` and `bluetooth_audio_manager_dev/c
 
 **Why:** the Supervisor reads add-on metadata from `main`, and the dev build workflow syncs `config.yaml` and `apparmor.txt` from dev→main. Any *new* metadata file added to the dev slug must be added to that sync step too — a drift this test would surface. See #215.
 
-### 10. Frontend helpers
+### 10. Frontend helpers — **partly done in #307**
 
-**Where:** new `tests/js/`, run with `node --test`
-**Only if the JS surface is worth a second toolchain**
+**Where:** `tests/js/test_escaping.js`
 
-`profileLabels()` and the device-card rendering helpers in `web/static/app.js` — mainly the UUID→label mapping.
+The question "is the JS surface worth a second toolchain?" was answered by an actual XSS bug: `escapeHtml()` was being used inside a quoted attribute, where it does not escape quotes, so a device name of `x" onmouseover="…` landed an event handler in the panel. Device names come from Bluetooth advertisements, which makes this attacker-controlled input.
+
+The answer was **no second toolchain** — the suite runs on bare `node` with no `package.json`, no dependencies, and no test framework, so it costs one CI step. It extracts the helpers and `buildDeviceCard()` out of `app.js` by name and renders cards from hostile input. `tests/e2e/test_xss_browser.py` backs it with a real browser locally.
+
+**Still open:** `profileLabels()` and the UUID→label mapping, the original subject of this item. Same harness, no new infrastructure needed.
 
 ---
 
