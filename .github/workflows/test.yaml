@@ -74,3 +74,9 @@ jobs:
           PYTHONPATH: src
         # -t . so the tests package __init__ runs (it silences add-on logging)
         run: python -m unittest discover -s tests -t . -v
+
+      - name: Run frontend escaping tests
+        # Device names come from Bluetooth advertisements and are rendered
+        # into innerHTML, so the escaping in app.js is a security control.
+        # Bare node, no toolchain or dependencies required.
+        run: node tests/js/test_escaping.js
