@@ -295,33 +295,13 @@ actions:
       enabled: false
 ```
 
-This takes effect immediately — no restart needed.
+This takes effect immediately — no restart needed. It also stops any reconnect attempt already
+under way, rather than waiting for the current backoff loop to give up.
 
-### Known exception: add-on restarts
-
-⚠️ **Auto Reconnect off does not currently survive a restart.** When the add-on starts — after an
-update, a Home Assistant restart, or a host reboot — it reconnects every stored device regardless
-of the Auto Reconnect setting. The setting is honoured while the add-on is running (a device that
-drops will not be reconnected), but not during startup.
-
-If you are relying on manual control to keep a speaker free for a phone, a restart will still
-seize it. Until this is fixed, either disconnect explicitly after a restart:
-
-```yaml
-automation:
-  - alias: "Release speaker after add-on restart"
-    triggers:
-      - trigger: homeassistant
-        event: start
-    actions:
-      - delay: "00:01:00"    # let the add-on finish its startup reconnect
-      - action: rest_command.bt_audio_disconnect
-        data:
-          address: "AA:BB:CC:DD:EE:FF"
-```
-
-…or remove the device from the add-on's store entirely (`POST /api/forget`) and pair it on demand,
-though that is heavier-handed.
+The setting persists across restarts. With Auto Reconnect off, the add-on does not reconnect
+stored devices when it starts — after an update, a Home Assistant restart, or a host reboot — so a
+speaker you deliberately left free for a phone stays free. Devices that are already connected are
+untouched: the add-on only stops *initiating* connections, it never tears one down.
 
 ---
 
