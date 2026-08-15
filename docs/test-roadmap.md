@@ -1,6 +1,6 @@
 # Test Roadmap
 
-Status: **Planned** — backlog of tests to add on top of the suite introduced in PR #290. Each item is independently actionable; work top-down.
+Status: **In progress** — backlog of tests to add on top of the suite introduced in PR #290. Each item is independently actionable; work top-down. Completed items are struck through and kept for context rather than deleted.
 
 Non-test backlog items live in [roadmap.md](roadmap.md).
 
@@ -27,7 +27,7 @@ Every issue with a log attached is a potential test fixture. That is the cheapes
 ### 1. `get_audio_devices()` end-to-end with a fake ObjectManager
 
 **Where:** new `tests/test_get_audio_devices.py`
-**Depends on:** #288 (assert the post-fix behaviour, so land it there or after)
+**Unblocked** — #288 shipped in v2.1.0, so assert the post-fix behaviour
 
 `tests/test_discovery_filter.py` covers the helpers, but not the filter itself — the code that broke in #286 and that #288 changes. It consumes a `GetManagedObjects()` dict and returns a device list, which is entirely fakeable.
 
@@ -88,17 +88,18 @@ Also worth: 404 on unknown device, 400 on malformed body, and that error respons
 
 **Why:** small, and the WebSocket path is load-bearing for the whole UI.
 
-### 6. Reconnect backoff schedule
+### ~~6. Reconnect backoff schedule~~ — **done in #298**
 
-**Where:** new `tests/test_reconnect.py`
-**May need a small refactor**
+**Where:** `tests/test_reconnect.py`
 
-`src/bt_audio_manager/reconnect.py`. If the delay schedule is a pure function of attempt count, assert the curve and the ceiling directly. If it is interleaved with `asyncio.sleep`, extract the schedule first.
+Landed alongside the fix for #281. The tests assert the *decision* rather than the delay curve: given the global setting and service state, does a reconnect task get created? Covers startup, the disconnect path, the `_reconnect_enabled()` truth table, and that the device store isn't read at all when the setting is off.
+
+The backoff curve itself is still untested — it remains interleaved with `asyncio.sleep`, so asserting it would need the schedule extracted into a pure function first. Worth doing only if the curve changes.
 
 ### 7. `MPDManager._daemon_env()`
 
 **Where:** extend `tests/test_mpd_config.py`
-**Depends on:** #289
+**Unblocked** — #289 shipped in v2.1.0
 
 Assert `PULSE_PROP_module-stream-restore.id` is set to the per-speaker value, and that the rest of the inherited environment survives (`PATH`, `PULSE_SERVER`).
 
@@ -132,6 +133,8 @@ Compare `bluetooth_audio_manager/config.yaml` and `bluetooth_audio_manager_dev/c
 **Only if the JS surface is worth a second toolchain**
 
 `profileLabels()` and the device-card rendering helpers in `web/static/app.js` — mainly the UUID→label mapping.
+
+> Landed on `dev` after v2.1.0: an escaping test suite on bare `node` (no toolchain), added alongside an XSS fix. It ships to `main` with the next release.
 
 ---
 

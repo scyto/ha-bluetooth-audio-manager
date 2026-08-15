@@ -2,17 +2,24 @@
 
 ## Overview
 
-The project uses a single GitHub Actions workflow (`build.yaml`) that builds multi-arch
-Docker images for both stable and dev channels. Images are published to GHCR as
-multi-arch manifests (not per-arch packages).
+Two GitHub Actions workflows carry the pipeline:
+
+- **`build.yaml`** — builds multi-arch Docker images for both stable and dev channels.
+  Images are published to GHCR as multi-arch manifests (not per-arch packages).
+- **`test.yaml`** — runs the hardware-free test suite. Independent of `build.yaml`,
+  so a test failure does not block an image build and vice versa.
+
+(`link-device-issues.yaml` handles issue automation and is not part of the build path.)
 
 ## Triggers
 
 | Event | Scope | What runs |
 |---|---|---|
-| Push to `dev` | Source changes only | Dev build + dev manifest + version bump PR |
+| Push to `dev` | Source changes only | Dev build + dev manifest + version bump PR, and tests |
+| Push to `main` | Source changes only | Tests only (no image build — see below) |
 | Push `v*` tag | Always | Stable build + stable manifest |
-| PR to `main` | Source changes only | Stable validation build (no push) |
+| PR to `main` | Source changes only | Stable validation build (no push), and tests |
+| PR to `dev` | Source changes only | Tests |
 
 ### paths-ignore
 
@@ -24,6 +31,27 @@ Both `push` and `pull_request` triggers skip builds when only non-build files ch
 
 The `pull_request` trigger additionally ignores `bluetooth_audio_manager_dev/**` to
 prevent the automated dev version bump PRs from triggering wasteful validation builds.
+
+`test.yaml` uses the same ignore list on both triggers, plus `docs/**` — documentation
+changes never affect test outcomes.
+
+## Test Workflow (`test.yaml`)
+
+A single `Unit tests` job on `ubuntu-latest`:
+
+1. **Install libpulse** — `pulsectl` `dlopen()`s `libpulse.so.0` at import time, so
+   anything importing `bt_audio_manager.audio` or `.manager` needs it present
+2. **Install dependencies** — `docker/requirements.txt` plus PyYAML (the image gets
+   YAML from the `py3-yaml` apk package, since there is no musl wheel for armv7)
+3. **Byte-compile** `src` and `tests`
+4. **Assert every module imports** — tests skip themselves when libpulse is missing so
+   contributors on macOS aren't blocked; this step makes sure a skip can never
+   silently hide a broken import
+5. **Run unit tests** — `python -m unittest discover -s tests -t . -v`
+
+There is no Bluetooth adapter, D-Bus, or PulseAudio server in CI, so the suite covers
+decisions made *about* hardware data rather than hardware behaviour itself. See
+[tests/README.md](../tests/README.md).
 
 ## Build Flow
 
