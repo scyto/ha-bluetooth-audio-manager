@@ -45,11 +45,18 @@ class ReconnectService:
         self._tasks.clear()
         logger.info("Reconnect service stopped")
 
+    def _reconnect_enabled(self) -> bool:
+        """Whether reconnection may proceed right now.
+
+        Checked before scheduling work *and* again after every sleep, so
+        turning Auto Reconnect off stops attempts that are already in flight
+        rather than only preventing new ones.
+        """
+        return self._running and self._manager.config.auto_reconnect
+
     def handle_disconnect(self, address: str) -> None:
         """Called when a device disconnects. Schedules reconnection."""
-        if not self._running:
-            return
-        if not self._manager.config.auto_reconnect:
+        if not self._reconnect_enabled():
             return
 
         # Check if device is in our persistent store with auto_connect
@@ -70,8 +77,52 @@ class ReconnectService:
         if task and not task.done():
             task.cancel()
 
+    def cancel_all(self) -> None:
+        """Cancel every pending reconnection. Called when Auto Reconnect is off.
+
+        Checking the setting between attempts is not sufficient on its own:
+        ``connect_device()`` may already be running, and it takes tens of
+        seconds (BlueZ connect, then waiting for services and an audio sink).
+        Without cancelling, the speaker is still seized well after the user
+        asked us to stop.
+        """
+        cancelled = 0
+        for task in self._tasks.values():
+            if not task.done():
+                task.cancel()
+                cancelled += 1
+        self._tasks.clear()
+        if cancelled:
+            logger.info("Cancelled %d in-flight reconnect attempt(s)", cancelled)
+        self._manager._broadcast_status("")
+
+    def _abandon(self, address: str) -> None:
+        """Drop a reconnect task and clear its status banner.
+
+        The UI keeps a non-empty status visible until it is sent an empty one
+        (see the ``status`` handler in web/static/app.js), so a loop that exits
+        without clearing leaves a spinner claiming a reconnect is still pending.
+        Only clear when nothing else is retrying, or we would hide another
+        device's live status.
+        """
+        self._tasks.pop(address, None)
+        if not any(not t.done() for t in self._tasks.values()):
+            self._manager._broadcast_status("")
+
     async def reconnect_all(self) -> None:
-        """Attempt to reconnect all auto-connect devices (called on startup)."""
+        """Attempt to reconnect all auto-connect devices (called on startup).
+
+        Honours the Auto Reconnect setting.  Without this guard the add-on
+        seized every stored device on startup even with the toggle off, so a
+        restart or host reboot would take back a speaker the user had
+        deliberately left free for another source (#281).
+        """
+        if not self._reconnect_enabled():
+            logger.info(
+                "Auto Reconnect is off — not reconnecting stored devices at startup"
+            )
+            return
+
         devices = self._manager.store.auto_connect_devices
         if not devices:
             return
@@ -105,7 +156,8 @@ class ReconnectService:
         )
         await asyncio.sleep(self.QUICK_RETRY_DELAY)
 
-        if not self._running:
+        if not self._reconnect_enabled():
+            self._abandon(address)
             return
 
         try:
@@ -131,7 +183,7 @@ class ReconnectService:
         max_backoff = self._manager.config.reconnect_max_backoff_seconds
         attempt = 0
 
-        while self._running:
+        while self._reconnect_enabled():
             wait = min(interval * (2 ** attempt), max_backoff)
             jitter = random.uniform(0, wait * 0.1)
             total_wait = wait + jitter
@@ -146,7 +198,8 @@ class ReconnectService:
             )
             await asyncio.sleep(total_wait)
 
-            if not self._running:
+            if not self._reconnect_enabled():
+                self._abandon(address)
                 return
 
             try:
@@ -172,3 +225,6 @@ class ReconnectService:
                 )
 
             attempt += 1
+
+        # Loop condition went false (service stopped, or Auto Reconnect off).
+        self._abandon(address)
