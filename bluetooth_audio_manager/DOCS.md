@@ -43,7 +43,7 @@ Bluetooth integration (used for BLE sensors, beacons, etc.):
 
 The header bar contains:
 
-- **Build info pill** — shows the version string (e.g. `1.5.0` for stable
+- **Build info pill** — shows the version string (e.g. `2.1.0` for stable
   builds, or `sha-4f99686` for dev)
 - **Views** dropdown — switch between **Events** and **Logs** views
 - **Settings** dropdown — open **App Settings** or **Bluetooth Adapters**
