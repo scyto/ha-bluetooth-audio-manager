@@ -1100,7 +1100,10 @@ components:
           type: boolean
           description: >
             Automatically reconnect stored devices. Turn off to hand control
-            to Home Assistant automations calling `/api/connect`.
+            to Home Assistant automations calling `/api/connect`. Setting this
+            to `false` cancels reconnect attempts already in flight, and the
+            add-on will not reconnect stored devices on its next startup.
+            Devices that are already connected are left alone either way.
         reconnect_interval_seconds:
           type: integer
           minimum: 5
