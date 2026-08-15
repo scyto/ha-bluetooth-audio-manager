@@ -34,3 +34,36 @@ bug turns out to be hardware-specific, the useful thing to add here is a
 test for the *decision* that went wrong, using the properties captured from
 the affected device's logs — see `test_discovery_filter.py`, which is built
 from real scan output attached to issue #286.
+
+## Frontend escaping (`js/`)
+
+Device names and adapter aliases come from Bluetooth advertisements, so
+anything in radio range chooses them — and `app.js` renders them through
+`innerHTML`. The escaping there is a security control, not formatting.
+
+`js/test_escaping.js` runs on bare `node` with no toolchain or dependencies
+and is part of the CI job:
+
+```bash
+node tests/js/test_escaping.js
+```
+
+It extracts the escaping helpers and `buildDeviceCard()` out of `app.js` by
+name, so renaming them fails the suite loudly rather than silently skipping.
+
+## Browser end-to-end (`e2e/`)
+
+`e2e/test_xss_browser.py` is the ground truth for the above: it serves the
+real UI from the real `WebServer` (with a mocked manager), drives Chromium
+at it, feeds hostile device names through `renderDevices()` — the same entry
+point the WebSocket handler uses — and asks the browser whether anything
+executed.
+
+It is **not** in the CI job, because it needs Playwright plus a ~95 MB
+browser download. It self-skips when those are absent, so `discover` still
+works everywhere. Run it when touching escaping or device rendering:
+
+```bash
+pip install playwright && playwright install chromium
+PYTHONPATH=src python -m unittest tests.e2e.test_xss_browser -v
+```
