@@ -46,9 +46,24 @@ async function apiPut(path, body = {}) {
 }
 
 function escapeHtml(text) {
+  // Safe for TEXT positions only. Serialising a text node escapes & < > per the
+  // HTML spec, but NOT quotes — so this is NOT sufficient inside a quoted
+  // attribute value. Use escapeAttr() there.
   const div = document.createElement("div");
   div.textContent = text || "";
   return div.innerHTML;
+}
+
+function escapeAttr(text) {
+  // Safe for quoted attribute values. Device names and adapter aliases arrive
+  // from Bluetooth advertisements, so a name like  x" onmouseover="alert(1)
+  // would otherwise close the attribute and inject a handler.
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function safeJsString(text) {
@@ -175,8 +190,11 @@ let scanSecondsRemaining = 0;
 
 function setScanningState(scanning, duration) {
   isScanning = scanning;
-  if (scanning && duration) {
-    scanSecondsRemaining = duration;
+  // duration arrives from an API response or a WebSocket frame and is rendered
+  // into the scan tile, so pin it to a number at the boundary.
+  const seconds = Math.max(0, Math.floor(Number(duration) || 0));
+  if (scanning && seconds) {
+    scanSecondsRemaining = seconds;
     clearInterval(scanTimerId);
     scanTimerId = setInterval(() => {
       scanSecondsRemaining--;
@@ -344,7 +362,7 @@ function buildFeatureBadges(device) {
     badges.push('<span class="feature-badge border-warning text-warning"><i class="fas fa-plug me-1"></i>Auto-Disconnect</span>');
   }
   if (device.mpd_enabled) {
-    badges.push(`<span class="feature-badge border-primary text-primary"><i class="fas fa-music me-1"></i>MPD :${device.mpd_port || "?"}</span>`);
+    badges.push(`<span class="feature-badge border-primary text-primary"><i class="fas fa-music me-1"></i>MPD :${escapeHtml(String(device.mpd_port || "?"))}</span>`);
   }
   return badges.join("");
 }
@@ -395,16 +413,20 @@ function buildDeviceCard(d) {
   // --- Kebab menu (paired/stored only) ---
   let kebab = "";
   if (d.stored || d.paired) {
-    const audioProfile = d.audio_profile || "a2dp";
-    const idleMode = d.idle_mode || "default";
-    const kaMethod = d.keep_alive_method || "infrasound";
-    const powerSaveDelay = d.power_save_delay ?? 0;
-    const autoDisconnectMinutes = d.auto_disconnect_minutes ?? 30;
-    const mpdEnabled = d.mpd_enabled || false;
-    const mpdPort = d.mpd_port || "";
-    const mpdHwVolume = d.mpd_hw_volume ?? 100;
-    const avrcpEnabled = d.avrcp_enabled ?? true;
+    // Every value below lands inside a JS string literal in an onclick
+    // attribute, so strings go through safeJsString and numerics/booleans are
+    // coerced — never interpolated raw.
+    const audioProfile = safeJsString(d.audio_profile || "a2dp");
+    const idleMode = safeJsString(d.idle_mode || "default");
+    const kaMethod = safeJsString(d.keep_alive_method || "infrasound");
+    const powerSaveDelay = Number(d.power_save_delay) || 0;
+    const autoDisconnectMinutes = Number(d.auto_disconnect_minutes ?? 30) || 0;
+    const mpdEnabled = !!d.mpd_enabled;
+    const mpdPort = safeJsString(d.mpd_port || "");
+    const mpdHwVolume = Number(d.mpd_hw_volume ?? 100) || 0;
+    const avrcpEnabled = !!(d.avrcp_enabled ?? true);
     const safeName = safeJsString(d.name);
+    const safeAddr = safeJsString(d.address);
     const uuidsJson = safeJsString(JSON.stringify(d.uuids || []));
     kebab = `
       <div class="dropdown">
@@ -413,14 +435,14 @@ function buildDeviceCard(d) {
           <i class="fas fa-ellipsis-v"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end">
-          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${d.address}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
+          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${safeAddr}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
             <i class="fas fa-cog me-2"></i>Settings
           </a></li>
-          ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${d.address}'); return false;">
+          ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${safeAddr}'); return false;">
             <i class="fas fa-sync me-2"></i>Force Reconnect
           </a></li>` : ""}
           <li><hr class="dropdown-divider"></li>
-          <li><a class="dropdown-item text-danger" href="#" onclick="forgetDevice('${d.address}'); return false;">
+          <li><a class="dropdown-item text-danger" href="#" onclick="forgetDevice('${safeAddr}'); return false;">
             <i class="fas fa-trash me-2"></i>Forget Device
           </a></li>
         </ul>
@@ -440,7 +462,7 @@ function buildDeviceCard(d) {
     const clip = clipPct[d.signal_quality] || 0;
     const clipStyle = clip ? ` style="clip-path:inset(0 ${clip}% 0 0)"` : "";
     const title = stale ? `${d.signal_quality || "unknown"} (last seen during scan)` : (d.signal_quality || "unknown");
-    rssiHtml = ` <i class="fas fa-signal ${colorClass}"${clipStyle} title="${title}"></i> <small class="${stale ? "text-secondary" : "text-muted"}">${d.rssi} dBm</small>`;
+    rssiHtml = ` <i class="fas fa-signal ${colorClass}"${clipStyle} title="${escapeAttr(title)}"></i> <small class="${stale ? "text-secondary" : "text-muted"}">${escapeHtml(String(d.rssi))} dBm</small>`;
   }
 
   // --- Profiles text (always rendered in a fixed-height slot) ---
@@ -489,24 +511,25 @@ function buildDeviceCard(d) {
 
   // --- Action buttons ---
   let actionsHtml = "";
+  const actionAddr = safeJsString(d.address);
   if (d.connected) {
     actionsHtml = `
-      <button type="button" class="btn btn-sm btn-outline-danger" onclick="disconnectDevice('${d.address}')">
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="disconnectDevice('${actionAddr}')">
         <i class="fas fa-unlink me-1"></i>Disconnect
       </button>
     `;
   } else if (d.paired || d.stored) {
     actionsHtml = `
-      <button type="button" class="btn btn-sm btn-success" onclick="connectDevice('${d.address}')">
+      <button type="button" class="btn btn-sm btn-success" onclick="connectDevice('${actionAddr}')">
         <i class="fas fa-link me-1"></i>Connect
       </button>
     `;
   } else {
     actionsHtml = `
-      <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${d.address}')">
+      <button type="button" class="btn btn-sm btn-primary" onclick="pairDevice('${actionAddr}')">
         <i class="fas fa-handshake me-1"></i>Pair
       </button>
-      <button type="button" class="btn btn-sm btn-outline-secondary" onclick="dismissDevice('${d.address}')" title="Dismiss">
+      <button type="button" class="btn btn-sm btn-outline-secondary" onclick="dismissDevice('${actionAddr}')" title="Dismiss">
         <i class="fas fa-times"></i>
       </button>
     `;
@@ -522,7 +545,7 @@ function buildDeviceCard(d) {
       <div class="card device-card h-100${staleClass}">
         <div class="card-body">
           <div class="device-slot-header">
-            <h5 class="card-title mb-0" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</h5>
+            <h5 class="card-title mb-0" title="${escapeAttr(d.name)}">${escapeHtml(d.name)}</h5>
             <div class="d-flex align-items-center gap-1">
               <span class="badge ${badgeClass}">${statusText}</span>
               ${kebab}
@@ -601,7 +624,7 @@ function renderAdaptersModal(adapters) {
       const displayLabel = friendlyName || a.name;
       const selectBtn =
         !a.selected && a.powered
-          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${a.address}', '${safeJsString(displayLabel)}')">
+          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${safeJsString(a.address)}', '${safeJsString(displayLabel)}')">
                <i class="fas fa-check me-1"></i>Select
              </button>`
           : "";
@@ -769,6 +792,8 @@ function clearEvents() {
 // ============================================
 
 const MAX_LOG_ENTRIES = 1000;
+// Mirrors the .log-level.* rules in style.css; anything else falls back to info.
+const LOG_LEVEL_CLASSES = new Set(["debug", "info", "warning", "error"]);
 let allLogEntries = [];
 let logSearchTimer = null;
 
@@ -816,7 +841,10 @@ function renderSingleLogEntry(entry, isNew) {
 
   const d = new Date(entry.ts * 1000);
   const ts = d.toLocaleTimeString() + "." + String(d.getMilliseconds()).padStart(3, "0");
-  const levelClass = entry.level.toLowerCase();
+  // Constrained to a known set: the class lands in an attribute, and an
+  // unexpected level string would otherwise be interpolated raw.
+  const rawLevel = String(entry.level || "").toLowerCase();
+  const levelClass = LOG_LEVEL_CLASSES.has(rawLevel) ? rawLevel : "info";
   const logger = (entry.logger || "").split(".").pop();
 
   el.innerHTML =
