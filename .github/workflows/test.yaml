@@ -28,6 +28,11 @@ jobs:
   test:
     name: Unit tests
     runs-on: ubuntu-latest
+    # The job only reads the repo — no packages, no PR writes. Every other
+    # workflow here scopes its token per-job; this one was missed, which
+    # CodeQL flagged on #306 (actions/missing-workflow-permissions).
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
