@@ -491,9 +491,18 @@ def create_api_routes(
         # Apply to live config
         allowed = {"auto_reconnect", "reconnect_interval_seconds",
                     "reconnect_max_backoff_seconds", "scan_duration_seconds"}
+        was_auto_reconnect = manager.config.auto_reconnect
         for key in allowed:
             if key in body:
                 setattr(manager.config, key, body[key])
+
+        # Turning Auto Reconnect off must stop attempts already under way, not
+        # merely prevent new ones. A reconnect task can be sitting inside
+        # connect_device() for tens of seconds, and would still seize the
+        # speaker the user just asked us to leave alone (#281).
+        if was_auto_reconnect and not manager.config.auto_reconnect:
+            if manager.reconnect_service:
+                manager.reconnect_service.cancel_all()
 
         # Persist
         manager.config.save_settings()
