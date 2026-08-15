@@ -44,7 +44,7 @@ Bluetooth integration (used for BLE sensors, beacons, etc.):
 The header bar contains:
 
 - **Build info pill** — shows the version string (e.g. `sha-4f99686` for dev
-  builds, or a semver like `0.2.5` for stable)
+  builds, or a semver like `2.1.0` for stable)
 - **Views** dropdown — switch between **Events** and **Logs** views
 - **Settings** dropdown — open **App Settings** or **Bluetooth Adapters**
 - **Connection status** badge — shows the WebSocket state: *Connected*,

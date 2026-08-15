@@ -30,7 +30,7 @@ add-on, where typed C# minimal-API endpoints let the framework generate the spec
 
 [`aiohttp-pydantic`](https://pypi.org/project/aiohttp-pydantic/) 3.0.1 (May 2026) is the closest
 Python equivalent. Requires Python >= 3.12 and aiohttp >= 3.10 — both already satisfied here
-(3.12 and 3.14.1). Its `aiohttp_pydantic.oas` sub-app generates the spec from annotations, and
+(3.12 and 3.14.3). Its `aiohttp_pydantic.oas` sub-app generates the spec from annotations, and
 function-based handlers are supported via `@inject_params`, so no class-based view rewrite.
 
 Handlers would become:
