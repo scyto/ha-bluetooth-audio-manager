@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<!--
+  Self-contained Swagger UI. No CDN: a Home Assistant install may have no
+  internet access, and the frontend CSP would block it anyway.
+
+  Served at /api/docs, so relative asset URLs resolve against /api/ — hence
+  "../res/..." for static files and bare "openapi.json" / "info" for the API.
+  That keeps the page working both behind an ingress prefix and on direct
+  access to :8099, with no build-time knowledge of the base path.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Reference — Bluetooth Audio Manager</title>
+  <link rel="stylesheet" href="../res/swagger/swagger-ui.css">
+  <style>
+    :root {
+      --page-bg: #f1f3f5;
+      --panel-bg: #ffffff;
+      --panel-border: #dee2e6;
+      --text: #212529;
+      --text-muted: #6c757d;
+      --code-bg: #f8f9fa;
+      --accent: #4c8bf5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page-bg: #16181c;
+        --panel-bg: #1e2126;
+        --panel-border: #343a40;
+        --text: #e9ecef;
+        --text-muted: #adb5bd;
+        --code-bg: #101215;
+        --accent: #6ea8fe;
+      }
+    }
+
+    body { margin: 0; background: var(--page-bg); color: var(--text);
+           font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+    header.app-bar {
+      background: linear-gradient(135deg, #2c3138 0%, #1a1d21 100%);
+      color: #f8f9fa; padding: 1rem 1.5rem;
+      display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+    }
+    header.app-bar h1 { font-size: 1.15rem; margin: 0; font-weight: 600; }
+    header.app-bar .sub { color: #adb5bd; font-size: .875rem; }
+    header.app-bar a { color: #8ab4f8; text-decoration: none; margin-left: auto; font-size: .875rem; }
+    header.app-bar a:hover { text-decoration: underline; }
+
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 1.25rem 1rem 0; }
+
+    .panel {
+      background: var(--panel-bg); border: 1px solid var(--panel-border);
+      border-radius: 8px; padding: 1.1rem 1.25rem; margin-bottom: 1.25rem;
+    }
+    .panel h2 { margin: 0 0 .35rem; font-size: 1rem; font-weight: 600; }
+    .panel p { margin: 0 0 .85rem; color: var(--text-muted); font-size: .875rem; line-height: 1.5; }
+    .panel label { display: block; font-size: .8125rem; font-weight: 600; margin-bottom: .3rem; }
+
+    .row { display: flex; gap: .75rem; flex-wrap: wrap; margin-bottom: .85rem; }
+    .row > div { flex: 1 1 240px; }
+    select, input {
+      width: 100%; padding: .4rem .55rem; border-radius: 5px; font-size: .875rem;
+      border: 1px solid var(--panel-border); background: var(--code-bg); color: var(--text);
+      font-family: inherit; box-sizing: border-box;
+    }
+
+    pre {
+      background: var(--code-bg); border: 1px solid var(--panel-border);
+      border-radius: 6px; padding: .8rem .9rem; overflow-x: auto; margin: 0;
+      font-size: .8125rem; line-height: 1.5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .code-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .4rem; }
+    .code-head span { font-size: .8125rem; color: var(--text-muted); }
+    button.copy {
+      margin-left: auto; padding: .3rem .7rem; font-size: .8125rem; cursor: pointer;
+      border-radius: 5px; border: 1px solid var(--panel-border);
+      background: var(--panel-bg); color: var(--text); font-family: inherit;
+    }
+    button.copy:hover { border-color: var(--accent); color: var(--accent); }
+
+    .note { font-size: .8125rem; color: var(--text-muted); margin-top: .85rem; line-height: 1.5; }
+    .note code { background: var(--code-bg); padding: .1rem .3rem; border-radius: 3px; }
+
+    /* Swagger UI sits in its own card; tame the parts that fight the page. */
+    #swagger-ui { background: var(--panel-bg); border: 1px solid var(--panel-border);
+                  border-radius: 8px; padding-bottom: 1px; }
+    .swagger-ui .topbar { display: none; }
+    .swagger-ui .info { margin: 1.5rem 0 1rem; }
+    /* Version / OAS pills next to the title: stock Swagger UI renders white
+       text on a pale background, which reads as an empty badge. */
+    .swagger-ui .info .title small { background: #55606e; }
+    .swagger-ui .info .title small pre { color: #fff; }
+
+    @media (prefers-color-scheme: dark) {
+      .swagger-ui, .swagger-ui .info .title, .swagger-ui .info li,
+      .swagger-ui .info p, .swagger-ui .info table, .swagger-ui label,
+      .swagger-ui .opblock-tag, .swagger-ui .opblock .opblock-summary-description,
+      .swagger-ui .opblock .opblock-summary-operation-id,
+      .swagger-ui .opblock .opblock-summary-path, .swagger-ui .opblock-description-wrapper p,
+      .swagger-ui .opblock-external-docs-wrapper p, .swagger-ui .opblock-title_normal p,
+      .swagger-ui .parameter__name, .swagger-ui .parameter__type,
+      .swagger-ui table thead tr td, .swagger-ui table thead tr th,
+      .swagger-ui .response-col_status, .swagger-ui .response-col_links,
+      .swagger-ui .model, .swagger-ui .model-title, .swagger-ui .tab li button.tablinks,
+      .swagger-ui section.models h4, .swagger-ui section.models h4 span,
+      .swagger-ui .btn, .swagger-ui .scheme-container .schemes-title,
+      .swagger-ui .servers-title, .swagger-ui .dialog-ux .modal-ux-content p,
+      .swagger-ui .dialog-ux .modal-ux-header h3 { color: var(--text); }
+
+      /* Headings inside the rendered description default to a near-black
+         that disappears on a dark background. */
+      .swagger-ui .info h1, .swagger-ui .info h2, .swagger-ui .info h3,
+      .swagger-ui .info h4, .swagger-ui .info h5,
+      .swagger-ui .markdown h1, .swagger-ui .markdown h2,
+      .swagger-ui .markdown h3, .swagger-ui .markdown h4,
+      .swagger-ui .renderedMarkdown h1, .swagger-ui .renderedMarkdown h2,
+      .swagger-ui .renderedMarkdown h3, .swagger-ui .renderedMarkdown h4 {
+        color: var(--text);
+      }
+      .swagger-ui .info .markdown code, .swagger-ui .info .renderedMarkdown code,
+      .swagger-ui .markdown code, .swagger-ui .renderedMarkdown code {
+        background: rgba(255,255,255,.08); color: #ffa8a8;
+      }
+      .swagger-ui .opblock-tag small, .swagger-ui .opblock-tag small p,
+      .swagger-ui table.model tr.description td,
+      .swagger-ui .parameter__extension, .swagger-ui .parameter__in,
+      .swagger-ui .prop-format { color: var(--text-muted); }
+
+      .swagger-ui .opblock-tag { border-bottom-color: var(--panel-border); }
+      .swagger-ui .opblock .opblock-section-header { background: rgba(255,255,255,.05); }
+      .swagger-ui .opblock.opblock-get { background: rgba(97,175,254,.08); }
+      .swagger-ui .opblock.opblock-post { background: rgba(73,204,144,.08); }
+      .swagger-ui .opblock.opblock-put { background: rgba(252,161,48,.08); }
+      .swagger-ui section.models { background: rgba(255,255,255,.03); border-color: var(--panel-border); }
+      .swagger-ui section.models .model-container { background: rgba(255,255,255,.04); }
+      .swagger-ui .scheme-container { background: transparent; box-shadow: none; }
+      .swagger-ui .model-box { background: rgba(255,255,255,.05); }
+      .swagger-ui input[type=text], .swagger-ui textarea, .swagger-ui select {
+        background: var(--code-bg); color: var(--text); border-color: var(--panel-border);
+      }
+      .swagger-ui .microlight { background: #101215 !important; color: #e9ecef !important; }
+      .swagger-ui .responses-inner h4, .swagger-ui .responses-inner h5 { color: var(--text-muted); }
+      .swagger-ui .dialog-ux .modal-ux { background: var(--panel-bg); border-color: var(--panel-border); }
+      .swagger-ui svg:not(:root) { fill: var(--text); }
+    }
+  </style>
+</head>
+<body>
+
+<header class="app-bar">
+  <h1>Bluetooth Audio Manager — API Reference</h1>
+  <span class="sub" id="version"></span>
+  <a href="../">&larr; Back to add-on UI</a>
+</header>
+
+<div class="wrap">
+  <section class="panel">
+    <h2>Call this API from Home Assistant</h2>
+    <p>
+      This add-on is reachable from Home Assistant Core over the internal
+      Supervisor network — no port forwarding and no authentication token.
+      Pick an endpoint and a device to get a ready-to-paste block for your
+      <code>configuration.yaml</code>, then call it from any automation,
+      script, or dashboard button.
+    </p>
+
+    <div class="row">
+      <div>
+        <label for="ep">Endpoint</label>
+        <select id="ep">
+          <option value="connect">POST /api/connect — connect a paired device</option>
+          <option value="disconnect">POST /api/disconnect — disconnect a device</option>
+          <option value="force-reconnect">POST /api/force-reconnect — fix a stuck connection</option>
+          <option value="scan">POST /api/scan — start a discovery scan</option>
+        </select>
+      </div>
+      <div>
+        <label for="dev">Device</label>
+        <select id="dev"><option value="">Loading devices…</option></select>
+      </div>
+    </div>
+
+    <div class="code-head">
+      <span>configuration.yaml</span>
+      <button type="button" class="copy" id="copy">Copy</button>
+    </div>
+    <pre id="snippet">Loading…</pre>
+
+    <p class="note" id="hostnote"></p>
+  </section>
+
+  <div id="swagger-ui"></div>
+</div>
+
+<script src="../res/swagger/swagger-ui-bundle.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var PORT = 8099;
+  var host = null;
+
+  var EP = {
+    "connect":         { cmd: "bt_audio_connect",       needsAddress: true  },
+    "disconnect":      { cmd: "bt_audio_disconnect",    needsAddress: true  },
+    "force-reconnect": { cmd: "bt_audio_reconnect",     needsAddress: true  },
+    "scan":            { cmd: "bt_audio_scan",          needsAddress: false }
+  };
+
+  var epSel = document.getElementById("ep");
+  var devSel = document.getElementById("dev");
+  var out = document.getElementById("snippet");
+
+  function render() {
+    if (!host) { out.textContent = "Could not determine the add-on hostname."; return; }
+    var key = epSel.value;
+    var ep = EP[key];
+    var lines = [
+      "rest_command:",
+      "  " + ep.cmd + ":",
+      '    url: "http://' + host + ":" + PORT + "/api/" + key + '"',
+      "    method: post",
+      '    content_type: "application/json"'
+    ];
+    if (ep.needsAddress) {
+      var addr = devSel.value || "AA:BB:CC:DD:EE:FF";
+      lines.push("    payload: '{\"address\": \"" + addr + "\"}'");
+    } else {
+      lines.push("    payload: '{}'");
+    }
+    lines.push("");
+    lines.push("# Then call it from an automation:");
+    lines.push("#   action: rest_command." + ep.cmd);
+    out.textContent = lines.join("\n");
+  }
+
+  document.getElementById("copy").addEventListener("click", function () {
+    var btn = this;
+    navigator.clipboard.writeText(out.textContent).then(function () {
+      btn.textContent = "Copied";
+      setTimeout(function () { btn.textContent = "Copy"; }, 1500);
+    });
+  });
+
+  epSel.addEventListener("change", render);
+  devSel.addEventListener("change", render);
+
+  // The container hostname IS the Supervisor DNS name for this add-on, so
+  // /api/info already knows the host an automation should target.
+  fetch("info").then(function (r) { return r.json(); }).then(function (info) {
+    host = info.hostname;
+    document.getElementById("version").textContent = info.version;
+    document.getElementById("hostnote").innerHTML =
+      "Hostname <code>" + host + "</code> is this add-on's DNS name on the " +
+      "Supervisor network, resolvable from Home Assistant Core. It changes if " +
+      "you reinstall from a different repository, so regenerate this snippet " +
+      "after moving between the stable and dev add-on.";
+    render();
+  }).catch(function () {
+    out.textContent = "Could not reach /api/info.";
+  });
+
+  fetch("devices").then(function (r) { return r.json(); }).then(function (data) {
+    var paired = (data.devices || []).filter(function (d) { return d.paired || d.stored; });
+    devSel.innerHTML = "";
+    if (!paired.length) {
+      devSel.innerHTML = '<option value="">No paired devices — pair one first</option>';
+      return;
+    }
+    paired.forEach(function (d) {
+      var o = document.createElement("option");
+      o.value = d.address;
+      o.textContent = d.name + " (" + d.address + ")";
+      devSel.appendChild(o);
+    });
+    render();
+  }).catch(function () {
+    devSel.innerHTML = '<option value="">Could not load devices</option>';
+  });
+
+  window.ui = SwaggerUIBundle({
+    url: "openapi.json",
+    dom_id: "#swagger-ui",
+    presets: [SwaggerUIBundle.presets.apis],
+    layout: "BaseLayout",
+    deepLinking: true,
+    docExpansion: "list",
+    defaultModelsExpandDepth: 1,
+    tryItOutEnabled: true,
+    persistAuthorization: false
+  });
+})();
+</script>
+</body>
+</html>

@@ -29,6 +29,7 @@ This app gives you a point-and-click UI right in the HA sidebar. Scan, pair, con
   -  use the MPD integration to expose it as a `media_player` entity in HA for TTS, automations, and volume control
   -  this is not designed for multiroom audio, please use [Multiroom Audio App for HAOS](https://github.com/chrisuthe/Multi-SendSpin-Player-Container)
 - **AVRCP media buttons** — per-device toggle for hardware volume buttons and play/pause/skip tracking
+- **REST API with built-in Swagger UI** — connect, disconnect, and control devices from HA automations, scripts, and dashboard buttons; the add-on generates the `rest_command` config for you ([guide](docs/api.md))
 - **Multi-adapter support** — detects all Bluetooth adapters with friendly USB device names; switch between them from the UI
 - **Real-time monitoring** — live Events view for AVRCP/MPRIS/Transport events, plus a filterable Logs viewer with regex search
 - **Dark mode** — automatic system theme detection
@@ -100,10 +101,35 @@ This app gives you a point-and-click UI right in the HA sidebar. Scan, pair, con
 Configuration options and per-device settings are documented in the
 [App documentation](bluetooth_audio_manager/DOCS.md).
 
+## Automating with the REST API
+
+Everything the web UI does is a REST call, and Home Assistant can make those calls itself — so you
+can connect a speaker from an automation, a script, a schedule, or a dashboard button. This is the
+usual way to keep **Auto Reconnect** turned off (so the add-on stops competing with a phone for the
+speaker) while still connecting on demand.
+
+No port forwarding and no API token are needed — HA reaches the add-on over its internal network.
+
+```yaml
+rest_command:
+  bt_audio_connect:
+    url: "http://YOUR-ADDON-HOSTNAME:8099/api/connect"
+    method: post
+    content_type: "application/json"
+    payload: '{"address": "AA:BB:CC:DD:EE:FF"}'
+```
+
+The add-on ships an interactive **Swagger UI** at **Settings → API Reference**, which documents
+every endpoint, lets you try calls against your real hardware, and generates the `rest_command`
+block above with your actual hostname and device address already filled in.
+
+**→ [Full REST API guide](docs/api.md)** — recipes, automation examples, and troubleshooting.
+
 ## Links
 
 - [App Documentation](bluetooth_audio_manager/DOCS.md)
 - [Dev Documentation](bluetooth_audio_manager_dev/DOCS.md)
+- [REST API Guide](docs/api.md)
 - [Report a Device Issue](https://github.com/scyto/ha-bluetooth-audio-manager/issues/new?template=device-issue.yml)
 - [All Issues](https://github.com/scyto/ha-bluetooth-audio-manager/issues)
 - [Sponsor this project](https://github.com/sponsors/scyto)

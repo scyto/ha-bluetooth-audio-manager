@@ -238,6 +238,37 @@ so it survives reboots.
    speaker as the default output
 9. Use TTS, media player, or automations to play audio through it
 
+## Automating with the REST API
+
+Everything this add-on's UI does is a REST call, and Home Assistant can make
+those calls itself — so you can connect a speaker from an automation, script,
+schedule, or dashboard button. This is the usual way to keep **Auto Reconnect**
+turned off (so the add-on stops competing with a phone for the speaker) while
+still connecting on demand.
+
+No port forwarding and no API token are needed; HA reaches the add-on over its
+internal network.
+
+**Settings > API Reference** opens an interactive Swagger UI built into the
+add-on. It documents every endpoint, lets you try calls against your real
+hardware, and generates a ready-to-paste `rest_command` block with your own
+hostname and device address already filled in:
+
+```yaml
+rest_command:
+  bt_audio_connect:
+    url: "http://YOUR-ADDON-HOSTNAME:8099/api/connect"
+    method: post
+    content_type: "application/json"
+    payload: '{"address": "AA:BB:CC:DD:EE:FF"}'
+```
+
+Note that **Try it out** in the API Reference is not a sandbox — it acts on
+your real devices.
+
+Full guide with automation examples and troubleshooting:
+<https://github.com/scyto/ha-bluetooth-audio-manager/blob/main/docs/api.md>
+
 ## Requirements
 
 - A Bluetooth adapter (built-in or USB dongle) accessible to HAOS

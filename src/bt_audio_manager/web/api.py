@@ -4,11 +4,14 @@ import asyncio
 import logging
 import os
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 from aiohttp.web import WebSocketResponse
 from dbus_next.errors import DBusError
+
+from ..persistence.store import normalize_address
 
 if TYPE_CHECKING:
     from ..manager import BluetoothAudioManager
@@ -18,6 +21,36 @@ logger = logging.getLogger(__name__)
 
 # Strict Bluetooth MAC address pattern (AA:BB:CC:DD:EE:FF)
 _MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+
+STATIC_DIR = Path(__file__).parent / "static"
+OPENAPI_PATH = STATIC_DIR / "openapi.yaml"
+DOCS_PATH = STATIC_DIR / "docs.html"
+
+# Parsed openapi.yaml, cached after first read.
+_openapi_cache: dict | None = None
+
+
+def load_openapi_spec() -> dict | None:
+    """Parse and cache the OpenAPI spec, or return None if unavailable.
+
+    PyYAML comes from the ``py3-yaml`` Alpine package rather than pip (no
+    musl wheel for armv7), so import it lazily — a missing parser should
+    cost us the docs page, not the add-on.
+    """
+    global _openapi_cache
+    if _openapi_cache is not None:
+        return _openapi_cache
+    try:
+        import yaml
+    except ImportError:
+        logger.error("PyYAML not installed — API docs unavailable")
+        return None
+    try:
+        _openapi_cache = yaml.safe_load(OPENAPI_PATH.read_text())
+    except Exception as e:
+        logger.error("Failed to parse %s: %s", OPENAPI_PATH.name, e)
+        return None
+    return _openapi_cache
 
 # Map common BlueZ D-Bus error strings to user-friendly messages
 _BLUEZ_ERROR_MAP = {
@@ -51,6 +84,9 @@ def _get_validated_address(body: dict) -> tuple[str | None, web.Response | None]
     """Extract and validate a Bluetooth MAC address from a request body.
 
     Returns (address, None) on success or (None, error_response) on failure.
+    The address is normalised to upper case — BlueZ object paths, the
+    manager's per-device dicts and the persistence store are all keyed that
+    way, so a lower-case address from a caller must not reach them.
     """
     address = body.get("address")
     if not address:
@@ -60,7 +96,7 @@ def _get_validated_address(body: dict) -> tuple[str | None, web.Response | None]
             {"error": "Invalid Bluetooth address format (expected XX:XX:XX:XX:XX:XX)"},
             status=400,
         )
-    return address, None
+    return normalize_address(address), None
 
 
 async def _ws_sender(
@@ -310,6 +346,7 @@ def create_api_routes(
                 {"error": "Invalid Bluetooth address format (expected XX:XX:XX:XX:XX:XX)"},
                 status=400,
             )
+        address = normalize_address(address)
         try:
             # Auto-store paired devices not yet in the persistence store
             # (can happen when BlueZ paired a device before the add-on tracked it,
@@ -454,9 +491,18 @@ def create_api_routes(
         # Apply to live config
         allowed = {"auto_reconnect", "reconnect_interval_seconds",
                     "reconnect_max_backoff_seconds", "scan_duration_seconds"}
+        was_auto_reconnect = manager.config.auto_reconnect
         for key in allowed:
             if key in body:
                 setattr(manager.config, key, body[key])
+
+        # Turning Auto Reconnect off must stop attempts already under way, not
+        # merely prevent new ones. A reconnect task can be sitting inside
+        # connect_device() for tens of seconds, and would still seize the
+        # speaker the user just asked us to leave alone (#281).
+        if was_auto_reconnect and not manager.config.auto_reconnect:
+            if manager.reconnect_service:
+                manager.reconnect_service.cancel_all()
 
         # Persist
         manager.config.save_settings()
@@ -688,6 +734,40 @@ def create_api_routes(
             results["bluez_objects_error"] = str(e)
 
         return web.json_response(results)
+
+    # ---- Self-hosted API documentation ----
+
+    @routes.get("/api/openapi.json")
+    async def openapi_json(request: web.Request) -> web.Response:
+        """Serve the OpenAPI spec as JSON, with the server URL fixed up.
+
+        Swagger UI builds "Try it out" request URLs from ``servers[0].url``.
+        Behind Home Assistant ingress the app is mounted under an opaque,
+        per-session prefix, so the base URL can only be known per-request —
+        ingress supplies it in the ``X-Ingress-Path`` header.
+        """
+        spec = load_openapi_spec()
+        if spec is None:
+            return web.json_response(
+                {"error": "API spec unavailable. Check add-on logs for details."},
+                status=503,
+            )
+        base = request.headers.get("X-Ingress-Path", "") or "/"
+        # Shallow copy: never mutate the cached spec.
+        return web.json_response({**spec, "servers": [{"url": base}]})
+
+    @routes.get("/api/docs")
+    async def api_docs(request: web.Request) -> web.Response:
+        """Serve the self-contained Swagger UI page."""
+        return web.Response(
+            text=DOCS_PATH.read_text(),
+            content_type="text/html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     @routes.get("/api/logs")
     async def get_logs(request: web.Request) -> web.Response:

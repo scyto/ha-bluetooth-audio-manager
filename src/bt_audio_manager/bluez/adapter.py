@@ -11,6 +11,7 @@ from dbus_next.errors import DBusError
 from .constants import (
     A2DP_SOURCE_UUID,
     ADAPTER_INTERFACE,
+    AUDIO_UUIDS,
     AVRCP_CONTROLLER_UUID,
     AVRCP_TARGET_UUID,
     BLUEZ_SERVICE,
@@ -188,10 +189,10 @@ class BluezAdapter:
         HFP, or HSP).  Devices that only advertise A2DP Source (e.g.
         phones) are excluded since this add-on manages speakers.
 
-        When cod_fallback=True, devices with no UUIDs but an audio-sink
-        Class of Device are also accepted.  This should only be enabled
-        during scan sessions to avoid surfacing stale BlueZ cache entries
-        as ghost devices.
+        When cod_fallback=True, devices that advertise no recognised audio
+        UUID but have an audio-sink Class of Device are also accepted.
+        This should only be enabled during scan sessions to avoid
+        surfacing stale BlueZ cache entries as ghost devices.
         """
         introspection = await self._bus.introspect(BLUEZ_SERVICE, "/")
         proxy = self._bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
@@ -215,15 +216,26 @@ class BluezAdapter:
 
             uuid_matched = bool(uuids.intersection(SINK_UUIDS))
 
-            # CoD fallback (scan-only): device advertises no UUIDs but
-            # has an audio-sink CoD (headphones, speaker, etc.).  These
-            # are budget BR/EDR devices that only expose profiles after
-            # pairing triggers SDP.  Gated to cod_fallback=True to avoid
-            # surfacing stale BlueZ cache entries as ghost devices.
+            # CoD fallback (scan-only): device advertises nothing we
+            # recognise as an audio profile, but has an audio-sink CoD
+            # (headphones, speaker, etc.).  Pre-pairing, Device1.UUIDs
+            # comes from the inquiry-response EIR rather than SDP, so it
+            # is either empty (budget BR/EDR devices that only expose
+            # profiles once pairing triggers SDP) or carries whatever the
+            # vendor chose to broadcast — e.g. Anker Soundcore advertises
+            # only Apple's iAP2/MFi accessory UUID.  Both cases are "no
+            # profile information", so fall back to the CoD.
+            #
+            # Devices that DO advertise a recognised audio UUID are left
+            # alone: A2DP Source (phones, projectors, TVs), AVRCP-only
+            # remotes and LE Audio devices all still fall through to
+            # their own rejection branches in _classify_rejection().
+            # Gated to cod_fallback=True to avoid surfacing stale BlueZ
+            # cache entries as ghost devices.  (#286)
             cod_matched = (
                 cod_fallback
                 and not uuid_matched
-                and not uuids
+                and not uuids.intersection(AUDIO_UUIDS)
                 and is_cod_audio_sink(cod_raw)
             )
 
@@ -282,10 +294,14 @@ class BluezAdapter:
                 else:
                     state = "unpaired"
                 if cod_matched:
+                    uuid_note = (
+                        f"unrecognised UUIDs advertised: {sorted(uuids)}."
+                        if uuids else "no UUIDs advertised."
+                    )
                     logger.info(
                         "Accepted device %s (%s) [%s] — CoD fallback %s. "
-                        "UUIDs will resolve after pairing.",
-                        name, addr, state, cod_str,
+                        "%s Audio profiles will resolve after pairing.",
+                        name, addr, state, cod_str, uuid_note,
                     )
                 else:
                     matched = sorted(uuids.intersection(SINK_UUIDS))
