@@ -75,6 +75,8 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    MPD_SELF_HEAL_GRACE = 10  # seconds MPD must be missing before self-heal steps in
+    MPD_SELF_HEAL_COOLDOWN = 30  # min seconds between MPD self-heal attempts per device
     RSSI_REFRESH_INTERVAL = 60  # seconds between silent discovery bursts
     RSSI_REFRESH_DURATION = 5   # seconds per silent discovery burst
     MAX_RECENT_EVENTS = 50  # ring buffer size for MPRIS/AVRCP events
@@ -93,6 +95,9 @@ class BluetoothAudioManager:
         self._auto_disconnect_tasks: dict[str, asyncio.Task] = {}  # addr → auto-disconnect timer
         self._suspended_sinks: set[str] = set()  # addresses with suspended sinks
         self._mpd_instances: dict[str, MPDManager] = {}  # addr → per-device MPD
+        self._mpd_start_locks: dict[str, asyncio.Lock] = {}  # addr → serialises MPD starts
+        self._mpd_self_heal_at: dict[str, float] = {}  # addr → monotonic time of last self-heal
+        self._mpd_missing_since: dict[str, float] = {}  # addr → monotonic time MPD was first seen missing
         self._last_avrcp_device: tuple[str, float] | None = None  # (addr, timestamp)
         self.media_player: AVRCPMediaPlayer | None = None
         self.managed_devices: dict[str, BluezDevice] = {}
@@ -1640,10 +1645,83 @@ class BluetoothAudioManager:
                 if snapshot != self._last_sink_snapshot:
                     self._last_sink_snapshot = snapshot
                     self.event_bus.emit("sinks_changed", {"sinks": sinks})
+                try:
+                    await self._self_heal_mpd(sinks)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug("MPD self-heal error: %s", e)
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 logger.debug("Sink poll error: %s", e)
+
+    async def _self_heal_mpd(self, sinks: list[dict]) -> None:
+        """Start MPD for connected devices whose sink exists but MPD does not run.
+
+        MPD is only started at fixed moments (startup, connect, reconnect,
+        profile switch).  If the PulseAudio sink is not there yet at that
+        moment the start is merely "deferred" — and nothing ever retries it.
+        Likewise a daemon that exits on its own (its sink vanished during a
+        drop) is only replaced on the *next* connect.  Either way the device
+        stays connected with no MPD, so the HA media_player sits unavailable
+        until someone toggles mpd_enabled by hand.
+
+        This piggybacks on the sink poll (no extra PulseAudio queries): for
+        every Bluetooth sink present, if the device is connected, has MPD
+        enabled and no live daemon for at least MPD_SELF_HEAL_GRACE seconds
+        (so the normal connect path gets to start it first), start it.
+        Rate-limited per device so a daemon that keeps failing is not
+        restarted on every poll.
+        """
+        now = time.monotonic()
+        seen: set[str] = set()
+        for sink in sinks:
+            sink_name = sink.get("name", "") if isinstance(sink, dict) else ""
+            address = self._addr_from_sink_name(sink_name).upper()
+            if not address or address in self._connecting:
+                continue
+            if not self.store.get_device_settings(address).get("mpd_enabled", False):
+                continue
+            existing = self._mpd_instances.get(address)
+            if existing is not None and existing.is_running:
+                continue
+            device = self.managed_devices.get(address)
+            if device is None:
+                continue
+            seen.add(address)
+            first_seen = self._mpd_missing_since.setdefault(address, now)
+            if now - first_seen < self.MPD_SELF_HEAL_GRACE:
+                continue
+            if now - self._mpd_self_heal_at.get(address, float("-inf")) < self.MPD_SELF_HEAL_COOLDOWN:
+                continue
+            self._mpd_self_heal_at[address] = now
+
+            # Serialise against connect/disconnect handlers, then re-check:
+            # a disconnect may have torn the device down while we waited.
+            async with self._device_lock(address):
+                if address in self._connecting:
+                    continue
+                existing = self._mpd_instances.get(address)
+                if existing is not None and existing.is_running:
+                    continue
+                try:
+                    if not await device.is_connected():
+                        continue
+                except Exception as e:
+                    logger.debug("MPD self-heal: is_connected(%s) failed: %s", address, e)
+                    continue
+                logger.warning(
+                    "MPD for %s is not running although the device is connected "
+                    "and its sink %s exists — starting it (self-heal)",
+                    address, sink_name,
+                )
+                await self._start_mpd_if_enabled(address)
+        # Forget devices that are healthy again (or gone) so a later problem
+        # gets a fresh grace period.
+        for address in list(self._mpd_missing_since):
+            if address not in seen:
+                del self._mpd_missing_since[address]
 
     # -- RSSI tracking (D-Bus discovery events + silent refresh bursts) --
 
@@ -2987,7 +3065,22 @@ class BluetoothAudioManager:
         return None
 
     async def _start_mpd_if_enabled(self, address: str) -> None:
-        """Start a per-device MPD instance if mpd_enabled in its settings."""
+        """Start a per-device MPD instance if mpd_enabled in its settings.
+
+        Serialised per device: the connect path, the reconnect signal
+        handler, settings changes and the sink-poll self-heal can all ask for
+        a start at nearly the same moment.  Without the lock two callers can
+        both see "no instance", both allocate and both spawn a daemon,
+        leaving an orphan process bound to the port.
+        """
+        lock = self._mpd_start_locks.get(address)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._mpd_start_locks[address] = lock
+        async with lock:
+            await self._start_mpd_if_enabled_locked(address)
+
+    async def _start_mpd_if_enabled_locked(self, address: str) -> None:
         settings = self.store.get_device_settings(address)
         if not settings.get("mpd_enabled", False):
             return
