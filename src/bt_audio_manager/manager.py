@@ -2160,6 +2160,7 @@ class BluetoothAudioManager:
 
             # Serialize idle/MPD/transport setup against concurrent
             # disconnect handlers to prevent racing state changes.
+            a2dp_ready = False
             async with self._device_lock(address):
                 from .bluez.constants import HFP_SWITCHING_ENABLED
                 if HFP_SWITCHING_ENABLED:
@@ -2176,12 +2177,43 @@ class BluetoothAudioManager:
                                 await self._start_mpd_if_enabled(address)
                     else:
                         # Check/activate A2DP transport (may need ConnectProfile)
-                        await self._ensure_a2dp_transport(address)
+                        a2dp_ready = await self._ensure_a2dp_transport(address)
                 else:
                     # HFP switching disabled — just ensure A2DP transport
-                    await self._ensure_a2dp_transport(address)
+                    a2dp_ready = await self._ensure_a2dp_transport(address)
+
+            if a2dp_ready:
+                await self._finish_a2dp_reconnect(address)
         except Exception as e:
             logger.warning("Post-connect setup failed for %s: %s", address, e)
+
+    async def _finish_a2dp_reconnect(self, address: str) -> None:
+        """Idle mode + MPD for an A2DP device that connected outside connect_device.
+
+        connect_device() (UI, API, the reconnect scheduler) sets these up
+        once the sink appears; the HFP branch above does too.  An A2DP
+        connection that arrives only as a BlueZ signal — the speaker
+        reconnecting by itself after a power cycle, typically once the
+        scheduler has given up — never did, so the device sat connected with
+        a transport but no MPD daemon (#316).  Wait for the sink outside the
+        lock, then set up under it.
+        """
+        if not self.pulse:
+            return
+        sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
+        if not sink_name:
+            return  # the sink-poll self-heal picks it up if it appears later
+        async with self._device_lock(address):
+            if address in self._connecting:
+                return  # an explicit connect owns the setup
+            device = self.managed_devices.get(address)
+            try:
+                if device is not None and not await device.is_connected():
+                    return
+            except Exception:
+                return
+            await self._apply_idle_mode(address)
+            await self._start_mpd_if_enabled(address)
 
     async def _log_transport_properties(self, address: str) -> bool:
         """Enumerate BlueZ objects to find and log MediaTransport1 for a device.
