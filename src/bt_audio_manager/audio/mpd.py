@@ -53,6 +53,9 @@ class MPDManager:
         self._connect_lock = asyncio.Lock()
         self._sink_name: str | None = None
         self._stderr_task: asyncio.Task | None = None
+        # Repeat mode + guard against a reconnect loop (see enable_repeat)
+        self._stream_ends: list[float] = []
+        self._repeat_guard_task: asyncio.Task | None = None
 
     # -- Lifecycle --
 
@@ -76,6 +79,9 @@ class MPDManager:
     async def stop(self) -> None:
         """Disconnect client and terminate MPD daemon."""
         self._running = False
+        if self._repeat_guard_task and not self._repeat_guard_task.done():
+            self._repeat_guard_task.cancel()
+        self._repeat_guard_task = None
 
         if self._stderr_task:
             self._stderr_task.cancel()
@@ -245,8 +251,74 @@ class MPDManager:
                 text = line.decode().rstrip()
                 if text:
                     logger.info("[mpd:%d] %s", self._port, text)
+                    if "player: played " in text:
+                        self._on_stream_end()
         except Exception:
             pass
+
+    # -- Repeat mode ---------------------------------------------------------
+    #
+    # A live radio stream "ends" whenever the server closes the connection.
+    # MPD then logs "player: played <url>" and simply stops: the speaker
+    # stays silent until something outside notices and plays again (minutes,
+    # with a polling watchdog).  With repeat on and a single-entry queue MPD
+    # re-opens the same URL straight away.  A real error (server down) still
+    # stops playback, so repeat alone cannot spin.  The guard below covers
+    # the remaining case of a server that keeps accepting and immediately
+    # closing: too many ends in a short time switch repeat off for a while.
+
+    REPEAT_GUARD_MAX_ENDS = 5      # stream ends tolerated within the window
+    REPEAT_GUARD_WINDOW = 60.0     # seconds
+    REPEAT_GUARD_COOLDOWN = 600.0  # seconds repeat stays off after tripping
+
+    async def enable_repeat(self) -> bool:
+        """Turn MPD's repeat mode on (lost whenever the daemon restarts)."""
+        await self._ensure_connected()
+        if not self._client:
+            return False
+        try:
+            await self._client.repeat(1)
+            await self._client.single(0)
+            return True
+        except Exception as e:
+            logger.debug("MPD repeat on failed (port %d): %s", self._port, e)
+            if self._is_connection_error(e):
+                self._disconnect_client()
+            return False
+
+    async def _set_repeat_off(self) -> None:
+        await self._ensure_connected()
+        if not self._client:
+            return
+        try:
+            await self._client.repeat(0)
+        except Exception as e:
+            logger.debug("MPD repeat off failed (port %d): %s", self._port, e)
+            if self._is_connection_error(e):
+                self._disconnect_client()
+
+    def _on_stream_end(self) -> None:
+        now = asyncio.get_running_loop().time()
+        self._stream_ends = [t for t in self._stream_ends if now - t < self.REPEAT_GUARD_WINDOW]
+        self._stream_ends.append(now)
+        if len(self._stream_ends) <= self.REPEAT_GUARD_MAX_ENDS:
+            return
+        if self._repeat_guard_task and not self._repeat_guard_task.done():
+            return  # already tripped
+        logger.warning(
+            "[mpd:%d] stream ended %d times within %ds — repeat off for %ds "
+            "to avoid hammering the server",
+            self._port, len(self._stream_ends), int(self.REPEAT_GUARD_WINDOW),
+            int(self.REPEAT_GUARD_COOLDOWN),
+        )
+        self._stream_ends.clear()
+        self._repeat_guard_task = asyncio.ensure_future(self._repeat_cooldown())
+
+    async def _repeat_cooldown(self) -> None:
+        await self._set_repeat_off()
+        await asyncio.sleep(self.REPEAT_GUARD_COOLDOWN)
+        if self.is_running and await self.enable_repeat():
+            logger.info("[mpd:%d] repeat back on after cooldown", self._port)
 
     # -- Client connection --
 

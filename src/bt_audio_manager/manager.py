@@ -3413,6 +3413,9 @@ class BluetoothAudioManager:
             # Sync volume: set hardware to 100% so MPD is the single volume
             # control, or sync MPD to hardware if a stream is active.
             await self._init_mpd_volume(address, mpd, sink_name)
+            # Live radio: re-open the stream at once when the server ends it,
+            # instead of stopping until something outside plays again.
+            await mpd.enable_repeat()
         except Exception as e:
             logger.warning("MPD start failed for %s: %s", address, e)
 
