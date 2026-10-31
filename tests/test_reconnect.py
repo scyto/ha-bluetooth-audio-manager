@@ -236,6 +236,7 @@ class ExplicitConnectFailureTest(unittest.IsolatedAsyncioTestCase):
         manager.reconnect_service = MagicMock()
         manager._connecting = set()
         manager._suppress_reconnect = set()
+        manager._suppress_reconnect_at = {}
         manager.managed_devices = {}
         manager.event_bus = MagicMock()
         manager._broadcast_status = MagicMock()
@@ -268,6 +269,72 @@ class ExplicitConnectFailureTest(unittest.IsolatedAsyncioTestCase):
             await manager.connect_device(ADDR, _from_reconnect=True)
 
         manager.reconnect_service.handle_disconnect.assert_not_called()
+
+
+class UserDisconnectFlagTest(unittest.TestCase):
+    """The "user-initiated" flag must not outlive the disconnect it was for (#317).
+
+    It used to be consumed only by the *next* disconnect event.  When that
+    event never came, the flag lingered until an unrelated drop much later,
+    which was then skipped as "user-initiated" and never reconnected.
+    """
+
+    def _manager(self):
+        manager = BluetoothAudioManager.__new__(BluetoothAudioManager)
+        manager._suppress_reconnect = set()
+        manager._suppress_reconnect_at = {}
+        manager._connecting = set()
+        manager.reconnect_service = MagicMock()
+        for attr in ("_device_connect_time", "_last_signaled_volume", "_last_pa_volume",
+                     "_connected_rssi", "_rssi_timestamp", "_recent_disconnects"):
+            setattr(manager, attr, {})
+        manager._running_sinks = set()
+        manager._adapter_path = "/org/bluez/hci0"
+        manager._fire_and_forget = MagicMock(side_effect=lambda coro: coro.close())
+        manager._broadcast_all = MagicMock()
+        return manager
+
+    def _disconnect_at(self, manager, t):
+        with patch("bt_audio_manager.manager.time.monotonic", return_value=t):
+            manager._on_device_disconnected(ADDR)
+
+    def _flag_at(self, manager, t):
+        with patch("bt_audio_manager.manager.time.monotonic", return_value=t):
+            manager._suppress_auto_reconnect(ADDR)
+
+    def test_fresh_flag_suppresses_reconnect(self):
+        manager = self._manager()
+        self._flag_at(manager, 100.0)
+        self._disconnect_at(manager, 105.0)
+        manager.reconnect_service.handle_disconnect.assert_not_called()
+        self.assertNotIn(ADDR, manager._suppress_reconnect)
+
+    def test_stale_flag_is_ignored_and_reconnect_scheduled(self):
+        manager = self._manager()
+        self._flag_at(manager, 100.0)
+        self._disconnect_at(manager, 100.0 + 31)
+        manager.reconnect_service.handle_disconnect.assert_called_once_with(ADDR)
+        self.assertNotIn(ADDR, manager._suppress_reconnect)
+        self.assertNotIn(ADDR, manager._suppress_reconnect_at)
+
+    def test_flag_is_consumed_by_one_disconnect_only(self):
+        manager = self._manager()
+        self._flag_at(manager, 100.0)
+        self._disconnect_at(manager, 101.0)
+        self._disconnect_at(manager, 200.0)  # a later, natural drop
+        manager.reconnect_service.handle_disconnect.assert_called_once_with(ADDR)
+
+    def test_untimed_flag_still_suppresses(self):
+        # The HFP cycle sets and clears the flag around its own bounded work.
+        manager = self._manager()
+        manager._suppress_reconnect.add(ADDR)
+        self._disconnect_at(manager, 10_000.0)
+        manager.reconnect_service.handle_disconnect.assert_not_called()
+
+    def test_no_flag_reconnects(self):
+        manager = self._manager()
+        self._disconnect_at(manager, 100.0)
+        manager.reconnect_service.handle_disconnect.assert_called_once_with(ADDR)
 
 
 if __name__ == "__main__":

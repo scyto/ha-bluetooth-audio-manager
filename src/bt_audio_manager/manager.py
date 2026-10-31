@@ -75,6 +75,7 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    USER_DISCONNECT_WINDOW = 30  # seconds a user-initiated disconnect flag stays valid
     ADAPTER_RETURN_SETTLE = 5  # seconds to let a re-added adapter power up before restarting
     MPD_SELF_HEAL_GRACE = 10  # seconds MPD must be missing before self-heal steps in
     MPD_SELF_HEAL_COOLDOWN = 30  # min seconds between MPD self-heal attempts per device
@@ -115,6 +116,7 @@ class BluetoothAudioManager:
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
+        self._suppress_reconnect_at: dict[str, float] = {}  # addr → monotonic time flag was set
         self._a2dp_attempts: dict[str, int] = {}  # addr → consecutive A2DP activation failures
         self._null_hfp_registered: bool = False  # tracks null HFP handler state
         self._recent_disconnects: dict[str, float] = {}  # addr → time.time() for burst detection
@@ -144,6 +146,29 @@ class BluetoothAudioManager:
             "Explicit connection to %s failed; restoring auto-reconnect", address
         )
         self.reconnect_service.handle_disconnect(address)
+
+    def _suppress_auto_reconnect(self, address: str) -> None:
+        """Mark the *next* disconnect of *address* as user-initiated.
+
+        The flag is consumed by that disconnect event — but if the event
+        never comes (the device was already gone, or a concurrent connect
+        returned early without clearing it) it used to linger until some
+        unrelated drop hours later, which was then silently treated as
+        "user-initiated" and never reconnected (#317).  It is therefore
+        only honoured for USER_DISCONNECT_WINDOW seconds.
+        """
+        self._suppress_reconnect.add(address)
+        self._suppress_reconnect_at[address] = time.monotonic()
+
+    def _clear_auto_reconnect_suppression(self, address: str) -> None:
+        self._suppress_reconnect.discard(address)
+        self._suppress_reconnect_at.pop(address, None)
+
+    def _suppression_is_stale(self, address: str) -> bool:
+        # Flags without a timestamp (the HFP cycle sets and clears its own
+        # around a bounded operation) are always current.
+        set_at = self._suppress_reconnect_at.get(address)
+        return set_at is not None and time.monotonic() - set_at > self.USER_DISCONNECT_WINDOW
 
     # -- Adapter re-index handling --------------------------------------
     #
@@ -1095,7 +1120,7 @@ class BluetoothAudioManager:
         if self.reconnect_service and not _from_reconnect:
             self.reconnect_service.cancel_reconnect(address)
         # Clear any disconnect suppression (user wants to connect now)
-        self._suppress_reconnect.discard(address)
+        self._clear_auto_reconnect_suppression(address)
         self._broadcast_status(f"Connecting to {address}...")
 
         self._connecting.add(address)
@@ -1263,7 +1288,7 @@ class BluetoothAudioManager:
             self.reconnect_service.cancel_reconnect(address)
 
         # Suppress auto-reconnect for this user-initiated disconnect
-        self._suppress_reconnect.add(address)
+        self._suppress_auto_reconnect(address)
 
         try:
             device = await self._get_or_create_device(address)
@@ -1300,7 +1325,7 @@ class BluetoothAudioManager:
         self._last_pa_volume.pop(address, None)
         self._device_lifecycle_locks.pop(address, None)
         self._connecting.discard(address)
-        self._suppress_reconnect.discard(address)
+        self._clear_auto_reconnect_suppression(address)
         # Cancel reconnection
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
@@ -1371,7 +1396,7 @@ class BluetoothAudioManager:
         # 4. Disconnect all connected devices
         for i, addr in enumerate(addresses, 1):
             self._broadcast_status(f"Disconnecting device {i}/{total}...")
-            self._suppress_reconnect.add(addr)
+            self._suppress_auto_reconnect(addr)
             device = self.managed_devices.get(addr)
             if device:
                 try:
@@ -2003,11 +2028,18 @@ class BluetoothAudioManager:
         if address in self._connecting:
             # Active pair/connect flow in progress — don't start competing reconnect
             logger.info("Skipping auto-reconnect for %s (connection in progress)", address)
-        elif address in self._suppress_reconnect:
+        elif address in self._suppress_reconnect and not self._suppression_is_stale(address):
             # User-initiated disconnect — don't auto-reconnect
-            self._suppress_reconnect.discard(address)
+            self._clear_auto_reconnect_suppression(address)
             logger.info("Skipping auto-reconnect for %s (user-initiated disconnect)", address)
         elif self.reconnect_service:
+            if address in self._suppress_reconnect:
+                logger.info(
+                    "Ignoring stale user-initiated flag for %s (older than %ds) — "
+                    "scheduling auto-reconnect",
+                    address, self.USER_DISCONNECT_WINDOW,
+                )
+                self._clear_auto_reconnect_suppression(address)
             self.reconnect_service.handle_disconnect(address)
         self._fire_and_forget(self._broadcast_all())
 
