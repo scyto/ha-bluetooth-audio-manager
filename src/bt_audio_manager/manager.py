@@ -123,6 +123,15 @@ class BluetoothAudioManager:
         self._scan_debounce_handle: asyncio.TimerHandle | None = None
         self._pending_toasts: list[dict] = []  # toasts queued before any WS client connects
 
+    def _reschedule_failed_explicit_connect(self, address: str) -> None:
+        """Restore automatic recovery after an explicit connection failure."""
+        if not self.reconnect_service or not self.config.auto_reconnect:
+            return
+        logger.info(
+            "Explicit connection to %s failed; restoring auto-reconnect", address
+        )
+        self.reconnect_service.handle_disconnect(address)
+
     async def _resolve_adapter_path(self) -> str:
         """Resolve the configured bt_adapter to a BlueZ D-Bus path.
 
@@ -959,6 +968,7 @@ class BluetoothAudioManager:
         self._broadcast_status(f"Connecting to {address}...")
 
         self._connecting.add(address)
+        succeeded = False
         try:
             device = await self._get_or_create_device(address)
 
@@ -1093,6 +1103,7 @@ class BluetoothAudioManager:
                         await self._apply_idle_mode(address)
                         await self._start_mpd_if_enabled(address)
                     await self._broadcast_all()
+                    succeeded = True
                     return True
                 logger.warning("%s sink for %s did not appear in PulseAudio", profile_label, address)
                 await self._broadcast_all()
@@ -1100,10 +1111,18 @@ class BluetoothAudioManager:
 
             # PulseAudio not available — connection may still work at BlueZ level
             await self._broadcast_all()
-            return await device.is_connected()
+            succeeded = await device.is_connected()
+            return succeeded
         finally:
             self._connecting.discard(address)
             self.event_bus.emit("status", {"message": ""})
+            # The explicit path cancelled any pending auto-reconnect above.
+            # If it failed, hand the device back to the reconnect service —
+            # otherwise a failed manual/forced connect silently disables
+            # automatic recovery for this device until its next disconnect.
+            # (Based on Cayouche1989/ha-bluetooth-audio-manager@2c38ea0.)
+            if not _from_reconnect and not succeeded:
+                self._reschedule_failed_explicit_connect(address)
 
     async def disconnect_device(self, address: str) -> None:
         """Disconnect a device without removing it from the store."""
