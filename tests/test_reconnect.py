@@ -13,8 +13,9 @@ setting and the service state, does a reconnect task get created?
 
 import asyncio
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from bt_audio_manager.manager import BluetoothAudioManager
 from bt_audio_manager.reconnect import ReconnectService
 
 ADDR = "AA:BB:CC:DD:EE:FF"
@@ -216,6 +217,57 @@ class HandleDisconnectTest(unittest.TestCase):
 
     def test_ignores_disconnect_when_not_running(self):
         self.assertEqual(self._handle(auto_reconnect=True, running=False), [])
+
+
+class ExplicitConnectFailureTest(unittest.IsolatedAsyncioTestCase):
+    """A failed explicit connect must restore, not cancel, automatic recovery.
+
+    connect_device() cancels any pending reconnect before an explicit
+    (UI/API/force-reconnect) attempt.  If that attempt failed, nothing ever
+    rescheduled the device, so a force-reconnect against a powered-off
+    speaker left it without auto-reconnect until its next disconnect event.
+    Based on Cayouche1989/ha-bluetooth-audio-manager@2c38ea0.
+    """
+
+    @staticmethod
+    def _manager(*, auto_reconnect, side_effect=OSError("offline")):
+        manager = BluetoothAudioManager.__new__(BluetoothAudioManager)
+        manager.config = MagicMock(auto_reconnect=auto_reconnect)
+        manager.reconnect_service = MagicMock()
+        manager._connecting = set()
+        manager._suppress_reconnect = set()
+        manager.managed_devices = {}
+        manager.event_bus = MagicMock()
+        manager._broadcast_status = MagicMock()
+        manager._get_or_create_device = AsyncMock(side_effect=side_effect)
+        return manager
+
+    async def test_failed_explicit_connect_restores_retry_when_enabled(self):
+        manager = self._manager(auto_reconnect=True)
+
+        with self.assertRaises(OSError):
+            await manager.connect_device(ADDR)
+
+        manager.reconnect_service.cancel_reconnect.assert_called_once_with(ADDR)
+        manager.reconnect_service.handle_disconnect.assert_called_once_with(ADDR)
+
+    async def test_failed_explicit_connect_does_not_retry_when_disabled(self):
+        manager = self._manager(auto_reconnect=False)
+
+        with self.assertRaises(OSError):
+            await manager.connect_device(ADDR)
+
+        manager.reconnect_service.handle_disconnect.assert_not_called()
+
+    async def test_failure_inside_reconnect_loop_does_not_reschedule(self):
+        # The reconnect loop owns its own backoff — rescheduling from inside
+        # it would spawn a second loop for the same device.
+        manager = self._manager(auto_reconnect=True)
+
+        with self.assertRaises(OSError):
+            await manager.connect_device(ADDR, _from_reconnect=True)
+
+        manager.reconnect_service.handle_disconnect.assert_not_called()
 
 
 if __name__ == "__main__":
