@@ -56,6 +56,7 @@ class MPDManager:
         # Repeat mode + guard against a reconnect loop (see enable_repeat)
         self._stream_ends: list[float] = []
         self._repeat_guard_task: asyncio.Task | None = None
+        self._watch_task: asyncio.Task | None = None  # see _watch_playback
 
     # -- Lifecycle --
 
@@ -74,14 +75,17 @@ class MPDManager:
         await self._start_daemon()
         await self._connect_client()
         self._running = True
+        self._watch_task = asyncio.create_task(self._watch_playback())
         logger.info("MPD started for %s on port %d", self._address, self._port)
 
     async def stop(self) -> None:
         """Disconnect client and terminate MPD daemon."""
         self._running = False
-        if self._repeat_guard_task and not self._repeat_guard_task.done():
-            self._repeat_guard_task.cancel()
+        for task in (self._repeat_guard_task, self._watch_task):
+            if task and not task.done():
+                task.cancel()
         self._repeat_guard_task = None
+        self._watch_task = None
 
         if self._stderr_task:
             self._stderr_task.cancel()
@@ -427,6 +431,70 @@ class MPDManager:
             if self._is_connection_error(e):
                 self._disconnect_client()
             return False
+
+    # -- Retry after a stream error -------------------------------------------
+    #
+    # When the stream cannot be opened — internet down, DNS failing, the
+    # station offline — MPD stops with an error and stays stopped; repeat
+    # does not help because MPD deliberately stops on errors.  Keep trying
+    # with backoff until it plays again.  Only an *error* stop is retried:
+    # MPD reports it in status["error"], a plain stop or pause has none.
+
+    PLAY_RETRY_DELAYS = (5, 10, 20, 60)  # seconds; the last one repeats
+    WATCH_INTERVAL = 5.0  # seconds between status checks
+
+    async def _watch_playback(self) -> None:
+        loop = asyncio.get_running_loop()
+        attempt = 0
+        next_try: float | None = None
+        try:
+            while self._running:
+                await asyncio.sleep(self.WATCH_INTERVAL)
+                status = await self.get_status()
+                state = status.get("state")
+                if state == "play":
+                    if attempt:
+                        logger.info(
+                            "[mpd:%d] playback recovered after %d retr%s",
+                            self._port, attempt, "y" if attempt == 1 else "ies",
+                        )
+                    attempt, next_try = 0, None
+                    continue
+                error = status.get("error")
+                if state != "stop" or not error:
+                    attempt, next_try = 0, None  # paused, stopped on purpose, or unknown
+                    continue
+                now = loop.time()
+                if next_try is None:
+                    delay = self.PLAY_RETRY_DELAYS[min(attempt, len(self.PLAY_RETRY_DELAYS) - 1)]
+                    next_try = now + delay
+                    log = logger.warning if attempt == 0 else logger.info
+                    log(
+                        "[mpd:%d] playback stopped with error (%s) — retrying in %ds",
+                        self._port, error, delay,
+                    )
+                    continue
+                if now < next_try:
+                    continue
+                attempt += 1
+                next_try = None
+                await self._retry_play()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("[mpd:%d] playback watch ended: %s", self._port, e)
+
+    async def _retry_play(self) -> None:
+        await self._ensure_connected()
+        if not self._client:
+            return
+        try:
+            await self._client.clearerror()
+            await self._client.play()
+        except Exception as e:
+            logger.debug("MPD retry play failed (port %d): %s", self._port, e)
+            if self._is_connection_error(e):
+                self._disconnect_client()
 
     async def set_volume(self, vol_pct: int) -> None:
         """Set MPD volume (0-100)."""
