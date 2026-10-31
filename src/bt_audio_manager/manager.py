@@ -138,6 +138,16 @@ class BluetoothAudioManager:
         self._scan_debounce_handle: asyncio.TimerHandle | None = None
         self._pending_toasts: list[dict] = []  # toasts queued before any WS client connects
 
+    def _mpd_stream_owner(self, proplist) -> str | None:
+        """Map a PulseAudio stream to the speaker whose MPD daemon created it."""
+        pid = str(proplist.get("application.process.id", "")) if proplist else ""
+        if not pid:
+            return None
+        for address, mpd in self._mpd_instances.items():
+            if mpd.pid is not None and str(mpd.pid) == pid:
+                return address
+        return None
+
     def _reschedule_failed_explicit_connect(self, address: str) -> None:
         """Restore automatic recovery after an explicit connection failure."""
         if not self.reconnect_service or not self.config.auto_reconnect:
@@ -607,6 +617,7 @@ class BluetoothAudioManager:
             self.pulse.on_volume_change(self._on_pa_volume_change)
             self.pulse.on_sink_state_change(self._on_pa_sink_running)
             self.pulse.on_sink_idle(self._on_pa_sink_idle)
+            self.pulse.set_stream_owner_resolver(self._mpd_stream_owner)
             await self.pulse.start_event_monitor()
         except Exception as e:
             logger.warning("PulseAudio connection failed (will retry): %s", e)

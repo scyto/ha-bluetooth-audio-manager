@@ -103,5 +103,112 @@ class TestMpdStreamNormalization(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pulse._pulse.volume_calls, [])
 
 
+
+A = "41:42:E8:96:EE:34"
+B = "41:42:86:95:15:12"
+C = "41:42:03:37:0A:D0"
+
+
+def _sink(index, mac):
+    return SimpleNamespace(index=index, name=f"bluez_sink.{mac.replace(':', '_')}.a2dp_sink")
+
+
+def _mpd_stream(index, sink, mac=None, pid=None):
+    props = {"application.name": "Music Player Daemon", "application.process.binary": "mpd"}
+    if mac:
+        props["module-stream-restore.id"] = f"bt-audio-manager:{mac}"
+    if pid:
+        props["application.process.id"] = str(pid)
+    return SimpleNamespace(index=index, sink=sink, proplist=props)
+
+
+class FakePinPulse:
+    def __init__(self, sinks, streams):
+        self.sinks = sinks
+        self.streams = {s.index: s for s in streams}
+        self.moves = []
+
+    async def sink_input_info(self, index):
+        return self.streams[index]
+
+    async def sink_input_list(self):
+        return list(self.streams.values())
+
+    async def sink_info(self, index):
+        return next(s for s in self.sinks if s.index == index)
+
+    async def sink_list(self):
+        return list(self.sinks)
+
+    async def sink_input_move(self, stream_index, sink_index):
+        self.moves.append((stream_index, sink_index))
+        self.streams[stream_index].sink = sink_index
+
+
+class TestMpdStreamPinning(unittest.IsolatedAsyncioTestCase):
+    """#318: a running MPD stream moved onto another speaker goes back home.
+
+    Seen when a speaker reconnects while others play: PulseAudio drags the
+    running streams onto the new sink and two stations mix on one speaker,
+    while Home Assistant still shows both as playing correctly.
+    """
+
+    def build(self, sinks, streams):
+        manager = PulseAudioManager()
+        manager._pulse = FakePinPulse(sinks, streams)
+        return manager
+
+    async def test_stray_stream_is_moved_back(self):
+        manager = self.build([_sink(1, A), _sink(3, C)], [_mpd_stream(10, sink=3, mac=A)])
+        self.assertTrue(await manager._pin_mpd_stream(10))
+        self.assertEqual(manager._pulse.moves, [(10, 1)])
+
+    async def test_stream_on_its_own_sink_is_left_alone(self):
+        manager = self.build([_sink(1, A), _sink(3, C)], [_mpd_stream(10, sink=1, mac=A)])
+        self.assertFalse(await manager._pin_mpd_stream(10))
+        self.assertEqual(manager._pulse.moves, [])
+
+    async def test_foreign_streams_are_left_alone(self):
+        foreign = SimpleNamespace(index=20, sink=3, proplist={"application.name": "Music Assistant"})
+        manager = self.build([_sink(1, A), _sink(3, C)], [foreign])
+        self.assertFalse(await manager._pin_mpd_stream(20))
+        self.assertEqual(manager._pulse.moves, [])
+
+    async def test_nothing_happens_while_the_own_sink_is_missing(self):
+        manager = self.build([_sink(3, C)], [_mpd_stream(10, sink=3, mac=A)])
+        self.assertFalse(await manager._pin_mpd_stream(10))
+        self.assertEqual(manager._pulse.moves, [])
+
+    async def test_new_sink_brings_every_stray_home(self):
+        # C reconnected and both running streams were dragged onto it.
+        manager = self.build(
+            [_sink(1, A), _sink(2, B), _sink(3, C)],
+            [_mpd_stream(10, sink=3, mac=A), _mpd_stream(11, sink=3, mac=B),
+             _mpd_stream(12, sink=3, mac=C)],
+        )
+        self.assertEqual(await manager._pin_all_mpd_streams(), 2)
+        self.assertEqual(sorted(manager._pulse.moves), [(10, 1), (11, 2)])
+
+    async def test_mac_case_does_not_matter(self):
+        manager = self.build([_sink(1, A), _sink(3, C)], [_mpd_stream(10, sink=3, mac=A.lower())])
+        self.assertTrue(await manager._pin_mpd_stream(10))
+
+    async def test_pid_resolver_identifies_streams_without_restore_id(self):
+        manager = self.build([_sink(1, A), _sink(3, C)], [_mpd_stream(10, sink=3, pid=4242)])
+        manager.set_stream_owner_resolver(
+            lambda props: A if props.get("application.process.id") == "4242" else None
+        )
+        self.assertTrue(await manager._pin_mpd_stream(10))
+        self.assertEqual(manager._pulse.moves, [(10, 1)])
+
+    async def test_gives_up_when_something_keeps_moving_the_stream(self):
+        manager = self.build([_sink(1, A), _sink(3, C)], [_mpd_stream(10, sink=3, mac=A)])
+        for _ in range(manager.PIN_MAX_MOVES):
+            self.assertTrue(await manager._pin_mpd_stream(10))
+            manager._pulse.streams[10].sink = 3  # moved away again
+        self.assertFalse(await manager._pin_mpd_stream(10))
+        self.assertEqual(len(manager._pulse.moves), manager.PIN_MAX_MOVES)
+
+
 if __name__ == "__main__":
     unittest.main()

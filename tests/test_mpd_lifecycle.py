@@ -239,5 +239,30 @@ class TestStartSerialisation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(peak, 1)
 
 
+
+class TestStreamOwner(unittest.TestCase):
+    """PID fallback used to recognise our MPD streams in PulseAudio (#318)."""
+
+    def test_maps_stream_pid_to_speaker(self):
+        manager = BluetoothAudioManager.__new__(BluetoothAudioManager)
+        mpd = MPDManager(address=ADDR, port=6600, speaker_name="Speaker")
+        mpd._running = True
+        mpd._process = FakeProcess()
+        mpd._process.pid = 4242
+        manager._mpd_instances = {ADDR: mpd}
+        self.assertEqual(manager._mpd_stream_owner({"application.process.id": "4242"}), ADDR)
+        self.assertIsNone(manager._mpd_stream_owner({"application.process.id": "1"}))
+        self.assertIsNone(manager._mpd_stream_owner({}))
+
+    def test_dead_daemon_owns_nothing(self):
+        manager = BluetoothAudioManager.__new__(BluetoothAudioManager)
+        mpd = MPDManager(address=ADDR, port=6600, speaker_name="Speaker")
+        mpd._running = True
+        mpd._process = FakeProcess(returncode=1)
+        mpd._process.pid = 4242
+        manager._mpd_instances = {ADDR: mpd}
+        self.assertIsNone(manager._mpd_stream_owner({"application.process.id": "4242"}))
+
+
 if __name__ == "__main__":
     unittest.main()
