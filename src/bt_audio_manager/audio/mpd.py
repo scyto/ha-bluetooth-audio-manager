@@ -335,6 +335,27 @@ class MPDManager:
             if self._is_connection_error(e):
                 self._disconnect_client()
 
+    async def restart_playback(self) -> bool:
+        """Stop and start playback, re-opening the stream and the audio output.
+
+        Used after a Bluetooth discovery scan, which can stall the A2DP link
+        long enough that MPD's output never recovers on its own (#319).
+        Equivalent to what a fresh ``media_player.play_media`` achieves.
+        """
+        await self._ensure_connected()
+        if not self._client:
+            return False
+        try:
+            await self._client.stop()
+            await asyncio.sleep(0.5)
+            await self._client.play()
+            return True
+        except Exception as e:
+            logger.warning("MPD restart failed (port %d): %s", self._port, e)
+            if self._is_connection_error(e):
+                self._disconnect_client()
+            return False
+
     async def set_volume(self, vol_pct: int) -> None:
         """Set MPD volume (0-100)."""
         await self._ensure_connected()

@@ -64,6 +64,9 @@ class PulseAudioManager:
         self._pin_history: dict[int, list[float]] = {}
         # Optional fallback for _stream_owner(): proplist → speaker MAC
         self._stream_owner_resolver: Callable[[dict], str | None] | None = None
+        # Cached `pactl list sinks` sample specs (see list_bt_sinks)
+        self._spec_cache: dict[str, dict] = {}
+        self._spec_cache_at: float = 0.0
 
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
@@ -260,6 +263,26 @@ class PulseAudioManager:
                     return
                 retry_delay = min(retry_delay * 2, 30)
 
+    SPEC_CACHE_TTL = 300.0  # seconds
+
+    async def _cached_sample_specs(self, bt_sink_names: list[str]) -> dict[str, dict]:
+        """Sample specs, re-reading ``pactl list sinks`` only when needed.
+
+        list_bt_sinks() runs every 5 s (sink poll) plus on every API/UI read,
+        and each call used to spawn a ``pactl`` client.  A sink's sample
+        spec only changes when the sink itself is (re)created, so re-read
+        when an unknown Bluetooth sink shows up, or after SPEC_CACHE_TTL.
+        """
+        now = asyncio.get_running_loop().time()
+        stale = now - self._spec_cache_at > self.SPEC_CACHE_TTL
+        unknown = any(name not in self._spec_cache for name in bt_sink_names)
+        if stale or unknown:
+            specs = await self._pactl_sample_specs()
+            if specs or stale:
+                self._spec_cache = specs
+                self._spec_cache_at = now
+        return self._spec_cache
+
     async def _pactl_sample_specs(self) -> dict[str, dict]:
         """Parse sample specs from ``pactl list sinks``.
 
@@ -318,7 +341,9 @@ class PulseAudioManager:
     async def list_bt_sinks(self) -> list[dict]:
         """List all Bluetooth A2DP sinks currently available."""
         sinks = await self._pulse.sink_list()
-        sample_specs = await self._pactl_sample_specs()
+        sample_specs = await self._cached_sample_specs(
+            [s.name for s in sinks if "bluez" in s.name.lower()]
+        )
         bt_sinks = []
         for sink in sinks:
             if "bluez" in sink.name.lower():

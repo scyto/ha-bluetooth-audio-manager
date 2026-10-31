@@ -75,6 +75,7 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    SCAN_RESUME_STAGGER = 2  # seconds between stream restarts after a scan
     USER_DISCONNECT_WINDOW = 30  # seconds a user-initiated disconnect flag stays valid
     ADAPTER_RETURN_SETTLE = 5  # seconds to let a re-added adapter power up before restarting
     MPD_SELF_HEAL_GRACE = 10  # seconds MPD must be missing before self-heal steps in
@@ -987,17 +988,60 @@ class BluetoothAudioManager:
                 pass
             await self.adapter.stop_discovery()
 
+        playing = await self._playing_mpd_addresses()
+        if playing:
+            logger.warning(
+                "Scanning while %d stream(s) play — discovery competes with A2DP "
+                "for airtime; they will be restarted when the scan ends",
+                len(playing),
+            )
+
         self._scanning = True
         self._last_rssi_refresh_start = time.time()
         self.event_bus.emit("scan_started", {"duration": duration})
-        self._scan_task = asyncio.create_task(self._run_scan(duration))
+        self._scan_task = asyncio.create_task(self._run_scan(duration, resume=playing))
 
-    async def _run_scan(self, duration: int) -> None:
+    async def _playing_mpd_addresses(self) -> list[str]:
+        """Speakers whose MPD daemon is currently playing."""
+        playing = []
+        for address, mpd in list(self._mpd_instances.items()):
+            if not mpd.is_running:
+                continue
+            try:
+                status = await mpd.get_status()
+            except Exception:
+                continue
+            if status.get("state") == "play":
+                playing.append(address)
+        return playing
+
+    async def _resume_after_scan(self, addresses: list[str]) -> None:
+        """Restart streams a scan may have stalled, one at a time.
+
+        A discovery scan can freeze A2DP playback without recovery: HA keeps
+        showing "playing" while nothing advances, and only a fresh play
+        brought it back (#319).  Staggered so the speakers do not all
+        renegotiate at once.
+        """
+        for i, address in enumerate(addresses):
+            if i:
+                await asyncio.sleep(self.SCAN_RESUME_STAGGER)
+            mpd = self._mpd_instances.get(address)
+            if mpd is None or not mpd.is_running:
+                continue
+            if await mpd.restart_playback():
+                logger.info("Restarted playback on %s after scan", address)
+
+    async def _run_scan(self, duration: int, resume: list[str] | None = None) -> None:
         """Background scan task: runs discovery for *duration* seconds."""
+        cancelled = False
         try:
             await self.adapter.start_discovery()
             await asyncio.sleep(duration)
         except asyncio.CancelledError:
+            # Superseded by a new scan (which re-collects the playing streams
+            # and resumes them itself) or shutting down — no resume here.
+            cancelled = True
             logger.info("Scan cancelled")
             return
         except Exception as e:
@@ -1011,6 +1055,8 @@ class BluetoothAudioManager:
                 await self.adapter.stop_discovery()
             except Exception:
                 pass
+            if resume and not cancelled:
+                self._fire_and_forget(self._resume_after_scan(resume))
 
         # Final broadcast after scan completes (with CoD fallback)
         await self._broadcast_devices(cod_fallback=True)
@@ -1936,6 +1982,18 @@ class BluetoothAudioManager:
 
                 # Skip if user scan is active — discovery is already running
                 if self._scanning:
+                    continue
+
+                # Skip while audio is flowing: a discovery burst competes
+                # with the A2DP links for airtime on the same radio and can
+                # cause dropouts or stall streams (#319).  Connected
+                # speakers usually stop answering inquiries anyway, so the
+                # burst rarely yields their RSSI.
+                if self._running_sinks:
+                    logger.debug(
+                        "RSSI refresh skipped: audio running on %d sink(s)",
+                        len(self._running_sinks),
+                    )
                     continue
 
                 # Skip if no connected devices need RSSI
