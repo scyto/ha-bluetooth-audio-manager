@@ -75,6 +75,7 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    ADAPTER_RETURN_SETTLE = 5  # seconds to let a re-added adapter power up before restarting
     MPD_SELF_HEAL_GRACE = 10  # seconds MPD must be missing before self-heal steps in
     MPD_SELF_HEAL_COOLDOWN = 30  # min seconds between MPD self-heal attempts per device
     RSSI_REFRESH_INTERVAL = 60  # seconds between silent discovery bursts
@@ -122,6 +123,13 @@ class BluetoothAudioManager:
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self._running_sinks: set[str] = set()  # sink names currently in 'running' state
         self._device_lifecycle_locks: dict[str, asyncio.Lock] = {}  # per-device lifecycle lock
+        # Adapter re-index handling (see _on_adapter_lifecycle_signal)
+        self._adapter_address: str | None = None  # MAC of the adapter we bound to at startup
+        self._adapter_lost: bool = False
+        self._adapter_restart_task: asyncio.Task | None = None
+        # Set when the app must restart itself and the Supervisor API is unavailable;
+        # __main__ then shuts down cleanly and exits so s6 restarts the service.
+        self.restart_requested: asyncio.Event = asyncio.Event()
         # Scanning state
         self._scanning: bool = False
         self._scan_task: asyncio.Task | None = None
@@ -136,6 +144,111 @@ class BluetoothAudioManager:
             "Explicit connection to %s failed; restoring auto-reconnect", address
         )
         self.reconnect_service.handle_disconnect(address)
+
+    # -- Adapter re-index handling --------------------------------------
+    #
+    # The adapter path is resolved once at startup and baked into the
+    # adapter proxy, the AVRCP player registration, every cached BluezDevice
+    # and the reconnect logic.  When the USB adapter drops off the bus and
+    # comes back (often under a new index, hci0 -> hci2) all of that is
+    # stale: reconnects fail with "Method Connect doesn't exist" and nothing
+    # recovers until the app is restarted by hand.
+    #
+    # Rebuilding every one of those objects in place would touch most of the
+    # manager.  A restart is what users already do manually, rebuilds
+    # everything from scratch, and costs nothing extra here — every
+    # Bluetooth link on that adapter is already gone.  So: notice when *our*
+    # adapter (matched by MAC, never "any adapter") reappears and restart.
+    # If it never comes back nothing happens — in "auto" mode restarting
+    # without it could grab a different adapter that belongs to someone else.
+
+    def _on_adapter_lifecycle_signal(self, msg) -> None:
+        """Watch ObjectManager signals for our adapter going away and returning."""
+        if (
+            msg.message_type != MessageType.SIGNAL
+            or msg.path != "/"
+            or msg.member not in ("InterfacesRemoved", "InterfacesAdded")
+            or not msg.body
+            or len(msg.body) < 2
+        ):
+            return
+        obj_path, ifaces = msg.body[0], msg.body[1]
+
+        if msg.member == "InterfacesRemoved":
+            if obj_path == self._adapter_path and "org.bluez.Adapter1" in (ifaces or ()):
+                self._adapter_lost = True
+                logger.warning(
+                    "Bluetooth adapter %s (%s) disappeared from BlueZ — "
+                    "waiting for it to come back",
+                    self._adapter_path, self._adapter_address or "unknown MAC",
+                )
+                self._broadcast_status("Bluetooth adapter disappeared — waiting for it to return")
+            return
+
+        # InterfacesAdded
+        if not isinstance(ifaces, dict) or "org.bluez.Adapter1" not in ifaces:
+            return
+        if not self._adapter_address:
+            return
+        props = ifaces.get("org.bluez.Adapter1") or {}
+        raw = props.get("Address")
+        address = raw.value if hasattr(raw, "value") else raw
+        if not address or str(address).upper() != self._adapter_address:
+            return  # some other adapter — not ours
+        if obj_path == self._adapter_path and not self._adapter_lost:
+            return  # nothing changed as far as we know
+        if self._adapter_restart_task and not self._adapter_restart_task.done():
+            return
+        logger.warning(
+            "Bluetooth adapter %s is back as %s (was %s) — restarting the app "
+            "so every Bluetooth object is rebuilt",
+            self._adapter_address, obj_path, self._adapter_path,
+        )
+        self._adapter_restart_task = asyncio.create_task(
+            self._restart_after_adapter_return()
+        )
+
+    async def _restart_after_adapter_return(self) -> None:
+        """Give the returned adapter a moment, then restart the app."""
+        await asyncio.sleep(self.ADAPTER_RETURN_SETTLE)
+        self._broadcast_status("Bluetooth adapter re-appeared — restarting app...")
+        if await self._request_self_restart():
+            return
+        logger.warning(
+            "Supervisor restart unavailable — shutting down so the service "
+            "supervisor restarts the app"
+        )
+        self.restart_requested.set()
+
+    async def _request_self_restart(self) -> bool:
+        """Ask the Supervisor to restart this app (same as the UI button)."""
+        import aiohttp
+
+        token = os.environ.get("SUPERVISOR_TOKEN")
+        if not token:
+            return False
+        for url in ("http://supervisor/addons/self/restart",
+                    "http://172.30.32.2/addons/self/restart"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        if resp.status == 200:
+                            logger.info("App restart requested via Supervisor")
+                            return True
+                        body = await resp.text()
+                        logger.warning(
+                            "App restart via %s returned %d: %s", url, resp.status, body,
+                        )
+            except asyncio.CancelledError:
+                # The Supervisor is stopping us — that is the restart working.
+                raise
+            except Exception as e:
+                logger.warning("App restart via %s failed: %s", url, e)
+        return False
 
     async def _resolve_adapter_path(self) -> str:
         """Resolve the configured bt_adapter to a BlueZ D-Bus path.
@@ -247,6 +360,10 @@ class BluetoothAudioManager:
         # Capture all D-Bus activity from BlueZ so we can diagnose
         # which signals/methods arrive for button presses, volume, etc.
         def _dbus_msg_handler(msg: Message) -> bool:
+            try:
+                self._on_adapter_lifecycle_signal(msg)
+            except Exception as e:
+                logger.debug("Adapter lifecycle check failed: %s", e)
             if msg.message_type == MessageType.METHOD_CALL:
                 logger.debug(
                     "D-Bus method_call: %s.%s path=%s sender=%s",
@@ -419,6 +536,15 @@ class BluetoothAudioManager:
         # 2. Resolve configured adapter (MAC or legacy HCI) → D-Bus path
         self._adapter_path = await self._resolve_adapter_path()
         logger.info("Using Bluetooth adapter: %s", self._adapter_path)
+        # Remember the adapter's MAC: its D-Bus path (hciN) is not stable
+        # across a USB re-enumeration, its MAC is.
+        try:
+            for a in await BluezAdapter.list_all(self.bus):
+                if a.get("path") == self._adapter_path and a.get("address"):
+                    self._adapter_address = str(a["address"]).upper()
+                    break
+        except Exception as e:
+            logger.debug("Could not read adapter address: %s", e)
         self.adapter = BluezAdapter(self.bus, self._adapter_path)
         await self.adapter.initialize()
 
