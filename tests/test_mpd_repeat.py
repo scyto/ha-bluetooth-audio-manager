@@ -86,5 +86,71 @@ class RepeatTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(task.cancelled())
 
 
+
+class FakeClock:
+    now = 0.0
+
+
+class RetryAfterErrorTest(unittest.IsolatedAsyncioTestCase):
+    """Internet outage: MPD stops with an error and must be retried (with backoff)."""
+
+    ERR = {"state": "stop", "error": 'Failed to open "http://streams.radiobob.de/x": Could not resolve host'}
+
+    async def run_watch(self, statuses):
+        mpd = build()
+        mpd._running = True
+        mpd._retry_play = AsyncMock()
+        queue = list(statuses)
+
+        async def get_status():
+            if not queue:
+                mpd._running = False
+                return {"state": "unknown"}
+            return queue.pop(0)
+
+        mpd.get_status = get_status
+        clock = FakeClock()
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(delay):
+            clock.now += delay
+            await real_sleep(0)
+
+        loop = asyncio.get_running_loop()
+        with patch("bt_audio_manager.audio.mpd.asyncio.sleep", fake_sleep), \
+             patch.object(loop, "time", side_effect=lambda: clock.now):
+            await mpd._watch_playback()
+        return mpd
+
+    async def test_outage_is_retried_with_backoff_until_it_plays(self):
+        mpd = await self.run_watch(
+            [{"state": "play"}] + [self.ERR] * 5 + [{"state": "play"}]
+        )
+        # t=10 schedule (+5) → t=15 retry 1 → t=20 schedule (+10) → t=30 retry 2
+        self.assertEqual(mpd._retry_play.await_count, 2)
+
+    async def test_backoff_caps_at_a_minute(self):
+        mpd = await self.run_watch([self.ERR] * 60)  # 5 minutes of outage
+        # retries at ~+5, +10, +20, then every 60 s
+        self.assertGreaterEqual(mpd._retry_play.await_count, 5)
+        self.assertLessEqual(mpd._retry_play.await_count, 7)
+
+    async def test_deliberate_stop_is_not_retried(self):
+        mpd = await self.run_watch([{"state": "stop"}] * 10)
+        mpd._retry_play.assert_not_called()
+
+    async def test_pause_is_not_retried(self):
+        mpd = await self.run_watch([{"state": "pause", "error": "x"}] * 10)
+        mpd._retry_play.assert_not_called()
+
+    async def test_retry_clears_the_error_then_plays(self):
+        mpd = build()
+        mpd._client.clearerror = AsyncMock()
+        mpd._client.play = AsyncMock()
+        await mpd._retry_play()
+        mpd._client.clearerror.assert_awaited_once()
+        mpd._client.play.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()
