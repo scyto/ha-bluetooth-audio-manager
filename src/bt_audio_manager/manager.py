@@ -136,11 +136,48 @@ class BluetoothAudioManager:
         # Set when the app must restart itself and the Supervisor API is unavailable;
         # __main__ then shuts down cleanly and exits so s6 restarts the service.
         self.restart_requested: asyncio.Event = asyncio.Event()
+        self._bluez_match_rules: set[str] = set()  # D-Bus AddMatch rules already added
         # Scanning state
         self._scanning: bool = False
         self._scan_task: asyncio.Task | None = None
         self._scan_debounce_handle: asyncio.TimerHandle | None = None
         self._pending_toasts: list[dict] = []  # toasts queued before any WS client connects
+
+    # -- D-Bus signal subscription ---------------------------------------
+    #
+    # Upstream subscribed to *every* BlueZ signal "for diagnosis".  With a
+    # second adapter doing passive BLE scanning for Home Assistant that is a
+    # constant stream of RSSI / ManufacturerData PropertiesChanged signals
+    # for devices this app never uses, each one unmarshalled in Python and
+    # then dropped.  Outside debug logging, only take ObjectManager signals
+    # (adapter/device add/remove, scan results) and our own adapter's subtree
+    # (its devices, transports and players).
+
+    def _initial_bluez_match_rules(self) -> list[str]:
+        if getattr(self.config, "log_level", "info") == "debug":
+            return ["type='signal',sender='org.bluez'"]
+        return ["type='signal',sender='org.bluez',path='/'"]
+
+    @staticmethod
+    def _adapter_match_rule(adapter_path: str) -> str:
+        return f"type='signal',sender='org.bluez',path_namespace='{adapter_path}'"
+
+    async def _add_bluez_match(self, rule: str) -> None:
+        added = self._bluez_match_rules
+        if rule in added:
+            return
+        await self.bus.call(
+            Message(
+                destination="org.freedesktop.DBus",
+                path="/org/freedesktop/DBus",
+                interface="org.freedesktop.DBus",
+                member="AddMatch",
+                signature="s",
+                body=[rule],
+            )
+        )
+        added.add(rule)
+        logger.debug("D-Bus match added: %s", rule)
 
     def _mpd_stream_owner(self, proplist) -> str | None:
         """Map a PulseAudio stream to the speaker whose MPD daemon created it."""
@@ -557,24 +594,16 @@ class BluetoothAudioManager:
             return False  # don't consume
         self.bus.add_message_handler(_dbus_msg_handler)
 
-        # Subscribe to ALL BlueZ signals (broad match for diagnosis)
-        for match_rule in [
-            "type='signal',sender='org.bluez'",
-        ]:
-            await self.bus.call(
-                Message(
-                    destination="org.freedesktop.DBus",
-                    path="/org/freedesktop/DBus",
-                    interface="org.freedesktop.DBus",
-                    member="AddMatch",
-                    signature="s",
-                    body=[match_rule],
-                )
-            )
+        # Subscribe to BlueZ signals: ObjectManager at "/" now, our own
+        # adapter's subtree once it is resolved (step 2).  Per-device
+        # subscriptions are added by BluezDevice itself.
+        for match_rule in self._initial_bluez_match_rules():
+            await self._add_bluez_match(match_rule)
 
         # 2. Resolve configured adapter (MAC or legacy HCI) → D-Bus path
         self._adapter_path = await self._resolve_adapter_path()
         logger.info("Using Bluetooth adapter: %s", self._adapter_path)
+        await self._add_bluez_match(self._adapter_match_rule(self._adapter_path))
         # Remember the adapter's MAC: its D-Bus path (hciN) is not stable
         # across a USB re-enumeration, its MAC is.
         try:
