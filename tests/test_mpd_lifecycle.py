@@ -8,6 +8,7 @@ unavailable forever and nothing says why (issue #299).
 
 import asyncio
 import unittest
+import unittest.mock
 from unittest.mock import AsyncMock, patch
 
 try:
@@ -262,6 +263,50 @@ class TestStreamOwner(unittest.TestCase):
         mpd._process.pid = 4242
         manager._mpd_instances = {ADDR: mpd}
         self.assertIsNone(manager._mpd_stream_owner({"application.process.id": "4242"}))
+
+
+
+class TestSpeakerInitiatedReconnect(unittest.IsolatedAsyncioTestCase):
+    """#316: a speaker that reconnects by itself must get its MPD daemon.
+
+    Only connect_device() (UI/API/scheduler) and the HFP branch started MPD.
+    A plain A2DP connection arriving as a BlueZ signal — the speaker coming
+    back after a power cycle once the scheduler had given up — left the
+    device connected with a transport but nothing listening on its port.
+    """
+
+    def build(self, *, sink="bluez_sink.AA_BB_CC_DD_EE_FF.a2dp_sink", connected=True):
+        manager = BluetoothAudioManager.__new__(BluetoothAudioManager)
+        manager.pulse = unittest.mock.MagicMock()
+        manager.pulse.wait_for_bt_sink = AsyncMock(return_value=sink)
+        manager._connecting = set()
+        manager._device_lifecycle_locks = {}
+        manager.managed_devices = {ADDR: FakeDevice(connected)}
+        manager._apply_idle_mode = AsyncMock()
+        manager._start_mpd_if_enabled = AsyncMock()
+        return manager
+
+    async def test_mpd_started_once_the_sink_appears(self):
+        manager = self.build()
+        await manager._finish_a2dp_reconnect(ADDR)
+        manager._apply_idle_mode.assert_awaited_once_with(ADDR)
+        manager._start_mpd_if_enabled.assert_awaited_once_with(ADDR)
+
+    async def test_no_sink_no_start(self):
+        manager = self.build(sink=None)
+        await manager._finish_a2dp_reconnect(ADDR)
+        manager._start_mpd_if_enabled.assert_not_called()
+
+    async def test_explicit_connect_in_progress_owns_the_setup(self):
+        manager = self.build()
+        manager._connecting.add(ADDR)
+        await manager._finish_a2dp_reconnect(ADDR)
+        manager._start_mpd_if_enabled.assert_not_called()
+
+    async def test_device_gone_again_no_start(self):
+        manager = self.build(connected=False)
+        await manager._finish_a2dp_reconnect(ADDR)
+        manager._start_mpd_if_enabled.assert_not_called()
 
 
 if __name__ == "__main__":
