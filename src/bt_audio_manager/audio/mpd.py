@@ -110,6 +110,11 @@ class MPDManager:
         )
 
     @property
+    def pid(self) -> int | None:
+        """PID of the running daemon (None when not running)."""
+        return self._process.pid if self.is_running else None
+
+    @property
     def port(self) -> int:
         return self._port
 
