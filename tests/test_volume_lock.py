@@ -191,5 +191,83 @@ class VolumeLockApiTest(AioHTTPTestCase):
         self.manager.update_device_settings.assert_not_called()
 
 
+
+class FakeDeviceStore:
+    def __init__(self, locks):
+        self.locks = dict(locks)
+
+    @property
+    def devices(self):
+        return [{"address": a} for a in self.locks]
+
+    def get_device_settings(self, address):
+        return {"volume_lock": self.locks[address]}
+
+
+class AllDevicesSwitchTest(unittest.IsolatedAsyncioTestCase):
+    """App Settings switch: aggregate view and set-all, no separate global flag."""
+
+    def build(self, locks):
+        m = BluetoothAudioManager.__new__(BluetoothAudioManager)
+        m.store = FakeDeviceStore(locks)
+        m.update_device_settings = AsyncMock()
+        return m
+
+    def test_summary(self):
+        cases = [
+            ({A: True, B: True}, {"volume_lock_all": True, "volume_lock_any": True}),
+            ({A: True, B: False}, {"volume_lock_all": False, "volume_lock_any": True}),
+            ({A: False, B: False}, {"volume_lock_all": False, "volume_lock_any": False}),
+            ({}, {"volume_lock_all": False, "volume_lock_any": False}),
+        ]
+        for locks, expected in cases:
+            with self.subTest(locks=locks):
+                self.assertEqual(self.build(locks).volume_lock_summary(), expected)
+
+    async def test_set_all_goes_through_each_device(self):
+        m = self.build({A: False, B: True})
+        await m.set_volume_lock_all(True)
+        self.assertEqual(
+            [c.args for c in m.update_device_settings.await_args_list],
+            [(A, {"volume_lock": True}), (B, {"volume_lock": True})],
+        )
+
+
+class AllDevicesApiTest(AioHTTPTestCase):
+
+    async def get_application(self):
+        self.manager = MagicMock()
+        self.manager.config.auto_reconnect = True
+        self.manager.config.runtime_settings = {"auto_reconnect": True}
+        self.manager.volume_lock_summary.return_value = {
+            "volume_lock_all": False, "volume_lock_any": True,
+        }
+        self.manager.set_volume_lock_all = AsyncMock()
+        app = web.Application()
+        app.router.add_routes(create_api_routes(self.manager))
+        return app
+
+    async def test_get_reports_the_aggregate(self):
+        data = await (await self.client.get("/api/settings")).json()
+        self.assertEqual(data["volume_lock_all"], False)
+        self.assertEqual(data["volume_lock_any"], True)
+        self.assertEqual(data["auto_reconnect"], True)
+
+    async def test_put_switches_all_devices(self):
+        resp = await self.client.put("/api/settings", json={"volume_lock_all": True})
+        self.assertEqual(resp.status, 200)
+        self.manager.set_volume_lock_all.assert_awaited_once_with(True)
+
+    async def test_put_without_the_key_leaves_devices_alone(self):
+        resp = await self.client.put("/api/settings", json={"scan_duration_seconds": 30})
+        self.assertEqual(resp.status, 200)
+        self.manager.set_volume_lock_all.assert_not_called()
+
+    async def test_non_boolean_is_rejected(self):
+        resp = await self.client.put("/api/settings", json={"volume_lock_all": 1})
+        self.assertEqual(resp.status, 400)
+        self.manager.set_volume_lock_all.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

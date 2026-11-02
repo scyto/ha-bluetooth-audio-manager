@@ -459,10 +459,18 @@ def create_api_routes(
             logger.error("Failed to update settings for %s: %s", address, e)
             return web.json_response({"error": str(e)}, status=500)
 
+    def _settings_payload() -> dict:
+        # Runtime settings plus the aggregate per-device volume lock.
+        payload = dict(manager.config.runtime_settings)
+        summary = manager.volume_lock_summary()
+        if isinstance(summary, dict):
+            payload.update(summary)
+        return payload
+
     @routes.get("/api/settings")
     async def get_settings(request: web.Request) -> web.Response:
         """Return current runtime settings (auto_reconnect, intervals, etc.)."""
-        return web.json_response(manager.config.runtime_settings)
+        return web.json_response(_settings_payload())
 
     @routes.put("/api/settings")
     async def update_settings(request: web.Request) -> web.Response:
@@ -489,6 +497,8 @@ def create_api_routes(
             v = body["scan_duration_seconds"]
             if not isinstance(v, int) or v < 5 or v > 120:
                 errors.append("scan_duration_seconds must be an integer between 5 and 120")
+        if "volume_lock_all" in body and not isinstance(body["volume_lock_all"], bool):
+            errors.append("volume_lock_all must be a boolean")
 
         if errors:
             return web.json_response({"error": "; ".join(errors)}, status=400)
@@ -512,11 +522,15 @@ def create_api_routes(
         # Persist
         manager.config.save_settings()
 
+        # Volume lock for all devices: stored per device, not in settings.json
+        if "volume_lock_all" in body:
+            await manager.set_volume_lock_all(body["volume_lock_all"])
+
         # Broadcast change to all WS clients
         manager.event_bus.emit("settings_changed", manager.config.runtime_settings)
 
         logger.info("Runtime settings updated: %s", manager.config.runtime_settings)
-        return web.json_response(manager.config.runtime_settings)
+        return web.json_response(_settings_payload())
 
     @routes.get("/api/audio/sinks")
     async def audio_sinks(request: web.Request) -> web.Response:

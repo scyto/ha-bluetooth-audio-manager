@@ -212,6 +212,29 @@ class BluetoothAudioManager:
         if self.pulse and await self.pulse.set_sink_volume(sink_name, 100):
             logger.info("Volume lock for %s: speaker volume %d%% -> 100%%", address, volume)
 
+    def volume_lock_summary(self) -> dict:
+        """Aggregate of the per-device volume lock, for the App Settings switch."""
+        store = getattr(self, "store", None)
+        devices = list(store.devices) if store else []
+        locked = [
+            bool(store.get_device_settings(d["address"]).get("volume_lock", False))
+            for d in devices
+        ]
+        return {
+            "volume_lock_all": bool(locked) and all(locked),
+            "volume_lock_any": any(locked),
+        }
+
+    async def set_volume_lock_all(self, locked: bool) -> None:
+        """Switch the volume lock for every stored device (App Settings switch).
+
+        There is no separate global flag: the per-device setting stays the
+        single source of truth, so the device dialog, this switch and any
+        Home Assistant automation calling the device endpoint always agree.
+        """
+        for device in list(self.store.devices):
+            await self.update_device_settings(device["address"], {"volume_lock": bool(locked)})
+
     async def _apply_volume_lock(self, address: str) -> None:
         """Bring all three layers of a locked, connected speaker to 100 % now."""
         mpd = self._mpd_instances.get(address)

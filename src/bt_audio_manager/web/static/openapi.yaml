@@ -1123,6 +1123,16 @@ components:
           type: integer
           minimum: 5
           maximum: 120
+        volume_lock_all:
+          type: boolean
+          description: >
+            GET: every stored device has `volume_lock` on. PUT: switch
+            `volume_lock` on or off for every stored device at once (stored
+            per device, not as a separate setting).
+        volume_lock_any:
+          type: boolean
+          readOnly: true
+          description: At least one stored device has `volume_lock` on.
 
     Adapter:
       type: object

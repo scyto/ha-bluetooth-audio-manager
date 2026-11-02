@@ -289,6 +289,24 @@
               Maximum delay between reconnection attempts with exponential backoff (60&ndash;3600).
             </div>
           </div>
+
+          <hr>
+
+          <!-- Volume lock (all devices) -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-volume-lock-all"
+                     onchange="this.indeterminate = false; window._volumeLockAllTouched = true;">
+              <label class="form-check-label" for="setting-volume-lock-all">
+                <strong>Lock volume at 100% (all devices)</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              Switches &ldquo;Lock volume at 100%&rdquo; in every device's settings at once:
+              MPD volume, audio stream and speaker volume are held at 100%.
+              Shown half-set when only some devices are locked.
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>

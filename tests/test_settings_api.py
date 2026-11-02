@@ -27,6 +27,7 @@ def make_manager(*, auto_reconnect=True):
         "reconnect_max_backoff_seconds": 300,
         "scan_duration_seconds": 30,
     }
+    mgr.volume_lock_summary.return_value = {"volume_lock_all": False, "volume_lock_any": False}
     return mgr
 
 
