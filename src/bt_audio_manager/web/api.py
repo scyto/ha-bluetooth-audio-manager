@@ -676,6 +676,38 @@ def create_api_routes(
             "lines": matched,
         })
 
+    @routes.get("/api/diagnostics/gap-monitor")
+    async def gap_monitor_status(request: web.Request) -> web.Response:
+        """Result of the last/current gap diagnosis (404 if none ran)."""
+        status = manager.gap_monitor_status()
+        if status is None:
+            return web.json_response({"error": "no gap diagnosis has run"}, status=404)
+        return web.json_response(status)
+
+    @routes.post("/api/diagnostics/gap-monitor")
+    async def gap_monitor_start(request: web.Request) -> web.Response:
+        """Start a gap diagnosis: body ``{"minutes": 1-60}`` (default 10)."""
+        try:
+            body = await request.json() if request.can_read_body else {}
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        minutes = (body or {}).get("minutes", 10)
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or minutes <= 0:
+            return web.json_response({"error": "minutes must be a positive number"}, status=400)
+        try:
+            status = await manager.start_gap_monitor(minutes)
+        except RuntimeError as e:
+            return web.json_response({"error": str(e)}, status=409)
+        return web.json_response(status)
+
+    @routes.delete("/api/diagnostics/gap-monitor")
+    async def gap_monitor_stop(request: web.Request) -> web.Response:
+        """Stop a running gap diagnosis early and return its result."""
+        status = await manager.stop_gap_monitor()
+        if status is None:
+            return web.json_response({"error": "no gap diagnosis has run"}, status=404)
+        return web.json_response(status)
+
     @routes.get("/api/diagnostics/mpris")
     async def diagnostics_mpris(request: web.Request) -> web.Response:
         """Diagnostic endpoint for MPRIS/AVRCP troubleshooting."""
