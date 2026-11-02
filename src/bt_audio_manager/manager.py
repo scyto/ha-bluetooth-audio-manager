@@ -112,6 +112,9 @@ class BluetoothAudioManager:
         self._rssi_timestamp: dict[str, float] = {}  # addr → time.time() of last RSSI update
         self._last_rssi_refresh_start: float = 0.0  # time.time() when last refresh burst started
         self._last_sink_snapshot: str = ""
+        # Sinks the 5 s poll last saw in state "running" — a second, independent
+        # source for "is audio flowing" next to the PA event callbacks.
+        self._poll_running_sinks: set[str] = set()
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
@@ -1795,12 +1798,26 @@ class BluetoothAudioManager:
             logger.debug("Could not reach HA Core API for Bluetooth integration info")
             return set()
 
+        macs = BluetoothAudioManager._ha_bluetooth_macs_from_entries(entries)
+        if macs:
+            logger.info("HA Bluetooth integration manages adapters: %s", macs)
+        return macs
+
+    @staticmethod
+    def _ha_bluetooth_macs_from_entries(entries: list[dict]) -> set[str]:
+        """MACs of adapters HA's Bluetooth integration uses, from its config entries.
+
+        An entry the user set to *Ignore* (``source == "ignore"``) is never
+        set up by HA — it is exactly how the docs tell users to hand an
+        adapter to this app — so it must not count as HA-managed.  A merely
+        *disabled* entry still does: HA can re-enable it at any time.
+        """
         import re
 
         mac_re = re.compile(r"([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})")
         macs: set[str] = set()
         for entry in entries:
-            if entry.get("domain") != "bluetooth":
+            if entry.get("domain") != "bluetooth" or entry.get("source") == "ignore":
                 continue
             # Prefer unique_id (may be a MAC); fall back to parsing title
             # e.g. "cyber-blue(HK)Ltd CSR8510 A10 (00:1A:7D:DA:71:11)"
@@ -1808,8 +1825,6 @@ class BluetoothAudioManager:
             m = mac_re.search(uid) or mac_re.search(entry.get("title", ""))
             if m:
                 macs.add(m.group(1).upper())
-        if macs:
-            logger.info("HA Bluetooth integration manages adapters: %s", macs)
         return macs
 
     @staticmethod
@@ -1841,6 +1856,9 @@ class BluetoothAudioManager:
                 if not self.pulse:
                     continue
                 sinks = await self.pulse.list_bt_sinks()
+                self._poll_running_sinks = {
+                    s["name"] for s in sinks if s.get("state") == "running"
+                }
                 # Log sink count transitions
                 if len(sinks) != prev_sink_count:
                     names = [s["name"] for s in sinks] if sinks else []
@@ -1984,16 +2002,14 @@ class BluetoothAudioManager:
                 if self._scanning:
                     continue
 
-                # Skip while audio is flowing: a discovery burst competes
-                # with the A2DP links for airtime on the same radio and can
-                # cause dropouts or stall streams (#319).  Connected
-                # speakers usually stop answering inquiries anyway, so the
-                # burst rarely yields their RSSI.
-                if self._running_sinks:
-                    logger.debug(
-                        "RSSI refresh skipped: audio running on %d sink(s)",
-                        len(self._running_sinks),
-                    )
+                # Skip while audio is flowing: the burst runs an interleaved
+                # BR/EDR inquiry + LE scan (Transport=auto) on the radio that
+                # carries the A2DP links and causes a short dropout every
+                # minute (#319).  Connected BR/EDR-only speakers do not answer
+                # inquiries anyway, so the burst yields nothing for them.
+                # Two sources, so a missed PA event cannot re-enable it.
+                if self._audio_running():
+                    logger.debug("RSSI refresh skipped: audio is running")
                     continue
 
                 # Skip if no connected devices need RSSI
@@ -2021,6 +2037,10 @@ class BluetoothAudioManager:
                 return
             except Exception as e:
                 logger.debug("RSSI refresh error: %s", e)
+
+    def _audio_running(self) -> bool:
+        """True while any Bluetooth sink is playing (PA events or the 5 s poll)."""
+        return bool(self._running_sinks or self._poll_running_sinks)
 
     def _rssi_cleanup(self) -> None:
         """Remove stale RSSI entries for devices no longer visible."""
