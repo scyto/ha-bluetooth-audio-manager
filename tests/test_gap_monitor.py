@@ -1,5 +1,6 @@
 """Gap diagnosis: silence in the audio PulseAudio renders for a speaker."""
 
+import asyncio
 import struct
 import unittest
 from unittest.mock import AsyncMock, MagicMock
@@ -7,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
-from bt_audio_manager.audio.gap_monitor import RATE, SilenceGapDetector
+from bt_audio_manager.audio.gap_monitor import (
+    RATE, DeliveryStallDetector, GapMonitor, SilenceGapDetector,
+)
 
 try:
     from bt_audio_manager.web.api import create_api_routes
@@ -68,6 +71,100 @@ class DetectorTest(unittest.TestCase):
         d = SilenceGapDetector()
         d.feed(music(ms(10)) + silence(ms(90)), 0.0)
         self.assertEqual([round(g[1]) for g in d.flush()], [90])
+
+
+class StallDetectorTest(unittest.TestCase):
+    """Rendering pauses show up as data arriving later than the samples say."""
+
+    def steady(self, d, start, seconds, step=0.02):
+        out, t = [], start
+        for _ in range(round(seconds / step)):
+            t += step
+            out += d.feed(round(RATE * step), t)
+        return out, t
+
+    def test_steady_delivery_has_no_stall(self):
+        d = DeliveryStallDetector()
+        out, _ = self.steady(d, 0.0, 30)
+        self.assertEqual(out, [])
+
+    def test_jitter_below_threshold_is_ignored(self):
+        d = DeliveryStallDetector()
+        t, out = 0.0, []
+        for i in range(1500):  # 30 s, arrival jitter of +-30 ms around the true time
+            t_true = (i + 1) * 0.02
+            out += d.feed(160, t_true + (0.03 if i % 7 == 0 else 0.0))
+        self.assertEqual(out, [])
+
+    def test_pause_then_catch_up_is_one_stall(self):
+        d = DeliveryStallDetector()
+        _, t = self.steady(d, 0.0, 5)
+        # Bluetooth backs up: nothing arrives for 200 ms, then the backlog
+        # arrives at once and delivery continues normally.
+        t += 0.2
+        out = d.feed(round(RATE * 0.2), t)
+        rest, _ = self.steady(d, t, 3)
+        stalls = out + rest
+        self.assertEqual(len(stalls), 1)
+        start, dur = stalls[0]
+        self.assertAlmostEqual(start, 5.0, delta=0.03)
+        self.assertAlmostEqual(dur, 180, delta=25)
+
+    def test_pause_with_skip_recovers(self):
+        # PulseAudio may skip instead of catching up gradually: more samples
+        # than real time arrive afterwards; the stall must still be closed once.
+        d = DeliveryStallDetector()
+        _, t = self.steady(d, 0.0, 5)
+        t += 0.3
+        stalls = d.feed(round(RATE * 0.3), t)
+        more, _ = self.steady(d, t, 2)
+        self.assertEqual(len(stalls + more), 1)
+
+
+class GapMonitorRunTest(unittest.IsolatedAsyncioTestCase):
+    """End to end with a fake parec that pauses mid-stream."""
+
+    async def test_fake_parec_stall_and_silence(self):
+        import os
+        import stat
+        import tempfile
+        from unittest.mock import patch
+
+        script = (
+            "#!/usr/bin/env python3\n"
+            "import sys, struct, time\n"
+            "out = sys.stdout.buffer\n"
+            "mus = struct.pack('<160h', *[100 + i % 7 for i in range(160)])  # 20 ms\n"
+            "sil = b'\\x00\\x00' * 400  # 50 ms\n"
+            "def play(n):\n"
+            "    for _ in range(n):\n"
+            "        out.write(mus); out.flush(); time.sleep(0.02)\n"
+            "play(40)\n"
+            "time.sleep(0.25)           # output stall\n"
+            "out.write(mus * 12); out.flush()  # catch-up burst\n"
+            "play(30)\n"
+            "out.write(sil); out.flush(); time.sleep(0.05)\n"
+            "play(30)\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "parec")
+            with open(path, "w") as f:
+                f.write(script)
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+            with patch.dict(os.environ, {"PATH": tmp + os.pathsep + os.environ["PATH"]}):
+                m = GapMonitor(["bluez_sink.A.a2dp_sink"], minutes=1)
+                await m.start()
+                for _ in range(100):
+                    await asyncio.sleep(0.1)
+                    if m.errors:
+                        break
+                await m.stop()
+        kinds = [e["kind"] for e in m.events]
+        self.assertIn("silence", kinds)
+        self.assertEqual(kinds.count("stall"), 1)
+        stall = next(e for e in m.events if e["kind"] == "stall")
+        self.assertGreater(stall["duration_ms"], 150)
+        self.assertEqual(len(m.stall_clusters()), 1)
 
 
 class GapMonitorApiTest(AioHTTPTestCase):
