@@ -1047,6 +1047,10 @@ async function openSettingsModal() {
     $("#setting-reconnect-interval").value = data.reconnect_interval_seconds;
     $("#setting-reconnect-max-backoff").value = data.reconnect_max_backoff_seconds;
     $("#setting-scan-duration").value = data.scan_duration_seconds;
+    const lockAll = $("#setting-volume-lock-all");
+    lockAll.checked = !!data.volume_lock_all;
+    lockAll.indeterminate = !!data.volume_lock_any && !data.volume_lock_all;
+    window._volumeLockAllTouched = false;
     new bootstrap.Modal("#settingsModal").show();
   } catch (e) {
     showToast(`Failed to load settings: ${e.message}`, "error");
@@ -1060,6 +1064,11 @@ async function saveSettings() {
     reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
     scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
   };
+  // Only send the all-devices lock when the user actually flipped it, so
+  // saving other settings never overwrites a mixed per-device state.
+  if (window._volumeLockAllTouched) {
+    settings.volume_lock_all = $("#setting-volume-lock-all").checked;
+  }
   try {
     await apiPut("/api/settings", settings);
     showToast("Settings saved", "success");
