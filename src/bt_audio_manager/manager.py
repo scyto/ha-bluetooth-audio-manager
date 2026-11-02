@@ -117,6 +117,7 @@ class BluetoothAudioManager:
         # Sinks the 5 s poll last saw in state "running" — a second, independent
         # source for "is audio flowing" next to the PA event callbacks.
         self._poll_running_sinks: set[str] = set()
+        self._gap_monitor = None  # audio.gap_monitor.GapMonitor while a diagnosis runs
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
@@ -933,6 +934,11 @@ class BluetoothAudioManager:
     async def shutdown(self) -> None:
         """Graceful teardown in reverse order."""
         logger.info("Shutting down Bluetooth Audio Manager...")
+
+        try:
+            await self.stop_gap_monitor()
+        except Exception as e:
+            logger.debug("Gap monitor stop failed: %s", e)
 
         # Stop sink and RSSI polling
         for task in (self._sink_poll_task, self._rssi_poll_task):
@@ -2801,6 +2807,39 @@ class BluetoothAudioManager:
                 continue
 
         logger.error("Failed to restart audio service via Supervisor API")
+
+    GAP_MONITOR_MAX_MINUTES = 60
+
+    async def start_gap_monitor(self, minutes: float) -> dict:
+        """Record every A2DP sink's monitor for *minutes* and log silence gaps.
+
+        Diagnostic only (see audio/gap_monitor.py): tells whether a dropout
+        is already in the audio PulseAudio renders, or happens after it.
+        A running diagnosis is replaced.
+        """
+        from .audio.gap_monitor import GapMonitor
+
+        minutes = max(0.5, min(float(minutes), self.GAP_MONITOR_MAX_MINUTES))
+        sinks = [
+            s["name"] for s in (await self.pulse.list_bt_sinks() if self.pulse else [])
+            if s["name"].endswith(".a2dp_sink")
+        ]
+        if not sinks:
+            raise RuntimeError("no Bluetooth A2DP sink present")
+        await self.stop_gap_monitor()
+        self._gap_monitor = GapMonitor(sinks, minutes)
+        await self._gap_monitor.start()
+        return self._gap_monitor.status()
+
+    async def stop_gap_monitor(self) -> dict | None:
+        monitor = self._gap_monitor
+        if monitor is None:
+            return None
+        await monitor.stop()
+        return monitor.status()
+
+    def gap_monitor_status(self) -> dict | None:
+        return self._gap_monitor.status() if self._gap_monitor else None
 
     AUDIO_LOG_MAX_LINES = 5000
 
