@@ -1,19 +1,28 @@
-"""Temporary diagnostic: find gaps in the audio PulseAudio sends to a speaker.
+"""Temporary diagnostic: where does a speaker dropout happen?
 
 Records each Bluetooth sink's *monitor* source (what PulseAudio renders for
-that sink) at 8 kHz mono and reports every stretch of exact digital silence
-of at least MIN_GAP_MS.
+that sink) at 8 kHz mono and looks for two different things:
 
-Why this splits the problem in two: when a player stream underruns (MPD,
-network, PulseAudio scheduling), PulseAudio renders silence, which shows up
-here as zeros.  When instead the Bluetooth link stalls, PulseAudio's
-bluez5 sink still renders the audio it has to skip, so the monitor stays
-continuous.  An audible dropout with no gap here therefore happened after
-PulseAudio: radio, controller or speaker.
+* **Silence** — a stretch of exact digital silence of at least MIN_GAP_MS.
+  When a player stream underruns (MPD, network) PulseAudio renders silence,
+  so the audio is already missing *before* Bluetooth.  Radio streams
+  practically never contain 30 ms of exact zeros in music; a station's own
+  silence between items can.
 
-Radio streams practically never contain 30 ms of exact zeros in music;
-a station's own silence between items can, so isolated hits next to a
-title change are expected.
+* **Stall** — PulseAudio's bluez5 sink only renders when the Bluetooth
+  socket takes data.  When the link, the adapter or the USB path backs up,
+  rendering pauses and the monitor falls behind the wall clock; once the
+  link frees up PulseAudio catches up (and skips), and the lag returns.
+  A rise of that lag above its recent minimum is reported as a stall.
+  Stalls on all speakers at the same moment point at the shared path
+  (adapter, USB, host); stalls on one speaker at a time point at that
+  link (radio path, speaker).
+
+An audible dropout with neither happened inside the speaker or on the
+radio without backing up the adapter.
+
+Each monitor is read by a plain thread so a busy event loop cannot fake a
+stall.
 """
 
 from __future__ import annotations
@@ -21,16 +30,61 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import os
 import re
+import subprocess
+import threading
 import time
 
 logger = logging.getLogger(__name__)
 
 RATE = 8000  # Hz, mono s16le
-CHUNK_BYTES = 1600  # 100 ms
 MIN_GAP_MS = 30
+STALL_MS = 60
 _ZERO_BYTES = re.compile(rb"\x00+")
 
+
+class DeliveryStallDetector:
+    """Pauses in rendering, from monitor data arrival times vs. sample count."""
+
+    def __init__(self, rate: int = RATE, threshold_ms: float = STALL_MS, window_s: float = 10.0):
+        self.rate = rate
+        self.threshold = threshold_ms / 1000
+        self.window = window_s
+        self._t0: float | None = None
+        self._samples = 0
+        self._history: collections.deque = collections.deque()  # (t, lag)
+        self._stall_start: float | None = None
+        self._peak = 0.0
+
+    def feed(self, n_samples: int, now: float) -> list[tuple[float, float]]:
+        """Data for *n_samples* arrived at monotonic time *now*.
+
+        Returns finished stalls as ``(start_monotonic, duration_ms)``.
+        """
+        if self._t0 is None:
+            self._t0 = now - n_samples / self.rate
+        # How late the first sample of this chunk arrived, measured against
+        # the sample clock.  Healthy: about one chunk.  After a pause: the
+        # whole pause, even though the backlog then arrives in one go.
+        lag = (now - self._t0) - self._samples / self.rate
+        self._samples += n_samples
+        while self._history and now - self._history[0][0] > self.window:
+            self._history.popleft()
+        baseline = min((l for _, l in self._history), default=lag)
+        self._history.append((now, lag))
+        excess = lag - baseline
+        done: list[tuple[float, float]] = []
+        if excess > self.threshold:
+            if self._stall_start is None:
+                # Data stopped arriving roughly `excess` ago.
+                self._stall_start, self._peak = now - excess, excess
+            else:
+                self._peak = max(self._peak, excess)
+        elif self._stall_start is not None and excess < self.threshold / 2:
+            done.append((self._stall_start, self._peak * 1000))
+            self._stall_start = None
+        return done
 
 class SilenceGapDetector:
     """Finds runs of zero samples in a s16le mono byte stream fed in chunks."""
@@ -85,9 +139,10 @@ class SilenceGapDetector:
 
 
 class GapMonitor:
-    """Runs one ``parec`` per sink monitor for a limited time and collects gaps."""
+    """Runs one ``parec`` per sink monitor for a limited time and collects events."""
 
-    MAX_EVENTS = 500
+    MAX_EVENTS = 1000
+    CLUSTER_S = 0.5  # stalls on several speakers within this window = one event
 
     def __init__(self, sinks: list[str], minutes: float):
         self.sinks = list(sinks)
@@ -97,9 +152,10 @@ class GapMonitor:
         self.events: collections.deque = collections.deque(maxlen=self.MAX_EVENTS)
         self.bytes_read: dict[str, int] = {s: 0 for s in self.sinks}
         self.errors: dict[str, str] = {}
-        self._procs: dict[str, asyncio.subprocess.Process] = {}
+        self._procs: dict[str, subprocess.Popen] = {}
         self._tasks: list[asyncio.Task] = []
         self._stopping = False
+        self._lock = threading.Lock()
 
     @property
     def running(self) -> bool:
@@ -107,7 +163,7 @@ class GapMonitor:
 
     async def start(self) -> None:
         for sink in self.sinks:
-            self._tasks.append(asyncio.create_task(self._run(sink)))
+            self._tasks.append(asyncio.create_task(asyncio.to_thread(self._read_blocking, sink)))
         self._tasks.append(asyncio.create_task(self._stop_later()))
         logger.warning(
             "Gap monitor started for %g min on %s", self.minutes, ", ".join(self.sinks),
@@ -115,8 +171,8 @@ class GapMonitor:
 
     async def stop(self) -> None:
         self._stopping = True
-        for proc in self._procs.values():
-            if proc.returncode is None:
+        for proc in list(self._procs.values()):
+            if proc.poll() is None:
                 try:
                     proc.terminate()
                 except ProcessLookupError:
@@ -124,13 +180,10 @@ class GapMonitor:
         current = asyncio.current_task()
         for task in self._tasks:
             if task is not current and not task.done():
-                task.cancel()
-        for task in self._tasks:
-            if task is not current:
                 try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                    await asyncio.wait_for(asyncio.shield(task), timeout=5)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    task.cancel()
 
     async def _stop_later(self) -> None:
         await asyncio.sleep(max(0.0, self.ends_at - time.time()))
@@ -138,65 +191,117 @@ class GapMonitor:
         logger.warning("Gap monitor finished: %s", self.summary())
 
     def summary(self) -> dict:
-        per_sink = collections.Counter(e["sink"] for e in self.events)
-        return {s: per_sink.get(s, 0) for s in self.sinks}
+        with self._lock:
+            events = list(self.events)
+        out = {}
+        for sink in self.sinks:
+            mine = [e for e in events if e["sink"] == sink]
+            out[sink] = {
+                "silence": sum(e["kind"] == "silence" for e in mine),
+                "stall": sum(e["kind"] == "stall" for e in mine),
+            }
+        return out
+
+    def stall_clusters(self) -> list[dict]:
+        """Stalls grouped across speakers: same moment = shared cause."""
+        with self._lock:
+            stalls = sorted((e for e in self.events if e["kind"] == "stall"), key=lambda e: e["ts"])
+        clusters: list[dict] = []
+        for e in stalls:
+            if clusters and e["ts"] - clusters[-1]["ts"] <= self.CLUSTER_S:
+                c = clusters[-1]
+                c["sinks"] = sorted(set(c["sinks"]) | {e["sink"]})
+                c["max_ms"] = max(c["max_ms"], e["duration_ms"])
+            else:
+                clusters.append({"at": e["at"], "ts": e["ts"], "sinks": [e["sink"]], "max_ms": e["duration_ms"]})
+        for prev, cur in zip(clusters, clusters[1:]):
+            cur["since_previous_s"] = round(cur["ts"] - prev["ts"], 1)
+        return clusters
 
     def status(self) -> dict:
+        with self._lock:
+            events = list(self.events)
+            seconds = {s: round(b / 2 / RATE, 1) for s, b in self.bytes_read.items()}
         return {
             "running": self.running,
             "started_at": self.started_at,
             "ends_at": self.ends_at,
             "min_gap_ms": MIN_GAP_MS,
-            "seconds_recorded": {s: round(b / 2 / RATE, 1) for s, b in self.bytes_read.items()},
-            "gaps_per_sink": self.summary(),
+            "stall_threshold_ms": STALL_MS,
+            "seconds_recorded": seconds,
+            "events_per_sink": self.summary(),
+            "stall_clusters": self.stall_clusters(),
             "errors": dict(self.errors),
-            "events": list(self.events),
+            "events": events,
         }
 
-    async def _run(self, sink: str) -> None:
-        detector = SilenceGapDetector()
+    def _read_blocking(self, sink: str) -> None:
+        silence = SilenceGapDetector()
+        stalls = DeliveryStallDetector()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "parec", f"--device={sink}.monitor",
-                "--format=s16le", f"--rate={RATE}", "--channels=1", "--raw",
-                "--latency-msec=200", "--client-name=bt-audio-manager-gap-monitor",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            proc = subprocess.Popen(
+                ["parec", f"--device={sink}.monitor",
+                 "--format=s16le", f"--rate={RATE}", "--channels=1", "--raw",
+                 "--latency-msec=20", "--client-name=bt-audio-manager-gap-monitor"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             )
         except (FileNotFoundError, OSError) as e:
             self.errors[sink] = str(e)
             return
         self._procs[sink] = proc
+        fd = proc.stdout.fileno()
+        pending = b""
         try:
             while True:
-                try:
-                    data = await proc.stdout.readexactly(CHUNK_BYTES)
-                except asyncio.IncompleteReadError:
+                data = os.read(fd, 4096)
+                mono, wall = time.monotonic(), time.time()
+                if not data:
                     break
-                self.bytes_read[sink] += len(data)
-                # Best estimate of when the chunk's first sample was rendered.
-                start_ts = time.time() - (len(data) // 2) / RATE
-                for begin, dur in detector.feed(data, start_ts):
-                    self._record(sink, begin, dur)
+                pending += data
+                usable = len(pending) - len(pending) % 2
+                chunk, pending = pending[:usable], pending[usable:]
+                if not chunk:
+                    continue
+                n = len(chunk) // 2
+                with self._lock:
+                    self.bytes_read[sink] += len(chunk)
+                for begin, dur in silence.feed(chunk, wall - n / RATE):
+                    self._record("silence", sink, begin, dur)
+                for begin_mono, dur in stalls.feed(n, mono):
+                    self._record("stall", sink, wall - (mono - begin_mono), dur)
         finally:
-            for begin, dur in detector.flush():
-                self._record(sink, begin, dur)
-            if proc.returncode is None:
+            for begin, dur in silence.flush():
+                self._record("silence", sink, begin, dur)
+            if proc.poll() is None:
                 try:
                     proc.terminate()
                 except ProcessLookupError:
                     pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            proc.stdout.close()
             if not self._stopping and sink not in self.errors:
                 self.errors[sink] = "recording ended early (sink gone?)"
 
-    def _record(self, sink: str, begin: float, duration_ms: float) -> None:
+    def _record(self, kind: str, sink: str, begin: float, duration_ms: float) -> None:
         event = {
+            "kind": kind,
             "sink": sink,
             "at": time.strftime("%H:%M:%S", time.localtime(begin)) + f".{int(begin % 1 * 10)}",
             "ts": round(begin, 2),
             "duration_ms": round(duration_ms),
         }
-        self.events.append(event)
-        logger.warning(
-            "Audio gap before Bluetooth: %d ms of silence on %s at %s",
-            event["duration_ms"], sink, event["at"],
-        )
+        with self._lock:
+            self.events.append(event)
+        if kind == "silence":
+            logger.warning(
+                "Audio gap before Bluetooth: %d ms of silence on %s at %s",
+                event["duration_ms"], sink, event["at"],
+            )
+        else:
+            logger.warning(
+                "Bluetooth output stalled: %d ms on %s at %s",
+                event["duration_ms"], sink, event["at"],
+            )
