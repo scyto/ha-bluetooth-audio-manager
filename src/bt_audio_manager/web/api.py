@@ -647,6 +647,35 @@ def create_api_routes(
             logger.error("debug_hfp_reconnect_cycle failed for %s: %s", address, e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
 
+    @routes.get("/api/diagnostics/audio-logs")
+    async def diagnostics_audio_logs(request: web.Request) -> web.Response:
+        """PulseAudio (audio plugin) log lines, read-only.
+
+        Query: ``lines`` (default 500), ``grep`` (case-insensitive
+        substring filter, applied after fetching), ``timestamps`` (1/0,
+        default 1).  Reading the log does not touch PulseAudio itself.
+        """
+        try:
+            lines = int(request.query.get("lines", 500))
+        except ValueError:
+            return web.json_response({"error": "lines must be an integer"}, status=400)
+        if lines < 1:
+            return web.json_response({"error": "lines must be >= 1"}, status=400)
+        timestamps = request.query.get("timestamps", "1") not in ("0", "false", "no")
+        needle = request.query.get("grep", "").lower()
+
+        fetched = await manager.fetch_audio_logs(lines, timestamps=timestamps)
+        if fetched is None:
+            return web.json_response(
+                {"error": "audio logs not available (no Supervisor access)"}, status=503,
+            )
+        matched = [line for line in fetched if needle in line.lower()] if needle else fetched
+        return web.json_response({
+            "fetched": len(fetched),
+            "count": len(matched),
+            "lines": matched,
+        })
+
     @routes.get("/api/diagnostics/mpris")
     async def diagnostics_mpris(request: web.Request) -> web.Response:
         """Diagnostic endpoint for MPRIS/AVRCP troubleshooting."""
