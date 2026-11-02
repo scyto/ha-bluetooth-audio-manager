@@ -2802,37 +2802,53 @@ class BluetoothAudioManager:
 
         logger.error("Failed to restart audio service via Supervisor API")
 
-    async def _dump_audio_logs(self, lines: int = 40) -> None:
-        """Fetch recent PulseAudio logs from Supervisor for diagnostics."""
+    AUDIO_LOG_MAX_LINES = 5000
+
+    async def fetch_audio_logs(self, lines: int = 40, *, timestamps: bool = False) -> list[str] | None:
+        """Last *lines* lines of the PulseAudio (audio plugin) log, or None.
+
+        PulseAudio runs in HAOS's audio plugin, not in this container; its
+        log is only reachable through the Supervisor.  ``timestamps`` asks
+        for the annotated journal format (``Accept: text/x-log``) so log
+        lines can be lined up with what a listener heard.
+        """
         import aiohttp
 
         token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
-            return
-
-        for url in (f"http://supervisor/audio/logs",
-                     f"http://172.30.32.2/audio/logs"):
+            return None
+        lines = max(1, min(int(lines), self.AUDIO_LOG_MAX_LINES))
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/x-log" if timestamps else "text/plain",
+            # Last N journal entries (Supervisor default is only 100).
+            "Range": f"entries=:-{lines - 1}:",
+        }
+        for url in ("http://supervisor/audio/logs",
+                    "http://172.30.32.2/audio/logs"):
             try:
                 async with aiohttp.ClientSession() as session:
-                    headers = {
-                        "Authorization": f"Bearer {token}",
-                        "Accept": "text/plain",
-                    }
                     async with session.get(
                         url, headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=10),
+                        timeout=aiohttp.ClientTimeout(total=15),
                     ) as resp:
                         if resp.status == 200:
                             text = await resp.text()
-                            # Get last N lines
-                            recent = text.strip().splitlines()[-lines:]
-                            logger.warning(
-                                "--- PA daemon logs (last %d lines) ---\n%s\n--- end PA logs ---",
-                                len(recent), "\n".join(recent),
-                            )
-                            return
-            except Exception:
+                            return text.strip().splitlines()[-lines:]
+                        logger.debug("Audio logs via %s returned %d", url, resp.status)
+            except Exception as e:
+                logger.debug("Audio logs via %s failed: %s", url, e)
                 continue
+        return None
+
+    async def _dump_audio_logs(self, lines: int = 40) -> None:
+        """Fetch recent PulseAudio logs from Supervisor for diagnostics."""
+        recent = await self.fetch_audio_logs(lines)
+        if recent:
+            logger.warning(
+                "--- PA daemon logs (last %d lines) ---\n%s\n--- end PA logs ---",
+                len(recent), "\n".join(recent),
+            )
 
     def _broadcast_toast(self, message: str, level: str = "info") -> None:
         """Push a toast notification to WebSocket clients."""

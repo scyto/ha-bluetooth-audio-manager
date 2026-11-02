@@ -83,7 +83,8 @@ class PulseAudioManager:
         self._volume_lock_resolver: Callable[[str], bool] | None = None
         # Cached `pactl list sinks` sample specs (see list_bt_sinks)
         self._spec_cache: dict[str, dict] = {}
-        self._spec_cache_at: float = 0.0
+        self._spec_sink_index: dict[str, int] = {}
+        self._spec_failed_at: float | None = None
 
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
@@ -281,24 +282,40 @@ class PulseAudioManager:
                     return
                 retry_delay = min(retry_delay * 2, 30)
 
-    SPEC_CACHE_TTL = 300.0  # seconds
+    SPEC_RETRY_AFTER_FAILURE = 300.0  # seconds
 
-    async def _cached_sample_specs(self, bt_sink_names: list[str]) -> dict[str, dict]:
-        """Sample specs, re-reading ``pactl list sinks`` only when needed.
+    async def _cached_sample_specs(self, bt_sinks: dict[str, int]) -> dict[str, dict]:
+        """Sample specs, re-reading ``pactl list sinks`` only when a sink is new.
+
+        *bt_sinks* maps Bluetooth sink name -> PulseAudio sink index.
 
         list_bt_sinks() runs every 5 s (sink poll) plus on every API/UI read,
-        and each call used to spawn a ``pactl`` client.  A sink's sample
-        spec only changes when the sink itself is (re)created, so re-read
-        when an unknown Bluetooth sink shows up, or after SPEC_CACHE_TTL.
+        and each call used to spawn a ``pactl`` client — the prime suspect
+        for #319's "reading the sinks causes a short dropout".  A sink's
+        sample spec is fixed for the sink's lifetime (a codec change
+        recreates the sink under a new index), so pactl only runs when a
+        sink name is unknown or its index changed.  No periodic re-read:
+        that would bring back a dropout on a timer.  If pactl itself fails,
+        wait SPEC_RETRY_AFTER_FAILURE before spawning it again.
         """
+        changed = any(
+            name not in self._spec_cache or self._spec_sink_index.get(name) != index
+            for name, index in bt_sinks.items()
+        )
+        if not changed:
+            return self._spec_cache
         now = asyncio.get_running_loop().time()
-        stale = now - self._spec_cache_at > self.SPEC_CACHE_TTL
-        unknown = any(name not in self._spec_cache for name in bt_sink_names)
-        if stale or unknown:
-            specs = await self._pactl_sample_specs()
-            if specs or stale:
-                self._spec_cache = specs
-                self._spec_cache_at = now
+        if self._spec_failed_at is not None and now - self._spec_failed_at < self.SPEC_RETRY_AFTER_FAILURE:
+            return self._spec_cache
+        specs = await self._pactl_sample_specs()
+        if not specs:
+            self._spec_failed_at = now
+            return self._spec_cache
+        self._spec_failed_at = None
+        self._spec_cache = specs
+        # Remember the index only for sinks pactl actually reported, so a
+        # sink created between sink_list() and pactl is picked up next time.
+        self._spec_sink_index = {name: idx for name, idx in bt_sinks.items() if name in specs}
         return self._spec_cache
 
     async def _pactl_sample_specs(self) -> dict[str, dict]:
@@ -360,7 +377,7 @@ class PulseAudioManager:
         """List all Bluetooth A2DP sinks currently available."""
         sinks = await self._pulse.sink_list()
         sample_specs = await self._cached_sample_specs(
-            [s.name for s in sinks if "bluez" in s.name.lower()]
+            {s.name: s.index for s in sinks if "bluez" in s.name.lower()}
         )
         bt_sinks = []
         for sink in sinks:
