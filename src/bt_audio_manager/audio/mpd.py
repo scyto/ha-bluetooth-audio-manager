@@ -57,6 +57,8 @@ class MPDManager:
         self._stream_ends: list[float] = []
         self._repeat_guard_task: asyncio.Task | None = None
         self._watch_task: asyncio.Task | None = None  # see _watch_playback
+        # Hold MPD's software volume at 100 (per-device "volume_lock" setting)
+        self.volume_lock: bool = False
 
     # -- Lifecycle --
 
@@ -451,6 +453,7 @@ class MPDManager:
             while self._running:
                 await asyncio.sleep(self.WATCH_INTERVAL)
                 status = await self.get_status()
+                await self._enforce_volume_lock(status)
                 state = status.get("state")
                 if state == "play":
                     if attempt:
@@ -483,6 +486,25 @@ class MPDManager:
             raise
         except Exception as e:
             logger.debug("[mpd:%d] playback watch ended: %s", self._port, e)
+
+    async def _enforce_volume_lock(self, status: dict) -> bool:
+        """Put the software volume back to 100 when the volume lock is on.
+
+        Anything can move it — a dashboard slider, an automation, the
+        speaker buttons via AVRCP.  Checked on every watch tick (5 s).
+        """
+        if not self.volume_lock:
+            return False
+        volume = status.get("volume")
+        try:
+            current = int(volume)
+        except (TypeError, ValueError):
+            return False  # no mixer / unknown status
+        if current < 0 or current == 100:
+            return False
+        await self.set_volume(100)
+        logger.info("[mpd:%d] volume %d%% -> 100%% (volume lock)", self._port, current)
+        return True
 
     async def _retry_play(self) -> None:
         await self._ensure_connected()
