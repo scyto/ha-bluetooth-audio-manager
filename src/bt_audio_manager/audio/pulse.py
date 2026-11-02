@@ -79,6 +79,8 @@ class PulseAudioManager:
         self._pin_history: dict[int, list[float]] = {}
         # Optional fallback for _stream_owner(): proplist → speaker MAC
         self._stream_owner_resolver: Callable[[dict], str | None] | None = None
+        # address -> True when that speaker's volume is locked at 100 %
+        self._volume_lock_resolver: Callable[[str], bool] | None = None
         # Cached `pactl list sinks` sample specs (see list_bt_sinks)
         self._spec_cache: dict[str, dict] = {}
         self._spec_cache_at: float = 0.0
@@ -262,6 +264,7 @@ class PulseAudioManager:
                             # Moves show up as "change" — catch streams that
                             # PulseAudio moved onto another speaker (#318).
                             await self._pin_mpd_stream(event.index)
+                            await self._enforce_locked_stream_volume(event.index)
                         elif event.facility == "sink_input" and event.t == "remove":
                             self._pin_history.pop(event.index, None)
                 finally:
@@ -601,6 +604,59 @@ class PulseAudioManager:
     MPD_STREAM_ID_PREFIX = "bt-audio-manager:"
     PIN_MAX_MOVES = 3  # moves per stream within PIN_WINDOW before giving up
     PIN_WINDOW = 60.0
+
+    def set_volume_lock_resolver(self, resolver: Callable[[str], bool]) -> None:
+        """``resolver(address)`` says whether that speaker's volume is locked."""
+        self._volume_lock_resolver = resolver
+
+    def _volume_locked(self, address: str | None) -> bool:
+        if not address or not self._volume_lock_resolver:
+            return False
+        try:
+            return bool(self._volume_lock_resolver(address))
+        except Exception:
+            return False
+
+    async def _enforce_locked_stream_volume(self, stream_index: int) -> bool:
+        """Hold a locked speaker's MPD stream at 100 % in PulseAudio."""
+        if not self._pulse:
+            return False
+        try:
+            stream = await self._pulse.sink_input_info(stream_index)
+            return await self._enforce_stream(stream)
+        except Exception as e:
+            logger.debug("Volume lock check failed for stream %d: %s", stream_index, e)
+            return False
+
+    async def enforce_volume_lock_all(self) -> int:
+        """Apply the volume lock to every MPD stream now; returns how many changed."""
+        if not self._pulse:
+            return 0
+        changed = 0
+        try:
+            for stream in await self._pulse.sink_input_list():
+                try:
+                    if await self._enforce_stream(stream):
+                        changed += 1
+                except Exception as e:
+                    logger.debug("Volume lock check failed: %s", e)
+        except Exception as e:
+            logger.debug("Listing sink inputs failed: %s", e)
+        return changed
+
+    async def _enforce_stream(self, stream) -> bool:
+        address = self._stream_owner(getattr(stream, "proplist", None))
+        if not self._volume_locked(address):
+            return False
+        volume = getattr(getattr(stream, "volume", None), "value_flat", None)
+        if volume is None or volume >= 0.995:
+            return False
+        await self._pulse.volume_set_all_chans(stream, 1.0)
+        logger.info(
+            "MPD stream for %s: volume %d%% -> 100%% (volume lock)",
+            address, round(volume * 100),
+        )
+        return True
 
     def set_stream_owner_resolver(self, resolver: Callable[[dict], str | None]) -> None:
         """Fallback used when a stream carries no module-stream-restore.id."""

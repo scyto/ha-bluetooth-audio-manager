@@ -394,6 +394,19 @@
           <!-- MPD Config (shown when enabled) -->
           <div id="mpd-config-group" style="display:none;">
             <div class="mb-3">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="setting-volume-lock">
+                <label class="form-check-label" for="setting-volume-lock">
+                  <strong>Lock volume at 100%</strong>
+                </label>
+              </div>
+              <div class="form-text">
+                Holds MPD volume, the audio stream and the speaker's own volume at 100%.
+                Any change (dashboard slider, automation, speaker buttons) is undone
+                within seconds. Hardware Volume below is then ignored.
+              </div>
+            </div>
+            <div class="mb-3">
               <label for="setting-mpd-hw-volume" class="form-label">Hardware Volume (%)</label>
               <input type="number" class="form-control" id="setting-mpd-hw-volume"
                      min="1" max="100" step="1" value="100">

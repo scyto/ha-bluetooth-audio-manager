@@ -1021,6 +1021,7 @@ components:
         mpd_enabled: { type: boolean }
         mpd_port: { type: integer, nullable: true }
         mpd_hw_volume: { type: integer }
+        volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
 
     IdleMode:
@@ -1074,6 +1075,11 @@ components:
           type: integer
           minimum: 1
           maximum: 100
+        volume_lock:
+          type: boolean
+          description: >
+            Hold MPD volume, the MPD stream and the speaker's volume at 100%;
+            any change is undone. `mpd_hw_volume` is ignored while on.
         avrcp_enabled:
           type: boolean
           description: Route the speaker's transport buttons to MPD.
@@ -1090,6 +1096,7 @@ components:
         mpd_enabled: { type: boolean }
         mpd_port: { type: integer, nullable: true }
         mpd_hw_volume: { type: integer }
+        volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
 
     RuntimeSettings:

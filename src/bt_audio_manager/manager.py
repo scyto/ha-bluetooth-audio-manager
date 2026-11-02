@@ -75,6 +75,7 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    VOLUME_LOCK_MAX_RESETS = 5  # speaker-volume resets per device per minute
     SCAN_RESUME_STAGGER = 2  # seconds between stream restarts after a scan
     USER_DISCONNECT_WINDOW = 30  # seconds a user-initiated disconnect flag stays valid
     ADAPTER_RETURN_SETTLE = 5  # seconds to let a re-added adapter power up before restarting
@@ -101,6 +102,7 @@ class BluetoothAudioManager:
         self._mpd_start_locks: dict[str, asyncio.Lock] = {}  # addr → serialises MPD starts
         self._mpd_self_heal_at: dict[str, float] = {}  # addr → monotonic time of last self-heal
         self._mpd_missing_since: dict[str, float] = {}  # addr → monotonic time MPD was first seen missing
+        self._volume_lock_resets: dict[str, list[float]] = {}  # addr → recent sink-volume resets
         self._last_avrcp_device: tuple[str, float] | None = None  # (addr, timestamp)
         self.media_player: AVRCPMediaPlayer | None = None
         self.managed_devices: dict[str, BluezDevice] = {}
@@ -178,6 +180,52 @@ class BluetoothAudioManager:
         )
         added.add(rule)
         logger.debug("D-Bus match added: %s", rule)
+
+    # -- Volume lock (per-device "volume_lock" setting) -------------------
+    #
+    # Holds all three volume layers at 100 %: MPD's software volume (what HA
+    # shows), the MPD stream in PulseAudio, and the Bluetooth sink — which
+    # BlueZ maps to the speaker's AVRCP absolute volume.  Whatever moves one
+    # of them (dashboard slider, automation, speaker buttons) is undone.
+
+    def _volume_locked(self, address: str | None) -> bool:
+        if not address or not getattr(self, "store", None):
+            return False
+        return bool(self.store.get_device_settings(address.upper()).get("volume_lock", False))
+
+    async def _enforce_sink_volume_lock(self, address: str, sink_name: str, volume: int) -> None:
+        """Put a locked speaker's sink volume back to 100 % (rate-limited)."""
+        now = time.monotonic()
+        recent = [t for t in self._volume_lock_resets.get(address, []) if now - t < 60]
+        if len(recent) >= self.VOLUME_LOCK_MAX_RESETS:
+            if len(recent) == self.VOLUME_LOCK_MAX_RESETS:
+                logger.warning(
+                    "Volume lock for %s: speaker volume keeps changing (%d resets "
+                    "in a minute) — pausing resets for a minute",
+                    address, len(recent),
+                )
+                recent.append(now)
+                self._volume_lock_resets[address] = recent
+            return
+        recent.append(now)
+        self._volume_lock_resets[address] = recent
+        if self.pulse and await self.pulse.set_sink_volume(sink_name, 100):
+            logger.info("Volume lock for %s: speaker volume %d%% -> 100%%", address, volume)
+
+    async def _apply_volume_lock(self, address: str) -> None:
+        """Bring all three layers of a locked, connected speaker to 100 % now."""
+        mpd = self._mpd_instances.get(address)
+        if mpd is not None:
+            mpd.volume_lock = True
+            if mpd.is_running:
+                await mpd.set_volume(100)
+        if self.pulse:
+            sink = await self.pulse.get_sink_for_address(address)
+            if sink:
+                await self.pulse.set_sink_volume(sink, 100)
+                self._last_pa_volume[address] = 100
+            await self.pulse.enforce_volume_lock_all()
+        logger.info("Volume lock on for %s: MPD, stream and speaker at 100%%", address)
 
     def _mpd_stream_owner(self, proplist) -> str | None:
         """Map a PulseAudio stream to the speaker whose MPD daemon created it."""
@@ -651,6 +699,7 @@ class BluetoothAudioManager:
             self.pulse.on_sink_state_change(self._on_pa_sink_running)
             self.pulse.on_sink_idle(self._on_pa_sink_idle)
             self.pulse.set_stream_owner_resolver(self._mpd_stream_owner)
+            self.pulse.set_volume_lock_resolver(self._volume_locked)
             await self.pulse.start_event_monitor()
         except Exception as e:
             logger.warning("PulseAudio connection failed (will retry): %s", e)
@@ -1547,6 +1596,7 @@ class BluetoothAudioManager:
                 device["mpd_enabled"] = s.get("mpd_enabled", False)
                 device["mpd_port"] = s.get("mpd_port")
                 device["mpd_hw_volume"] = s.get("mpd_hw_volume", 100)
+                device["volume_lock"] = s.get("volume_lock", False)
                 device["avrcp_enabled"] = s.get("avrcp_enabled", True)
 
         # Add stored devices not currently visible
@@ -1575,6 +1625,7 @@ class BluetoothAudioManager:
                         "mpd_enabled": s.get("mpd_enabled", False),
                         "mpd_port": s.get("mpd_port"),
                         "mpd_hw_volume": s.get("mpd_hw_volume", 100),
+                        "volume_lock": s.get("volume_lock", False),
                         "avrcp_enabled": s.get("avrcp_enabled", True),
                     }
                 )
@@ -3053,6 +3104,13 @@ class BluetoothAudioManager:
         entry = {"address": addr, "property": "Volume", "value": value, "ts": time.time()}
         self.recent_avrcp.append(entry)
         self.event_bus.emit("avrcp_event", entry)
+        # Volume lock: the speaker volume goes back to 100 % and MPD is not
+        # dragged along (that would lower HA's volume too).
+        if addr and self._volume_locked(addr):
+            self._last_pa_volume[addr] = volume
+            if volume != 100:
+                self._fire_and_forget(self._enforce_sink_volume_lock(addr, sink_name, volume))
+            return
         # Sync PA volume change to MPD so HA's media_player entity reflects
         # the speaker's actual volume (speaker buttons → AVRCP → PA → MPD).
         # Skip if volume hasn't changed (PA fires on every sink state change).
@@ -3433,6 +3491,7 @@ class BluetoothAudioManager:
             password=mpd_password,
             log_level=self.config.log_level,
         )
+        mpd.volume_lock = bool(settings.get("volume_lock", False))
         try:
             await mpd.start(sink_name)
             self._mpd_instances[address] = mpd
@@ -3441,7 +3500,10 @@ class BluetoothAudioManager:
                 self.media_player.set_playback_status("Playing")
             # Sync volume: set hardware to 100% so MPD is the single volume
             # control, or sync MPD to hardware if a stream is active.
-            await self._init_mpd_volume(address, mpd, sink_name)
+            if mpd.volume_lock:
+                await self._apply_volume_lock(address)
+            else:
+                await self._init_mpd_volume(address, mpd, sink_name)
             # Live radio: re-open the stream at once when the server ends it,
             # instead of stopping until something outside plays again.
             await mpd.enable_repeat()
@@ -3542,6 +3604,17 @@ class BluetoothAudioManager:
                         s = self.store.get_device_settings(address)
                         delay = s.get("power_save_delay", 0)
                         self._schedule_sink_suspend(address, sink_name, delay)
+
+        # React to volume lock changes
+        if "volume_lock" in settings:
+            locked = bool(device_info.get("volume_lock", False))
+            mpd = self._mpd_instances.get(address)
+            if mpd is not None:
+                mpd.volume_lock = locked
+            if locked and address in self._device_connect_time:
+                await self._apply_volume_lock(address)
+            elif not locked:
+                logger.info("Volume lock off for %s", address)
 
         # React to MPD changes
         mpd_changed = {"mpd_enabled", "mpd_port", "mpd_hw_volume"}.intersection(settings)

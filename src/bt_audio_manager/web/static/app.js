@@ -427,6 +427,7 @@ function buildDeviceCard(d) {
     const mpdPort = safeJsString(d.mpd_port ?? "");
     const mpdHwVolume = Number(d.mpd_hw_volume ?? 100) || 0;
     const avrcpEnabled = !!(d.avrcp_enabled ?? true);
+    const volumeLock = !!d.volume_lock;
     const safeName = safeJsString(d.name);
     const safeAddr = safeJsString(d.address);
     const uuidsJson = safeJsString(JSON.stringify(d.uuids || []));
@@ -437,7 +438,7 @@ function buildDeviceCard(d) {
           <i class="fas fa-ellipsis-v"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end">
-          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${safeAddr}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
+          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${safeAddr}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}', ${volumeLock}); return false;">
             <i class="fas fa-cog me-2"></i>Settings
           </a></li>
           ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${safeAddr}'); return false;">
@@ -1074,7 +1075,7 @@ async function saveSettings() {
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson) {
+function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson, volumeLock) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
   $("#device-settings-address").textContent = address;
@@ -1116,6 +1117,7 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   $("#setting-auto-disconnect-minutes").value = String(autoDisconnectMinutes ?? 30);
   $("#setting-mpd-enabled").checked = mpdEnabled || false;
   $("#setting-mpd-hw-volume").value = mpdHwVolume ?? 100;
+  $("#setting-volume-lock").checked = !!volumeLock;
   $("#setting-mpd-port").value = mpdPort || "";
   // Show connection info if port is assigned
   if (mpdPort) {
@@ -1197,6 +1199,7 @@ async function saveDeviceSettings() {
   // Include MPD config when enabled
   if (settings.mpd_enabled) {
     settings.mpd_hw_volume = parseInt($("#setting-mpd-hw-volume").value, 10) || 100;
+    settings.volume_lock = $("#setting-volume-lock").checked;
     const portVal = $("#setting-mpd-port").value;
     if (portVal) settings.mpd_port = parseInt(portVal, 10);
   }
