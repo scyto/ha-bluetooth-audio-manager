@@ -737,6 +737,70 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/diagnostics/gap-monitor:
+    get:
+      tags: [Diagnostics]
+      summary: Result of the current or last gap diagnosis
+      responses:
+        "200":
+          description: Status, gap count per sink and the gap events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "404":
+          description: No gap diagnosis has run since the app started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      tags: [Diagnostics]
+      summary: Start a gap diagnosis
+      description: >
+        Records every Bluetooth A2DP sink's PulseAudio monitor (8 kHz mono)
+        for the given time and logs each stretch of at least 30 ms of exact
+        digital silence. A gap here means the audio was already missing
+        before Bluetooth (player, network, PulseAudio); an audible dropout
+        without a gap here happened after PulseAudio (radio link, adapter,
+        speaker). A running diagnosis is replaced.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                minutes: { type: number, minimum: 0.5, maximum: 60, default: 10 }
+      responses:
+        "200":
+          description: Diagnosis started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "400":
+          description: Invalid `minutes`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: No Bluetooth A2DP sink present.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [Diagnostics]
+      summary: Stop a running gap diagnosis early
+      responses:
+        "200":
+          description: Final status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "404":
+          description: No gap diagnosis has run since the app started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # --------------------------------------------------------------- Debug --
 
   /api/debug/avrcp-cycle:
@@ -977,6 +1041,31 @@ components:
 
   schemas:
 
+    GapMonitorStatus:
+      type: object
+      properties:
+        running: { type: boolean }
+        started_at: { type: number, description: Unix time }
+        ends_at: { type: number, description: Unix time }
+        min_gap_ms: { type: integer }
+        seconds_recorded:
+          type: object
+          additionalProperties: { type: number }
+        gaps_per_sink:
+          type: object
+          additionalProperties: { type: integer }
+        errors:
+          type: object
+          additionalProperties: { type: string }
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              sink: { type: string }
+              at: { type: string, description: Local time HH:MM:SS.d }
+              ts: { type: number }
+              duration_ms: { type: integer }
     Error:
       type: object
       description: >
