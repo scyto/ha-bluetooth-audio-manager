@@ -50,6 +50,21 @@ def _capture_stderr():
             logger.debug("libpulse stderr: %s", captured)
 
 
+def sink_state_name(state) -> str:
+    """Plain state name ("running", "idle", "suspended") of a pulsectl sink.
+
+    pulsectl's EnumValue has no ``.name``: ``getattr(state, "name", str(state))``
+    yields ``"<EnumValue sink/source-state=running>"``, which never equals
+    ``"running"``.  That silently disabled every running/idle callback.
+    """
+    for attr in ("_value", "name"):
+        value = getattr(state, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    raw = str(state)
+    return raw.split("=")[-1].rstrip(">") if "=" in raw else raw
+
+
 class PulseAudioManager:
     """Manages PulseAudio sinks for Bluetooth audio devices."""
 
@@ -215,7 +230,7 @@ class PulseAudioManager:
                                 sink = await self._pulse.sink_info(event.index)
                                 if "bluez" in sink.name.lower():
                                     vol = round(sink.volume.value_flat * 100)
-                                    state_name = getattr(sink.state, "name", str(sink.state))
+                                    state_name = sink_state_name(sink.state)
                                     logger.info(
                                         "PA sink volume change: %s vol=%d%% mute=%s state=%s",
                                         sink.name, vol, sink.mute, state_name,
@@ -347,12 +362,7 @@ class PulseAudioManager:
         bt_sinks = []
         for sink in sinks:
             if "bluez" in sink.name.lower():
-                # Extract human-readable state from pulsectl enum
-                state_name = getattr(sink.state, "name", None)
-                if state_name is None:
-                    # Fallback: parse "<EnumValue sink/source-state=idle>"
-                    raw = str(sink.state)
-                    state_name = raw.split("=")[-1].rstrip(">") if "=" in raw else raw
+                state_name = sink_state_name(sink.state)
 
                 # Sample spec from pactl (reliable) instead of pulsectl ctypes
                 spec = sample_specs.get(sink.name, {})
@@ -540,11 +550,7 @@ class PulseAudioManager:
             for sink in sinks:
                 if sink.name == sink_name:
                     vol = round(sink.volume.value_flat * 100)
-                    state_name = getattr(sink.state, "name", None)
-                    if state_name is None:
-                        raw = str(sink.state)
-                        state_name = raw.split("=")[-1].rstrip(">") if "=" in raw else raw
-                    return (vol, state_name)
+                    return (vol, sink_state_name(sink.state))
         except Exception as e:
             logger.debug("get_sink_volume(%s) failed: %s", sink_name, e)
         return None

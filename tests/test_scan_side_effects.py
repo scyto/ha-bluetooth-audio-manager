@@ -101,6 +101,7 @@ class RssiBurstTest(unittest.IsolatedAsyncioTestCase):
         manager.RSSI_REFRESH_DURATION = 0
         manager._scanning = False
         manager._running_sinks = set(running_sinks)
+        manager._poll_running_sinks = set()
         manager._device_connect_time = {A: 1.0}
         manager.adapter = MagicMock()
         manager.adapter.start_rssi_refresh = AsyncMock()
