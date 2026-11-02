@@ -757,11 +757,14 @@ paths:
       summary: Start a gap diagnosis
       description: >
         Records every Bluetooth A2DP sink's PulseAudio monitor (8 kHz mono)
-        for the given time and logs each stretch of at least 30 ms of exact
-        digital silence. A gap here means the audio was already missing
-        before Bluetooth (player, network, PulseAudio); an audible dropout
-        without a gap here happened after PulseAudio (radio link, adapter,
-        speaker). A running diagnosis is replaced.
+        for the given time and logs two kinds of events. `silence`: at least
+        30 ms of exact digital silence, i.e. the audio was already missing
+        before Bluetooth (player, network). `stall`: PulseAudio's Bluetooth
+        output paused for at least 60 ms because the link, adapter or USB
+        path stopped taking data; stalls on all speakers at once point at
+        the shared path, single-speaker stalls at that link. An audible
+        dropout with neither happened inside the speaker or on the radio
+        without backing up the adapter. A running diagnosis is replaced.
       requestBody:
         required: false
         content:
@@ -1051,9 +1054,26 @@ components:
         seconds_recorded:
           type: object
           additionalProperties: { type: number }
-        gaps_per_sink:
+        stall_threshold_ms: { type: integer }
+        events_per_sink:
           type: object
-          additionalProperties: { type: integer }
+          description: Per sink, number of silence gaps and of output stalls.
+          additionalProperties:
+            type: object
+            properties:
+              silence: { type: integer }
+              stall: { type: integer }
+        stall_clusters:
+          type: array
+          description: Stalls grouped across speakers (within 0.5 s = same moment).
+          items:
+            type: object
+            properties:
+              at: { type: string }
+              ts: { type: number }
+              sinks: { type: array, items: { type: string } }
+              max_ms: { type: integer }
+              since_previous_s: { type: number }
         errors:
           type: object
           additionalProperties: { type: string }
@@ -1062,6 +1082,7 @@ components:
           items:
             type: object
             properties:
+              kind: { type: string, enum: [silence, stall] }
               sink: { type: string }
               at: { type: string, description: Local time HH:MM:SS.d }
               ts: { type: number }
