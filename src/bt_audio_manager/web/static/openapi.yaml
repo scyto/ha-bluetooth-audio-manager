@@ -687,6 +687,56 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MprisDiagnostics" }
 
+  /api/diagnostics/audio-logs:
+    get:
+      tags: [Diagnostics]
+      summary: PulseAudio (audio plugin) log lines
+      description: >
+        Read-only view of the HAOS audio plugin's PulseAudio log, fetched
+        through the Supervisor. Useful to line up audible dropouts with
+        `Skipping N us (= M bytes) in audio stream` warnings, which
+        PulseAudio logs when a Bluetooth link did not take audio in time.
+        Reading the log does not query PulseAudio itself.
+      parameters:
+        - name: lines
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 500 }
+          description: Number of most recent journal lines to fetch.
+        - name: grep
+          in: query
+          required: false
+          schema: { type: string }
+          description: Case-insensitive substring filter applied to the fetched lines.
+        - name: timestamps
+          in: query
+          required: false
+          schema: { type: string, enum: ["1", "0"], default: "1" }
+          description: Annotated journal format with timestamps (`1`) or bare messages (`0`).
+      responses:
+        "200":
+          description: Matching log lines.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fetched: { type: integer }
+                  count: { type: integer }
+                  lines:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Invalid `lines`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Supervisor not reachable (no token).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # --------------------------------------------------------------- Debug --
 
   /api/debug/avrcp-cycle:

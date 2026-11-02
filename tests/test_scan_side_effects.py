@@ -132,26 +132,49 @@ class RssiBurstTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SampleSpecCacheTest(unittest.IsolatedAsyncioTestCase):
-    """Sink listing used to spawn a pactl client on every call (5 s poll + API)."""
+    """Sink listing used to spawn a pactl client on every call (5 s poll + API).
 
-    async def test_pactl_only_reread_for_new_sinks_or_after_ttl(self):
+    Spawning pactl is the prime suspect for the short dropout of #319, so
+    it must never run on a timer while the sinks stay the same.
+    """
+
+    SPEC = {"format": "s16le", "rate": 44100, "channels": 2}
+    A = "bluez_sink.A.a2dp_sink"
+    B = "bluez_sink.B.a2dp_sink"
+
+    def build(self, specs):
         manager = PulseAudioManager()
-        spec = {"format": "s16le", "rate": 44100, "channels": 2}
-        manager._pactl_sample_specs = AsyncMock(return_value={"bluez_sink.A.a2dp_sink": spec})
-        loop = asyncio.get_running_loop()
+        manager._pactl_sample_specs = AsyncMock(return_value=specs)
+        return manager
 
-        with patch.object(loop, "time", return_value=1000.0):
-            await manager._cached_sample_specs(["bluez_sink.A.a2dp_sink"])
-            await manager._cached_sample_specs(["bluez_sink.A.a2dp_sink"])
+    async def test_unchanged_sinks_never_respawn_pactl(self):
+        manager = self.build({self.A: self.SPEC})
+        loop = asyncio.get_running_loop()
+        for t in (1000.0, 1001.0, 1000.0 + 3600):  # an hour later: still cached
+            with patch.object(loop, "time", return_value=t):
+                await manager._cached_sample_specs({self.A: 1})
         self.assertEqual(manager._pactl_sample_specs.await_count, 1)
 
-        with patch.object(loop, "time", return_value=1001.0):
-            await manager._cached_sample_specs(["bluez_sink.A.a2dp_sink", "bluez_sink.B.a2dp_sink"])
-        self.assertEqual(manager._pactl_sample_specs.await_count, 2)  # unknown sink
+    async def test_new_sink_or_recreated_sink_rereads(self):
+        manager = self.build({self.A: self.SPEC, self.B: self.SPEC})
+        await manager._cached_sample_specs({self.A: 1})
+        await manager._cached_sample_specs({self.A: 1, self.B: 2})  # new sink
+        self.assertEqual(manager._pactl_sample_specs.await_count, 2)
+        await manager._cached_sample_specs({self.A: 7, self.B: 2})  # A recreated
+        self.assertEqual(manager._pactl_sample_specs.await_count, 3)
+        await manager._cached_sample_specs({self.A: 7, self.B: 2})
+        self.assertEqual(manager._pactl_sample_specs.await_count, 3)
 
-        with patch.object(loop, "time", return_value=1001.0 + manager.SPEC_CACHE_TTL + 1):
-            await manager._cached_sample_specs(["bluez_sink.A.a2dp_sink"])
-        self.assertEqual(manager._pactl_sample_specs.await_count, 3)  # TTL
+    async def test_failing_pactl_is_not_retried_on_every_poll(self):
+        manager = self.build({})
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "time", return_value=1000.0):
+            await manager._cached_sample_specs({self.A: 1})
+            await manager._cached_sample_specs({self.A: 1})
+        self.assertEqual(manager._pactl_sample_specs.await_count, 1)
+        with patch.object(loop, "time", return_value=1000.0 + manager.SPEC_RETRY_AFTER_FAILURE + 1):
+            await manager._cached_sample_specs({self.A: 1})
+        self.assertEqual(manager._pactl_sample_specs.await_count, 2)
 
 
 if __name__ == "__main__":
