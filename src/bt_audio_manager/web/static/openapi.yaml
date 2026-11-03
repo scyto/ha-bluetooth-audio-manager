@@ -737,6 +737,41 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/diagnostics/pulse-bluetooth:
+    get:
+      tags: [Diagnostics]
+      summary: PulseAudio Bluetooth module arguments
+      description: >
+        Lists the loaded `module-bluetooth-discover` / `module-bluez5-discover`
+        with their arguments and reports the A2DP bitrate recovery interval
+        in effect (`output_rate_refresh_interval_ms`, PulseAudio default
+        500 ms). Read-only; the interval is set through the audio plugin's
+        `/data/custom.pa` (see the documentation).
+      responses:
+        "200":
+          description: Modules and interval.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  modules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index: { type: integer }
+                        name: { type: string }
+                        argument: { type: string }
+                  output_rate_refresh_interval_ms: { type: integer, nullable: true }
+                  effective_interval_ms: { type: integer }
+                  custom: { type: boolean }
+        "503":
+          description: PulseAudio not connected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/diagnostics/gap-monitor:
     get:
       tags: [Diagnostics]

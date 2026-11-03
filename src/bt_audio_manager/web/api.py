@@ -676,6 +676,25 @@ def create_api_routes(
             "lines": matched,
         })
 
+    @routes.get("/api/diagnostics/pulse-bluetooth")
+    async def diagnostics_pulse_bluetooth(request: web.Request) -> web.Response:
+        """PulseAudio's Bluetooth discovery modules and the bitrate recovery in effect."""
+        pulse = manager.pulse
+        if not pulse:
+            return web.json_response({"error": "PulseAudio not connected"}, status=503)
+        try:
+            modules = await pulse.bt_module_args()
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        bluez5 = next((m for m in modules if m["name"] == pulse.BT_DISCOVER_MODULE), None)
+        interval = pulse.rate_refresh_from_args(bluez5["argument"]) if bluez5 else None
+        return web.json_response({
+            "modules": modules,
+            "output_rate_refresh_interval_ms": interval,
+            "effective_interval_ms": interval or pulse.RATE_REFRESH_DEFAULT_MS,
+            "custom": interval is not None,
+        })
+
     @routes.get("/api/diagnostics/gap-monitor")
     async def gap_monitor_status(request: web.Request) -> web.Response:
         """Result of the last/current gap diagnosis (404 if none ran)."""
