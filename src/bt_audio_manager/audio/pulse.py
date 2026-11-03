@@ -6,6 +6,7 @@ When BlueZ connects an A2DP device, PulseAudio's module-bluez5-discover
 """
 
 import asyncio
+import re
 import contextlib
 import logging
 import os
@@ -795,6 +796,36 @@ class PulseAudioManager:
         except Exception as e:
             logger.debug("Failed to normalize new MPD stream %d: %s", stream_index, e)
         return False
+
+    # -- Bluetooth module arguments (read-only) ----------------------------
+    #
+    # PulseAudio lowers the A2DP encoder bitrate (SBC: bitpool -5) whenever a
+    # Bluetooth socket falls more than two blocks behind and throws the late
+    # audio away (the audible dropout).  It raises the bitrate again (+1)
+    # every ``output_rate_refresh_interval_ms`` (default 500 ms), which with
+    # several speakers on one adapter climbs straight back into the next
+    # overload.  The interval is an argument of module-bluetooth-discover /
+    # module-bluez5-discover and can only be set safely when PulseAudio
+    # starts (reloading the module at runtime crashed PulseAudio on HAOS),
+    # i.e. through the audio plugin's /data/custom.pa — see DOCS.md.  The
+    # app only reports what is in effect.
+
+    BT_DISCOVER_MODULE = "module-bluez5-discover"
+    RATE_REFRESH_ARG = "output_rate_refresh_interval_ms"
+    RATE_REFRESH_DEFAULT_MS = 500
+
+    async def bt_module_args(self) -> list[dict]:
+        """Loaded Bluetooth discovery modules with their arguments."""
+        return [
+            {"index": m.index, "name": m.name, "argument": m.argument or ""}
+            for m in await self._pulse.module_list()
+            if m.name in ("module-bluetooth-discover", self.BT_DISCOVER_MODULE)
+        ]
+
+    @classmethod
+    def rate_refresh_from_args(cls, args: str) -> int | None:
+        match = re.search(rf"(?:^|\s){cls.RATE_REFRESH_ARG}=(\d+)", args or "")
+        return int(match.group(1)) if match else None
 
     async def set_sink_volume(self, sink_name: str, volume_pct: int) -> bool:
         """Set PulseAudio sink volume (0-100%).
