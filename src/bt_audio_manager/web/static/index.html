@@ -292,6 +292,24 @@
 
           <hr>
 
+          <!-- A2DP sample rate -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-a2dp-prefer-44k">
+              <label class="form-check-label" for="setting-a2dp-prefer-44k">
+                <strong>Prefer 44.1 kHz Bluetooth audio</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              A speaker that connects by itself (e.g. after a power cycle) may pick 48 kHz.
+              Its audio stream is then re-opened from here so it runs at 44.1&nbsp;kHz: no
+              resampling of 44.1&nbsp;kHz radio streams and about 9&nbsp;% less radio time per
+              speaker. The speaker is silent for a few seconds while this happens.
+            </div>
+          </div>
+
+          <hr>
+
           <!-- Volume lock (all devices) -->
           <div class="mb-3">
             <div class="form-check form-switch">
