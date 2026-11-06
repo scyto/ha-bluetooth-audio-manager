@@ -1318,6 +1318,14 @@ components:
           type: integer
           minimum: 5
           maximum: 120
+        a2dp_prefer_44k:
+          type: boolean
+          default: true
+          description: >
+            When a speaker sets up its A2DP (SBC) stream by itself at 48 kHz,
+            close and re-open it from the app so PulseAudio picks 44.1 kHz
+            (no resampling of 44.1 kHz sources, about 9 % less airtime).
+            At most two attempts per speaker in 10 minutes.
         volume_lock_all:
           type: boolean
           description: >

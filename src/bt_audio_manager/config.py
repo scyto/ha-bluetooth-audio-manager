@@ -26,6 +26,7 @@ _SETTINGS_KEYS = {
     "reconnect_interval_seconds",
     "reconnect_max_backoff_seconds",
     "scan_duration_seconds",
+    "a2dp_prefer_44k",
 }
 
 
@@ -42,6 +43,9 @@ class AppConfig:
     reconnect_interval_seconds: int = 30
     reconnect_max_backoff_seconds: int = 300
     scan_duration_seconds: int = 30
+    # Re-open an A2DP stream a speaker set up itself at 48 kHz so that it
+    # runs at 44.1 kHz (less airtime, no resampling of 44.1 kHz streams).
+    a2dp_prefer_44k: bool = True
 
     @property
     def bt_adapter_is_mac(self) -> bool:
@@ -61,6 +65,7 @@ class AppConfig:
             "reconnect_interval_seconds": self.reconnect_interval_seconds,
             "reconnect_max_backoff_seconds": self.reconnect_max_backoff_seconds,
             "scan_duration_seconds": self.scan_duration_seconds,
+            "a2dp_prefer_44k": self.a2dp_prefer_44k,
         }
 
     def save_settings(self) -> None:
@@ -104,6 +109,7 @@ class AppConfig:
                 config.reconnect_interval_seconds = settings.get("reconnect_interval_seconds", 30)
                 config.reconnect_max_backoff_seconds = settings.get("reconnect_max_backoff_seconds", 300)
                 config.scan_duration_seconds = settings.get("scan_duration_seconds", 30)
+                config.a2dp_prefer_44k = settings.get("a2dp_prefer_44k", True)
                 logger.info("Loaded settings from %s", SETTINGS_PATH)
                 return config
             except (json.JSONDecodeError, KeyError) as e:
