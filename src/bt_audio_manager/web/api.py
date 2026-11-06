@@ -499,13 +499,16 @@ def create_api_routes(
                 errors.append("scan_duration_seconds must be an integer between 5 and 120")
         if "volume_lock_all" in body and not isinstance(body["volume_lock_all"], bool):
             errors.append("volume_lock_all must be a boolean")
+        if "a2dp_prefer_44k" in body and not isinstance(body["a2dp_prefer_44k"], bool):
+            errors.append("a2dp_prefer_44k must be a boolean")
 
         if errors:
             return web.json_response({"error": "; ".join(errors)}, status=400)
 
         # Apply to live config
         allowed = {"auto_reconnect", "reconnect_interval_seconds",
-                    "reconnect_max_backoff_seconds", "scan_duration_seconds"}
+                    "reconnect_max_backoff_seconds", "scan_duration_seconds",
+                    "a2dp_prefer_44k"}
         was_auto_reconnect = manager.config.auto_reconnect
         for key in allowed:
             if key in body:

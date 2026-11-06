@@ -1047,6 +1047,7 @@ async function openSettingsModal() {
     $("#setting-reconnect-interval").value = data.reconnect_interval_seconds;
     $("#setting-reconnect-max-backoff").value = data.reconnect_max_backoff_seconds;
     $("#setting-scan-duration").value = data.scan_duration_seconds;
+    $("#setting-a2dp-prefer-44k").checked = data.a2dp_prefer_44k !== false;
     const lockAll = $("#setting-volume-lock-all");
     lockAll.checked = !!data.volume_lock_all;
     lockAll.indeterminate = !!data.volume_lock_any && !data.volume_lock_all;
@@ -1063,6 +1064,7 @@ async function saveSettings() {
     reconnect_interval_seconds: parseInt($("#setting-reconnect-interval").value, 10),
     reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
     scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
+    a2dp_prefer_44k: $("#setting-a2dp-prefer-44k").checked,
   };
   // Only send the all-devices lock when the user actually flipped it, so
   // saving other settings never overwrites a mixed per-device state.

@@ -118,6 +118,8 @@ class BluetoothAudioManager:
         # source for "is audio flowing" next to the PA event callbacks.
         self._poll_running_sinks: set[str] = set()
         self._gap_monitor = None  # audio.gap_monitor.GapMonitor while a diagnosis runs
+        self._rate_fix_attempts: dict[str, list[float]] = {}
+        self._rate_fix_running: set[str] = set()
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
@@ -2344,6 +2346,119 @@ class BluetoothAudioManager:
             await self._apply_idle_mode(address)
             await self._start_mpd_if_enabled(address)
 
+    # -- A2DP sample rate: prefer 44.1 kHz ------------------------------------
+    #
+    # The side that sets up the A2DP stream picks its format.  When the app
+    # connects a speaker, PulseAudio picks 44.1 kHz (the rate of the radio
+    # streams, no resampling).  When the speaker connects by itself (after a
+    # power cycle) the ES-BT17 picks 48 kHz: PulseAudio then resamples, and
+    # SBC at 48 kHz needs ~9 % more airtime (357 instead of 328 kbit/s at
+    # bitpool 53) — costly with several speakers on one adapter.  So a 48 kHz
+    # SBC stream is closed and re-opened from our side.
+
+    A2DP_RATE_CHECK_DELAY = 3  # s after MPD start, transport settled
+    RATE_FIX_MAX_ATTEMPTS = 2  # per speaker within RATE_FIX_WINDOW
+    RATE_FIX_WINDOW = 600  # s
+    _SBC_RATES = {0x80: 16000, 0x40: 32000, 0x20: 44100, 0x10: 48000}
+
+    @classmethod
+    def sbc_sample_rate(cls, configuration) -> int | None:
+        """Sample rate from an SBC MediaTransport1.Configuration blob."""
+        try:
+            first = bytes(configuration)[0]
+        except (TypeError, ValueError, IndexError):
+            return None
+        return cls._SBC_RATES.get(first & 0xF0)
+
+    async def _a2dp_transport_format(self, address: str) -> tuple[int | None, int | None] | None:
+        """``(codec, sample_rate)`` of the speaker's A2DP transport, or None."""
+        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+
+        dev_fragment = "dev_" + address.replace(":", "_").upper()
+        intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+        objects = await proxy.get_interface(OBJECT_MANAGER_INTERFACE).call_get_managed_objects()
+        for path, ifaces in objects.items():
+            tp = ifaces.get("org.bluez.MediaTransport1")
+            if tp is None or dev_fragment not in path:
+                continue
+            codec = tp.get("Codec")
+            config = tp.get("Configuration")
+            codec = codec.value if hasattr(codec, "value") else codec
+            config = config.value if hasattr(config, "value") else config
+            rate = self.sbc_sample_rate(config) if codec == 0 else None
+            return codec, rate
+        return None
+
+    async def _ensure_a2dp_rate_later(self, address: str) -> None:
+        await asyncio.sleep(self.A2DP_RATE_CHECK_DELAY)
+        try:
+            await self.ensure_a2dp_rate(address)
+        except Exception as e:
+            logger.debug("A2DP rate check for %s failed: %s", address, e)
+
+    async def ensure_a2dp_rate(self, address: str) -> str:
+        """Re-open a 48 kHz SBC stream from our side so it runs at 44.1 kHz."""
+        if not getattr(self.config, "a2dp_prefer_44k", True):
+            return "disabled"
+        if address in self._rate_fix_running:
+            return "already running"
+        fmt = await self._a2dp_transport_format(address)
+        if fmt is None:
+            return "no transport"
+        codec, rate = fmt
+        if codec != 0 or rate != 48000:
+            return f"ok ({rate or 'codec ' + str(codec)})"
+
+        now = time.monotonic()
+        recent = [t for t in self._rate_fix_attempts.get(address, []) if now - t < self.RATE_FIX_WINDOW]
+        if len(recent) >= self.RATE_FIX_MAX_ATTEMPTS:
+            logger.warning(
+                "%s keeps coming back at 48 kHz — leaving it (%d attempts in %d s)",
+                address, len(recent), self.RATE_FIX_WINDOW,
+            )
+            self._rate_fix_attempts[address] = recent
+            return "gave up"
+        recent.append(now)
+        self._rate_fix_attempts[address] = recent
+
+        from .bluez.constants import A2DP_SINK_UUID
+
+        self._rate_fix_running.add(address)
+        try:
+            logger.info(
+                "%s set up its audio stream itself at 48 kHz — re-opening it from here "
+                "so PulseAudio picks 44.1 kHz", address,
+            )
+            # Stop MPD first so its stream does not wander to another
+            # speaker's sink while this one is briefly gone (#318).
+            mpd = self._mpd_instances.get(address)
+            was_playing = False
+            if mpd is not None and mpd.is_running:
+                try:
+                    was_playing = (await mpd.get_status()).get("state") == "play"
+                except Exception:
+                    was_playing = False
+                if was_playing:
+                    await mpd.handle_command("Stop", "")
+            async with self._device_lock(address):
+                device = self.managed_devices.get(address) or await self._get_or_create_device(address)
+                try:
+                    await device.disconnect_profile(A2DP_SINK_UUID)
+                    await asyncio.sleep(1)
+                    await device.connect_profile(A2DP_SINK_UUID)
+                except Exception as e:
+                    logger.warning("Re-opening A2DP for %s failed: %s", address, e)
+            sink = await self.pulse.wait_for_bt_sink(address, timeout=15) if self.pulse else None
+            fmt = await self._a2dp_transport_format(address)
+            new_rate = fmt[1] if fmt else None
+            logger.info("A2DP for %s now at %s Hz (sink %s)", address, new_rate, sink)
+            if was_playing and mpd is not None and mpd.is_running:
+                await mpd.handle_command("Play", "")
+            return f"re-opened ({new_rate})"
+        finally:
+            self._rate_fix_running.discard(address)
+
     async def _log_transport_properties(self, address: str) -> bool:
         """Enumerate BlueZ objects to find and log MediaTransport1 for a device.
 
@@ -3523,6 +3638,9 @@ class BluetoothAudioManager:
             self._mpd_start_locks[address] = lock
         async with lock:
             await self._start_mpd_if_enabled_locked(address)
+        # Every connect path ends here once the A2DP link is up — the right
+        # moment to undo a 48 kHz format the speaker picked by itself.
+        self._fire_and_forget(self._ensure_a2dp_rate_later(address))
 
     async def _start_mpd_if_enabled_locked(self, address: str) -> None:
         settings = self.store.get_device_settings(address)
