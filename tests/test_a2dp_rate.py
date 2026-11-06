@@ -40,6 +40,8 @@ def build(formats, *, playing=True, prefer=True):
                     get_status=AsyncMock(return_value={"state": "play" if playing else "stop"}))
     m._mpd_instances = {A: mpd}
     m.pulse = MagicMock(wait_for_bt_sink=AsyncMock(return_value="bluez_sink.x"))
+    m._poll_card_profile = AsyncMock(return_value=True)
+    m.force_reconnect_device = AsyncMock(return_value=True)
     return m, device, mpd
 
 
@@ -64,6 +66,19 @@ class EnsureRateTest(unittest.IsolatedAsyncioTestCase):
         device.disconnect_profile.assert_awaited_once()
         device.connect_profile.assert_awaited_once()
         self.assertEqual([c.args[0] for c in mpd.handle_command.await_args_list], ["Stop", "Play"])
+
+    async def test_card_profile_is_switched_to_a2dp(self):
+        m, device, _ = build([(0, 48000), (0, 44100)])
+        await m.ensure_a2dp_rate(A)
+        m._poll_card_profile.assert_awaited_once()
+        self.assertEqual(m._poll_card_profile.await_args.args, (A, "a2dp"))
+        m.force_reconnect_device.assert_not_called()
+
+    async def test_missing_sink_falls_back_to_reconnect(self):
+        m, device, _ = build([(0, 48000), (0, 44100)])
+        m.pulse.wait_for_bt_sink = AsyncMock(return_value=None)
+        await m.ensure_a2dp_rate(A)
+        m.force_reconnect_device.assert_awaited_once_with(A)
 
     async def test_idle_mpd_is_not_started(self):
         m, device, mpd = build([(0, 48000), (0, 44100)], playing=False)
