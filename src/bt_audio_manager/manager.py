@@ -2449,7 +2449,18 @@ class BluetoothAudioManager:
                     await device.connect_profile(A2DP_SINK_UUID)
                 except Exception as e:
                     logger.warning("Re-opening A2DP for %s failed: %s", address, e)
-            sink = await self.pulse.wait_for_bt_sink(address, timeout=15) if self.pulse else None
+            sink = None
+            if self.pulse:
+                # PulseAudio recreates the card with its profile off; like
+                # every connect path, switch it to A2DP so the sink appears.
+                await self._poll_card_profile(address, "a2dp", attempts=5, interval=2)
+                sink = await self.pulse.wait_for_bt_sink(address, timeout=15)
+            if sink is None:
+                logger.warning("No sink for %s after re-opening A2DP — forcing a reconnect", address)
+                try:
+                    await self.force_reconnect_device(address)
+                except Exception as e:
+                    logger.warning("Forced reconnect of %s failed: %s", address, e)
             fmt = await self._a2dp_transport_format(address)
             new_rate = fmt[1] if fmt else None
             logger.info("A2DP for %s now at %s Hz (sink %s)", address, new_rate, sink)
