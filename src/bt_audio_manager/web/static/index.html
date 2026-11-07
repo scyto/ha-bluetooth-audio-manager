@@ -348,6 +348,15 @@
           <h6 id="device-settings-name" class="fw-semibold mb-1"></h6>
           <p id="device-settings-address" class="font-monospace small text-muted mb-3"></p>
 
+          <!-- Friendly name -->
+          <div class="mb-3">
+            <label for="setting-friendly-name" class="form-label"><strong>Name</strong></label>
+            <input type="text" class="form-control" id="setting-friendly-name" maxlength="64" autocomplete="off">
+            <div class="form-text">Shown instead of the Bluetooth name in this app and used as the MPD output name from the next MPD start. Leave empty to use the Bluetooth name. Kept when the device is forgotten and paired again.</div>
+          </div>
+
+          <hr class="my-3">
+
           <!-- Audio Profile -->
           <div class="mb-3">
             <label for="setting-audio-profile" class="form-label"><strong>Audio Profile</strong></label>

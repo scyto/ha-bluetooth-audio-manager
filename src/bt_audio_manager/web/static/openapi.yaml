@@ -1154,7 +1154,25 @@ components:
         visible to BlueZ.
       properties:
         address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
-        name: { type: string, example: Kitchen Speaker }
+        name:
+          type: string
+          example: Kitchen Speaker
+          description: >
+            Name to display: the user's `friendly_name` when set, otherwise
+            `bt_name`.
+        bt_name:
+          type: string
+          example: ES-BT17
+          description: >
+            Name the speaker reports over Bluetooth (or the one stored when it
+            was paired).
+        friendly_name:
+          type: string
+          example: "UKW 87.5"
+          description: >
+            The user's own name for this speaker; empty when none is set. Set
+            it with `PUT /api/devices/{address}/settings`. Stored per address,
+            so it survives Forget + re-pair; cleared by "Clear all devices".
         path:
           type: string
           description: BlueZ object path.
@@ -1278,6 +1296,14 @@ components:
         avrcp_enabled:
           type: boolean
           description: Route the speaker's transport buttons to MPD.
+        friendly_name:
+          type: string
+          maxLength: 64
+          description: >
+            Name shown instead of the Bluetooth name in the app, also used as
+            the MPD output name from the next MPD start. Surrounding
+            whitespace is dropped; an empty string clears it. Control
+            characters are rejected with 400.
 
     DeviceSettings:
       type: object
@@ -1293,6 +1319,9 @@ components:
         mpd_hw_volume: { type: integer }
         volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
+        friendly_name:
+          type: string
+          description: Present in the PUT response; empty when none is set.
 
     RuntimeSettings:
       type: object

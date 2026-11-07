@@ -175,6 +175,7 @@ class VolumeLockApiTest(AioHTTPTestCase):
         self.manager = MagicMock()
         self.manager.store.get_device.return_value = {"address": A}
         self.manager.store.get_device_settings.return_value = {"volume_lock": True}
+        self.manager.store.get_friendly_name.return_value = ""
         self.manager.update_device_settings = AsyncMock(return_value={"address": A})
         app = web.Application()
         app.router.add_routes(create_api_routes(self.manager))
