@@ -316,13 +316,24 @@
               <input class="form-check-input" type="checkbox" id="setting-volume-lock-all"
                      onchange="this.indeterminate = false; window._volumeLockAllTouched = true;">
               <label class="form-check-label" for="setting-volume-lock-all">
-                <strong>Lock volume at 100% (all devices)</strong>
+                <strong>Lock volume (all devices)</strong>
               </label>
             </div>
             <div class="form-text">
-              Switches &ldquo;Lock volume at 100%&rdquo; in every device's settings at once:
-              MPD volume, audio stream and speaker volume are held at 100%.
+              Switches &ldquo;Lock volume&rdquo; in every device's settings at once.
               Shown half-set when only some devices are locked.
+            </div>
+          </div>
+          <div class="mb-3">
+            <label for="setting-volume-lock-level" class="form-label"><strong>Locked volume</strong></label>
+            <div class="input-group" style="max-width: 10rem;">
+              <input type="number" class="form-control" id="setting-volume-lock-level" min="10" max="100" step="1">
+              <span class="input-group-text">%</span>
+            </div>
+            <div class="form-text">
+              Level every locked device's MPD volume is held at (10&ndash;100%); the audio
+              stream and the speaker's own volume stay at 100%. Lower it if a speaker or
+              FM transmitter distorts at full level.
             </div>
           </div>
         </div>
@@ -442,11 +453,12 @@
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="setting-volume-lock">
                 <label class="form-check-label" for="setting-volume-lock">
-                  <strong>Lock volume at 100%</strong>
+                  <strong>Lock volume</strong>
                 </label>
               </div>
               <div class="form-text">
-                Holds MPD volume, the audio stream and the speaker's own volume at 100%.
+                Holds MPD volume at the level set in App Settings (<em>Locked volume</em>,
+                default 100%) and the audio stream and the speaker's own volume at 100%.
                 Any change (dashboard slider, automation, speaker buttons) is undone
                 within seconds. Hardware Volume below is then ignored.
               </div>

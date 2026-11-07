@@ -1291,8 +1291,9 @@ components:
         volume_lock:
           type: boolean
           description: >
-            Hold MPD volume, the MPD stream and the speaker's volume at 100%;
-            any change is undone. `mpd_hw_volume` is ignored while on.
+            Hold MPD volume at `volume_lock_level` (app setting, default 100)
+            and the MPD stream and the speaker's volume at 100%; any change is
+            undone. `mpd_hw_volume` is ignored while on.
         avrcp_enabled:
           type: boolean
           description: Route the speaker's transport buttons to MPD.
@@ -1355,6 +1356,16 @@ components:
             close and re-open it from the app so PulseAudio picks 44.1 kHz
             (no resampling of 44.1 kHz sources, about 9 % less airtime).
             At most two attempts per speaker in 10 minutes.
+        volume_lock_level:
+          type: integer
+          minimum: 10
+          maximum: 100
+          default: 100
+          description: >
+            Level (percent) the volume lock holds MPD's volume at, for every
+            device with `volume_lock` on; their stream and speaker volume stay
+            at 100 %. Applied at once to running MPD instances. In a PUT that
+            also carries `volume_lock_all`, the level is applied first.
         volume_lock_all:
           type: boolean
           description: >
