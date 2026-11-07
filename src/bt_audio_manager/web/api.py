@@ -11,7 +11,7 @@ from aiohttp import web
 from aiohttp.web import WebSocketResponse
 from dbus_next.errors import DBusError
 
-from ..persistence.store import normalize_address
+from ..persistence.store import FRIENDLY_NAME_MAX_LEN, normalize_address
 
 if TYPE_CHECKING:
     from ..manager import BluetoothAudioManager
@@ -376,10 +376,29 @@ def create_api_routes(
                 "volume_lock", "avrcp_enabled",
             }
             settings = {k: v for k, v in body.items() if k in allowed_keys}
-            if not settings:
+            # friendly_name is kept apart from the device record (it survives
+            # Forget + re-pair), so it is validated and stored separately.
+            friendly_name = body.get("friendly_name") if isinstance(body, dict) else None
+            if not settings and friendly_name is None:
                 return web.json_response(
                     {"error": "No valid settings provided"}, status=400
                 )
+            if friendly_name is not None:
+                if not isinstance(friendly_name, str):
+                    return web.json_response(
+                        {"error": "friendly_name must be a string"}, status=400
+                    )
+                friendly_name = friendly_name.strip()
+                if len(friendly_name) > FRIENDLY_NAME_MAX_LEN:
+                    return web.json_response(
+                        {"error": f"friendly_name must be at most {FRIENDLY_NAME_MAX_LEN} characters"},
+                        status=400,
+                    )
+                if any(ord(c) < 32 or ord(c) == 127 for c in friendly_name):
+                    return web.json_response(
+                        {"error": "friendly_name must not contain control characters"},
+                        status=400,
+                    )
             if "audio_profile" in settings:
                 from ..bluez.constants import HFP_SWITCHING_ENABLED
                 if not HFP_SWITCHING_ENABLED:
@@ -447,13 +466,21 @@ def create_api_routes(
                     return web.json_response(
                         {"error": "mpd_hw_volume must be an integer 1-100"}, status=400
                     )
-            result = await manager.update_device_settings(address, settings)
-            if result is None:
+            if settings:
+                result = await manager.update_device_settings(address, settings)
+                if result is None:
+                    return web.json_response(
+                        {"error": f"Device {address} not found"}, status=404
+                    )
+            elif manager.store.get_device(address) is None:
                 return web.json_response(
                     {"error": f"Device {address} not found"}, status=404
                 )
+            if friendly_name is not None:
+                await manager.set_friendly_name(address, friendly_name)
             # Return current settings (includes auto-allocated port, etc.)
-            current = manager.store.get_device_settings(address)
+            current = dict(manager.store.get_device_settings(address))
+            current["friendly_name"] = manager.store.get_friendly_name(address)
             return web.json_response({"address": address, "settings": current})
         except Exception as e:
             logger.error("Failed to update settings for %s: %s", address, e)
