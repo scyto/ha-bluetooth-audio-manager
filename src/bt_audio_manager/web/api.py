@@ -11,6 +11,7 @@ from aiohttp import web
 from aiohttp.web import WebSocketResponse
 from dbus_next.errors import DBusError
 
+from ..config import VOLUME_LOCK_LEVEL_MAX, VOLUME_LOCK_LEVEL_MIN
 from ..persistence.store import FRIENDLY_NAME_MAX_LEN, normalize_address
 
 if TYPE_CHECKING:
@@ -528,6 +529,14 @@ def create_api_routes(
             errors.append("volume_lock_all must be a boolean")
         if "a2dp_prefer_44k" in body and not isinstance(body["a2dp_prefer_44k"], bool):
             errors.append("a2dp_prefer_44k must be a boolean")
+        if "volume_lock_level" in body:
+            v = body["volume_lock_level"]
+            if (not isinstance(v, int) or isinstance(v, bool)
+                    or v < VOLUME_LOCK_LEVEL_MIN or v > VOLUME_LOCK_LEVEL_MAX):
+                errors.append(
+                    f"volume_lock_level must be an integer between "
+                    f"{VOLUME_LOCK_LEVEL_MIN} and {VOLUME_LOCK_LEVEL_MAX}"
+                )
 
         if errors:
             return web.json_response({"error": "; ".join(errors)}, status=400)
@@ -551,6 +560,11 @@ def create_api_routes(
 
         # Persist
         manager.config.save_settings()
+
+        # Level first, so a lock switched on in the same request starts at it
+        if "volume_lock_level" in body:
+            await manager.set_volume_lock_level(body["volume_lock_level"])
+            manager.config.save_settings()
 
         # Volume lock for all devices: stored per device, not in settings.json
         if "volume_lock_all" in body:
