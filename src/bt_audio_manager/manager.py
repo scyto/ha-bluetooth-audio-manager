@@ -1691,7 +1691,32 @@ class BluetoothAudioManager:
             else:
                 device["rssi_stale"] = False
 
+        self._apply_friendly_names(discovered)
         return discovered
+
+    def _apply_friendly_names(self, devices: list[dict]) -> None:
+        """Show the user's name for a speaker in place of its Bluetooth name.
+
+        ``name`` is what every UI view displays; ``bt_name`` keeps the name
+        the speaker reports (or the one stored at pairing) and
+        ``friendly_name`` the user's own one ("" when none is set).
+        """
+        for device in devices:
+            bt_name = device.get("name", "")
+            friendly = self.store.get_friendly_name(device["address"])
+            device["bt_name"] = bt_name
+            device["friendly_name"] = friendly
+            if friendly:
+                device["name"] = friendly
+
+    async def set_friendly_name(self, address: str, name: str) -> str:
+        """Set or clear a speaker's friendly name and refresh the UI.
+
+        The MPD output name follows at the speaker's next MPD start.
+        """
+        result = await self.store.set_friendly_name(address, name)
+        await self._broadcast_devices()
+        return result
 
     async def get_audio_sinks(self) -> list[dict]:
         """List Bluetooth PulseAudio sinks."""
@@ -3634,6 +3659,20 @@ class BluetoothAudioManager:
             logger.debug("Could not read mpd_password from options: %s", e)
         return None
 
+    def _mpd_output_name(self, address: str) -> str:
+        """Name of the speaker's MPD audio output.
+
+        The user's friendly name if set; otherwise the device name plus the
+        last 5 characters of the MAC, to tell apart speakers that share a name.
+        """
+        friendly = self.store.get_friendly_name(address)
+        if friendly:
+            return friendly
+        device_info = self.store.get_device(address)
+        device_name = device_info["name"] if device_info else address
+        mac_suffix = address.replace(":", "")[-5:].upper()
+        return f"{device_name} ({mac_suffix})"
+
     async def _start_mpd_if_enabled(self, address: str) -> None:
         """Start a per-device MPD instance if mpd_enabled in its settings.
 
@@ -3682,12 +3721,7 @@ class BluetoothAudioManager:
             logger.warning("Cannot start MPD for %s: all 10 ports in use", address)
             return
 
-        # Auto-generate MPD name from device name + last 5 chars of MAC
-        # for disambiguation when multiple devices share the same name
-        device_info = self.store.get_device(address)
-        device_name = device_info["name"] if device_info else address
-        mac_suffix = address.replace(":", "")[-5:].upper()
-        mpd_name = f"{device_name} ({mac_suffix})"
+        mpd_name = self._mpd_output_name(address)
 
         mpd_password = self._get_mpd_password()
 

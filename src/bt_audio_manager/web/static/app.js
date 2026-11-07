@@ -429,6 +429,8 @@ function buildDeviceCard(d) {
     const avrcpEnabled = !!(d.avrcp_enabled ?? true);
     const volumeLock = !!d.volume_lock;
     const safeName = safeJsString(d.name);
+    const safeFriendly = safeJsString(d.friendly_name || "");
+    const safeBtName = safeJsString(d.bt_name || d.name);
     const safeAddr = safeJsString(d.address);
     const uuidsJson = safeJsString(JSON.stringify(d.uuids || []));
     kebab = `
@@ -438,7 +440,7 @@ function buildDeviceCard(d) {
           <i class="fas fa-ellipsis-v"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end">
-          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${safeAddr}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}', ${volumeLock}); return false;">
+          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${safeAddr}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}', ${volumeLock}, '${safeFriendly}', '${safeBtName}'); return false;">
             <i class="fas fa-cog me-2"></i>Settings
           </a></li>
           ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${safeAddr}'); return false;">
@@ -540,6 +542,14 @@ function buildDeviceCard(d) {
 
   const staleClass = d._stale ? " device-stale" : "";
 
+  // A friendly name replaces d.name; keep the speaker's own Bluetooth name
+  // visible (meta line + tooltip) so it can still be matched to the device.
+  const hasFriendly = !!d.friendly_name && !!d.bt_name && d.bt_name !== d.name;
+  const nameTitle = hasFriendly ? `${d.name} (Bluetooth: ${d.bt_name})` : d.name;
+  const btNameHtml = hasFriendly
+    ? `<span title="Bluetooth name">${escapeHtml(d.bt_name)}</span> · `
+    : "";
+
   // --- Single unified template ---
   // Every card renders every slot; empty slots use fixed-height placeholders
   // so that rows align across cards regardless of device state.
@@ -548,14 +558,14 @@ function buildDeviceCard(d) {
       <div class="card device-card h-100${staleClass}">
         <div class="card-body">
           <div class="device-slot-header">
-            <h5 class="card-title mb-0" title="${escapeAttr(d.name)}">${escapeHtml(d.name)}</h5>
+            <h5 class="card-title mb-0" title="${escapeAttr(nameTitle)}">${escapeHtml(d.name)}</h5>
             <div class="d-flex align-items-center gap-1">
               <span class="badge ${badgeClass}">${statusText}</span>
               ${kebab}
             </div>
           </div>
           <div class="device-slot-badges">${buildCapBadges(d)}</div>
-          <div class="device-slot-meta device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiHtml}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
+          <div class="device-slot-meta device-meta-text font-monospace text-muted">${btNameHtml}${escapeHtml(d.address)}${rssiHtml}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
           <div class="device-slot-profiles device-meta-text">${profilesHtml}</div>
           ${signalHtml}
           ${sinkHtml}
@@ -1086,10 +1096,14 @@ async function saveSettings() {
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson, volumeLock) {
+function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson, volumeLock, friendlyName, btName) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
-  $("#device-settings-address").textContent = address;
+  $("#device-settings-address").textContent = btName && btName !== name
+    ? `${address} · ${btName}` : address;
+  const friendlyInput = $("#setting-friendly-name");
+  friendlyInput.value = friendlyName || "";
+  friendlyInput.placeholder = btName || name || "";
 
   // Parse UUIDs once — used by both Audio Profile and AVRCP sections
   const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
@@ -1206,6 +1220,8 @@ async function saveDeviceSettings() {
     power_save_delay: parseInt($("#setting-power-save-delay").value, 10) || 0,
     auto_disconnect_minutes: parseInt($("#setting-auto-disconnect-minutes").value, 10) || 30,
     mpd_enabled: $("#setting-mpd-enabled").checked,
+    // Empty clears the name and falls back to the Bluetooth name
+    friendly_name: $("#setting-friendly-name").value.trim(),
   };
   // Include MPD config when enabled
   if (settings.mpd_enabled) {
