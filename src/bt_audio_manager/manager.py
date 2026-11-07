@@ -186,10 +186,27 @@ class BluetoothAudioManager:
 
     # -- Volume lock (per-device "volume_lock" setting) -------------------
     #
-    # Holds all three volume layers at 100 %: MPD's software volume (what HA
-    # shows), the MPD stream in PulseAudio, and the Bluetooth sink — which
-    # BlueZ maps to the speaker's AVRCP absolute volume.  Whatever moves one
-    # of them (dashboard slider, automation, speaker buttons) is undone.
+    # Holds all three volume layers: MPD's software volume (what HA shows) at
+    # the app-wide volume_lock_level (default 100 %), the MPD stream in
+    # PulseAudio and the Bluetooth sink — which BlueZ maps to the speaker's
+    # AVRCP absolute volume — at 100 %.  The level sits in MPD because MPD
+    # scales the audio digitally before it goes out over Bluetooth, whatever
+    # the speaker does with AVRCP volume.  Whatever moves one of the layers
+    # (dashboard slider, automation, speaker buttons) is undone.
+
+    def _volume_lock_level(self) -> int:
+        config = getattr(self, "config", None)
+        level = getattr(config, "volume_lock_level", 100) if config else 100
+        return level if isinstance(level, int) and 0 < level <= 100 else 100
+
+    async def set_volume_lock_level(self, level: int) -> None:
+        """Change the level every locked speaker's MPD is held at, right away."""
+        self.config.volume_lock_level = level
+        for address, mpd in list(self._mpd_instances.items()):
+            mpd.volume_lock_level = level
+            if mpd.volume_lock and mpd.is_running:
+                await mpd.set_volume(level)
+                logger.info("Volume lock for %s: MPD volume -> %d%%", address, level)
 
     def _volume_locked(self, address: str | None) -> bool:
         if not address or not getattr(self, "store", None):
@@ -239,19 +256,24 @@ class BluetoothAudioManager:
             await self.update_device_settings(device["address"], {"volume_lock": bool(locked)})
 
     async def _apply_volume_lock(self, address: str) -> None:
-        """Bring all three layers of a locked, connected speaker to 100 % now."""
+        """Bring all three layers of a locked, connected speaker to their level now."""
+        level = self._volume_lock_level()
         mpd = self._mpd_instances.get(address)
         if mpd is not None:
             mpd.volume_lock = True
+            mpd.volume_lock_level = level
             if mpd.is_running:
-                await mpd.set_volume(100)
+                await mpd.set_volume(level)
         if self.pulse:
             sink = await self.pulse.get_sink_for_address(address)
             if sink:
                 await self.pulse.set_sink_volume(sink, 100)
                 self._last_pa_volume[address] = 100
             await self.pulse.enforce_volume_lock_all()
-        logger.info("Volume lock on for %s: MPD, stream and speaker at 100%%", address)
+        logger.info(
+            "Volume lock on for %s: MPD at %d%%, stream and speaker at 100%%",
+            address, level,
+        )
 
     def _mpd_stream_owner(self, proplist) -> str | None:
         """Map a PulseAudio stream to the speaker whose MPD daemon created it."""
@@ -3733,6 +3755,7 @@ class BluetoothAudioManager:
             log_level=self.config.log_level,
         )
         mpd.volume_lock = bool(settings.get("volume_lock", False))
+        mpd.volume_lock_level = self._volume_lock_level()
         try:
             await mpd.start(sink_name)
             self._mpd_instances[address] = mpd
@@ -3852,6 +3875,7 @@ class BluetoothAudioManager:
             mpd = self._mpd_instances.get(address)
             if mpd is not None:
                 mpd.volume_lock = locked
+                mpd.volume_lock_level = self._volume_lock_level()
             if locked and address in self._device_connect_time:
                 await self._apply_volume_lock(address)
             elif not locked:

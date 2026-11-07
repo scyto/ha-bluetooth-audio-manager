@@ -1062,6 +1062,7 @@ async function openSettingsModal() {
     lockAll.checked = !!data.volume_lock_all;
     lockAll.indeterminate = !!data.volume_lock_any && !data.volume_lock_all;
     window._volumeLockAllTouched = false;
+    $("#setting-volume-lock-level").value = Number(data.volume_lock_level) || 100;
     new bootstrap.Modal("#settingsModal").show();
   } catch (e) {
     showToast(`Failed to load settings: ${e.message}`, "error");
@@ -1075,6 +1076,8 @@ async function saveSettings() {
     reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
     scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
     a2dp_prefer_44k: $("#setting-a2dp-prefer-44k").checked,
+    volume_lock_level: Math.min(100, Math.max(10,
+      parseInt($("#setting-volume-lock-level").value, 10) || 100)),
   };
   // Only send the all-devices lock when the user actually flipped it, so
   // saving other settings never overwrites a mixed per-device state.

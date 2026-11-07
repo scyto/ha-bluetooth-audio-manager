@@ -27,7 +27,12 @@ _SETTINGS_KEYS = {
     "reconnect_max_backoff_seconds",
     "scan_duration_seconds",
     "a2dp_prefer_44k",
+    "volume_lock_level",
 }
+
+# Volume the lock holds MPD at (percent); the stream and the speaker stay at 100.
+VOLUME_LOCK_LEVEL_MIN = 10
+VOLUME_LOCK_LEVEL_MAX = 100
 
 
 @dataclass
@@ -46,6 +51,9 @@ class AppConfig:
     # Re-open an A2DP stream a speaker set up itself at 48 kHz so that it
     # runs at 44.1 kHz (less airtime, no resampling of 44.1 kHz streams).
     a2dp_prefer_44k: bool = True
+    # Level the per-device volume lock holds MPD's volume at, for every
+    # locked speaker (e.g. below 100 to avoid over-driving an FM transmitter).
+    volume_lock_level: int = 100
 
     @property
     def bt_adapter_is_mac(self) -> bool:
@@ -66,6 +74,7 @@ class AppConfig:
             "reconnect_max_backoff_seconds": self.reconnect_max_backoff_seconds,
             "scan_duration_seconds": self.scan_duration_seconds,
             "a2dp_prefer_44k": self.a2dp_prefer_44k,
+            "volume_lock_level": self.volume_lock_level,
         }
 
     def save_settings(self) -> None:
@@ -110,6 +119,12 @@ class AppConfig:
                 config.reconnect_max_backoff_seconds = settings.get("reconnect_max_backoff_seconds", 300)
                 config.scan_duration_seconds = settings.get("scan_duration_seconds", 30)
                 config.a2dp_prefer_44k = settings.get("a2dp_prefer_44k", True)
+                level = settings.get("volume_lock_level", 100)
+                config.volume_lock_level = (
+                    level if isinstance(level, int) and not isinstance(level, bool)
+                    and VOLUME_LOCK_LEVEL_MIN <= level <= VOLUME_LOCK_LEVEL_MAX
+                    else 100
+                )
                 logger.info("Loaded settings from %s", SETTINGS_PATH)
                 return config
             except (json.JSONDecodeError, KeyError) as e:
