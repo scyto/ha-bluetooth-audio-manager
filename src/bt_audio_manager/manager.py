@@ -75,6 +75,11 @@ class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    SCAN_RESUME_STAGGER = 2  # seconds between stream restarts after a scan
+    USER_DISCONNECT_WINDOW = 30  # seconds a user-initiated disconnect flag stays valid
+    ADAPTER_RETURN_SETTLE = 5  # seconds to let a re-added adapter power up before restarting
+    MPD_SELF_HEAL_GRACE = 10  # seconds MPD must be missing before self-heal steps in
+    MPD_SELF_HEAL_COOLDOWN = 30  # min seconds between MPD self-heal attempts per device
     RSSI_REFRESH_INTERVAL = 60  # seconds between silent discovery bursts
     RSSI_REFRESH_DURATION = 5   # seconds per silent discovery burst
     MAX_RECENT_EVENTS = 50  # ring buffer size for MPRIS/AVRCP events
@@ -93,6 +98,9 @@ class BluetoothAudioManager:
         self._auto_disconnect_tasks: dict[str, asyncio.Task] = {}  # addr → auto-disconnect timer
         self._suspended_sinks: set[str] = set()  # addresses with suspended sinks
         self._mpd_instances: dict[str, MPDManager] = {}  # addr → per-device MPD
+        self._mpd_start_locks: dict[str, asyncio.Lock] = {}  # addr → serialises MPD starts
+        self._mpd_self_heal_at: dict[str, float] = {}  # addr → monotonic time of last self-heal
+        self._mpd_missing_since: dict[str, float] = {}  # addr → monotonic time MPD was first seen missing
         self._last_avrcp_device: tuple[str, float] | None = None  # (addr, timestamp)
         self.media_player: AVRCPMediaPlayer | None = None
         self.managed_devices: dict[str, BluezDevice] = {}
@@ -104,11 +112,15 @@ class BluetoothAudioManager:
         self._rssi_timestamp: dict[str, float] = {}  # addr → time.time() of last RSSI update
         self._last_rssi_refresh_start: float = 0.0  # time.time() when last refresh burst started
         self._last_sink_snapshot: str = ""
+        # Sinks the 5 s poll last saw in state "running" — a second, independent
+        # source for "is audio flowing" next to the PA event callbacks.
+        self._poll_running_sinks: set[str] = set()
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
         self._last_pa_volume: dict[str, int] = {}  # addr → last PA vol% synced to MPD
         self._device_connect_time: dict[str, float] = {}  # addr → time.time()
         self._connecting: set[str] = set()  # addrs with connection in progress
         self._suppress_reconnect: set[str] = set()  # addresses with user-initiated disconnect
+        self._suppress_reconnect_at: dict[str, float] = {}  # addr → monotonic time flag was set
         self._a2dp_attempts: dict[str, int] = {}  # addr → consecutive A2DP activation failures
         self._null_hfp_registered: bool = False  # tracks null HFP handler state
         self._recent_disconnects: dict[str, float] = {}  # addr → time.time() for burst detection
@@ -117,11 +129,165 @@ class BluetoothAudioManager:
         self.recent_avrcp: collections.deque = collections.deque(maxlen=self.MAX_RECENT_EVENTS)
         self._running_sinks: set[str] = set()  # sink names currently in 'running' state
         self._device_lifecycle_locks: dict[str, asyncio.Lock] = {}  # per-device lifecycle lock
+        # Adapter re-index handling (see _on_adapter_lifecycle_signal)
+        self._adapter_address: str | None = None  # MAC of the adapter we bound to at startup
+        self._adapter_lost: bool = False
+        self._adapter_restart_task: asyncio.Task | None = None
+        # Set when the app must restart itself and the Supervisor API is unavailable;
+        # __main__ then shuts down cleanly and exits so s6 restarts the service.
+        self.restart_requested: asyncio.Event = asyncio.Event()
         # Scanning state
         self._scanning: bool = False
         self._scan_task: asyncio.Task | None = None
         self._scan_debounce_handle: asyncio.TimerHandle | None = None
         self._pending_toasts: list[dict] = []  # toasts queued before any WS client connects
+
+    def _mpd_stream_owner(self, proplist) -> str | None:
+        """Map a PulseAudio stream to the speaker whose MPD daemon created it."""
+        pid = str(proplist.get("application.process.id", "")) if proplist else ""
+        if not pid:
+            return None
+        for address, mpd in self._mpd_instances.items():
+            if mpd.pid is not None and str(mpd.pid) == pid:
+                return address
+        return None
+
+    def _reschedule_failed_explicit_connect(self, address: str) -> None:
+        """Restore automatic recovery after an explicit connection failure."""
+        if not self.reconnect_service or not self.config.auto_reconnect:
+            return
+        logger.info(
+            "Explicit connection to %s failed; restoring auto-reconnect", address
+        )
+        self.reconnect_service.handle_disconnect(address)
+
+    def _suppress_auto_reconnect(self, address: str) -> None:
+        """Mark the *next* disconnect of *address* as user-initiated.
+
+        The flag is consumed by that disconnect event — but if the event
+        never comes (the device was already gone, or a concurrent connect
+        returned early without clearing it) it used to linger until some
+        unrelated drop hours later, which was then silently treated as
+        "user-initiated" and never reconnected (#317).  It is therefore
+        only honoured for USER_DISCONNECT_WINDOW seconds.
+        """
+        self._suppress_reconnect.add(address)
+        self._suppress_reconnect_at[address] = time.monotonic()
+
+    def _clear_auto_reconnect_suppression(self, address: str) -> None:
+        self._suppress_reconnect.discard(address)
+        self._suppress_reconnect_at.pop(address, None)
+
+    def _suppression_is_stale(self, address: str) -> bool:
+        # Flags without a timestamp (the HFP cycle sets and clears its own
+        # around a bounded operation) are always current.
+        set_at = self._suppress_reconnect_at.get(address)
+        return set_at is not None and time.monotonic() - set_at > self.USER_DISCONNECT_WINDOW
+
+    # -- Adapter re-index handling --------------------------------------
+    #
+    # The adapter path is resolved once at startup and baked into the
+    # adapter proxy, the AVRCP player registration, every cached BluezDevice
+    # and the reconnect logic.  When the USB adapter drops off the bus and
+    # comes back (often under a new index, hci0 -> hci2) all of that is
+    # stale: reconnects fail with "Method Connect doesn't exist" and nothing
+    # recovers until the app is restarted by hand.
+    #
+    # Rebuilding every one of those objects in place would touch most of the
+    # manager.  A restart is what users already do manually, rebuilds
+    # everything from scratch, and costs nothing extra here — every
+    # Bluetooth link on that adapter is already gone.  So: notice when *our*
+    # adapter (matched by MAC, never "any adapter") reappears and restart.
+    # If it never comes back nothing happens — in "auto" mode restarting
+    # without it could grab a different adapter that belongs to someone else.
+
+    def _on_adapter_lifecycle_signal(self, msg) -> None:
+        """Watch ObjectManager signals for our adapter going away and returning."""
+        if (
+            msg.message_type != MessageType.SIGNAL
+            or msg.path != "/"
+            or msg.member not in ("InterfacesRemoved", "InterfacesAdded")
+            or not msg.body
+            or len(msg.body) < 2
+        ):
+            return
+        obj_path, ifaces = msg.body[0], msg.body[1]
+
+        if msg.member == "InterfacesRemoved":
+            if obj_path == self._adapter_path and "org.bluez.Adapter1" in (ifaces or ()):
+                self._adapter_lost = True
+                logger.warning(
+                    "Bluetooth adapter %s (%s) disappeared from BlueZ — "
+                    "waiting for it to come back",
+                    self._adapter_path, self._adapter_address or "unknown MAC",
+                )
+                self._broadcast_status("Bluetooth adapter disappeared — waiting for it to return")
+            return
+
+        # InterfacesAdded
+        if not isinstance(ifaces, dict) or "org.bluez.Adapter1" not in ifaces:
+            return
+        if not self._adapter_address:
+            return
+        props = ifaces.get("org.bluez.Adapter1") or {}
+        raw = props.get("Address")
+        address = raw.value if hasattr(raw, "value") else raw
+        if not address or str(address).upper() != self._adapter_address:
+            return  # some other adapter — not ours
+        if obj_path == self._adapter_path and not self._adapter_lost:
+            return  # nothing changed as far as we know
+        if self._adapter_restart_task and not self._adapter_restart_task.done():
+            return
+        logger.warning(
+            "Bluetooth adapter %s is back as %s (was %s) — restarting the app "
+            "so every Bluetooth object is rebuilt",
+            self._adapter_address, obj_path, self._adapter_path,
+        )
+        self._adapter_restart_task = asyncio.create_task(
+            self._restart_after_adapter_return()
+        )
+
+    async def _restart_after_adapter_return(self) -> None:
+        """Give the returned adapter a moment, then restart the app."""
+        await asyncio.sleep(self.ADAPTER_RETURN_SETTLE)
+        self._broadcast_status("Bluetooth adapter re-appeared — restarting app...")
+        if await self._request_self_restart():
+            return
+        logger.warning(
+            "Supervisor restart unavailable — shutting down so the service "
+            "supervisor restarts the app"
+        )
+        self.restart_requested.set()
+
+    async def _request_self_restart(self) -> bool:
+        """Ask the Supervisor to restart this app (same as the UI button)."""
+        import aiohttp
+
+        token = os.environ.get("SUPERVISOR_TOKEN")
+        if not token:
+            return False
+        for url in ("http://supervisor/addons/self/restart",
+                    "http://172.30.32.2/addons/self/restart"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        if resp.status == 200:
+                            logger.info("App restart requested via Supervisor")
+                            return True
+                        body = await resp.text()
+                        logger.warning(
+                            "App restart via %s returned %d: %s", url, resp.status, body,
+                        )
+            except asyncio.CancelledError:
+                # The Supervisor is stopping us — that is the restart working.
+                raise
+            except Exception as e:
+                logger.warning("App restart via %s failed: %s", url, e)
+        return False
 
     async def _resolve_adapter_path(self) -> str:
         """Resolve the configured bt_adapter to a BlueZ D-Bus path.
@@ -233,6 +399,10 @@ class BluetoothAudioManager:
         # Capture all D-Bus activity from BlueZ so we can diagnose
         # which signals/methods arrive for button presses, volume, etc.
         def _dbus_msg_handler(msg: Message) -> bool:
+            try:
+                self._on_adapter_lifecycle_signal(msg)
+            except Exception as e:
+                logger.debug("Adapter lifecycle check failed: %s", e)
             if msg.message_type == MessageType.METHOD_CALL:
                 logger.debug(
                     "D-Bus method_call: %s.%s path=%s sender=%s",
@@ -405,6 +575,15 @@ class BluetoothAudioManager:
         # 2. Resolve configured adapter (MAC or legacy HCI) → D-Bus path
         self._adapter_path = await self._resolve_adapter_path()
         logger.info("Using Bluetooth adapter: %s", self._adapter_path)
+        # Remember the adapter's MAC: its D-Bus path (hciN) is not stable
+        # across a USB re-enumeration, its MAC is.
+        try:
+            for a in await BluezAdapter.list_all(self.bus):
+                if a.get("path") == self._adapter_path and a.get("address"):
+                    self._adapter_address = str(a["address"]).upper()
+                    break
+        except Exception as e:
+            logger.debug("Could not read adapter address: %s", e)
         self.adapter = BluezAdapter(self.bus, self._adapter_path)
         await self.adapter.initialize()
 
@@ -442,6 +621,7 @@ class BluetoothAudioManager:
             self.pulse.on_volume_change(self._on_pa_volume_change)
             self.pulse.on_sink_state_change(self._on_pa_sink_running)
             self.pulse.on_sink_idle(self._on_pa_sink_idle)
+            self.pulse.set_stream_owner_resolver(self._mpd_stream_owner)
             await self.pulse.start_event_monitor()
         except Exception as e:
             logger.warning("PulseAudio connection failed (will retry): %s", e)
@@ -811,17 +991,60 @@ class BluetoothAudioManager:
                 pass
             await self.adapter.stop_discovery()
 
+        playing = await self._playing_mpd_addresses()
+        if playing:
+            logger.warning(
+                "Scanning while %d stream(s) play — discovery competes with A2DP "
+                "for airtime; they will be restarted when the scan ends",
+                len(playing),
+            )
+
         self._scanning = True
         self._last_rssi_refresh_start = time.time()
         self.event_bus.emit("scan_started", {"duration": duration})
-        self._scan_task = asyncio.create_task(self._run_scan(duration))
+        self._scan_task = asyncio.create_task(self._run_scan(duration, resume=playing))
 
-    async def _run_scan(self, duration: int) -> None:
+    async def _playing_mpd_addresses(self) -> list[str]:
+        """Speakers whose MPD daemon is currently playing."""
+        playing = []
+        for address, mpd in list(self._mpd_instances.items()):
+            if not mpd.is_running:
+                continue
+            try:
+                status = await mpd.get_status()
+            except Exception:
+                continue
+            if status.get("state") == "play":
+                playing.append(address)
+        return playing
+
+    async def _resume_after_scan(self, addresses: list[str]) -> None:
+        """Restart streams a scan may have stalled, one at a time.
+
+        A discovery scan can freeze A2DP playback without recovery: HA keeps
+        showing "playing" while nothing advances, and only a fresh play
+        brought it back (#319).  Staggered so the speakers do not all
+        renegotiate at once.
+        """
+        for i, address in enumerate(addresses):
+            if i:
+                await asyncio.sleep(self.SCAN_RESUME_STAGGER)
+            mpd = self._mpd_instances.get(address)
+            if mpd is None or not mpd.is_running:
+                continue
+            if await mpd.restart_playback():
+                logger.info("Restarted playback on %s after scan", address)
+
+    async def _run_scan(self, duration: int, resume: list[str] | None = None) -> None:
         """Background scan task: runs discovery for *duration* seconds."""
+        cancelled = False
         try:
             await self.adapter.start_discovery()
             await asyncio.sleep(duration)
         except asyncio.CancelledError:
+            # Superseded by a new scan (which re-collects the playing streams
+            # and resumes them itself) or shutting down — no resume here.
+            cancelled = True
             logger.info("Scan cancelled")
             return
         except Exception as e:
@@ -835,6 +1058,8 @@ class BluetoothAudioManager:
                 await self.adapter.stop_discovery()
             except Exception:
                 pass
+            if resume and not cancelled:
+                self._fire_and_forget(self._resume_after_scan(resume))
 
         # Final broadcast after scan completes (with CoD fallback)
         await self._broadcast_devices(cod_fallback=True)
@@ -955,10 +1180,11 @@ class BluetoothAudioManager:
         if self.reconnect_service and not _from_reconnect:
             self.reconnect_service.cancel_reconnect(address)
         # Clear any disconnect suppression (user wants to connect now)
-        self._suppress_reconnect.discard(address)
+        self._clear_auto_reconnect_suppression(address)
         self._broadcast_status(f"Connecting to {address}...")
 
         self._connecting.add(address)
+        succeeded = False
         try:
             device = await self._get_or_create_device(address)
 
@@ -1093,6 +1319,7 @@ class BluetoothAudioManager:
                         await self._apply_idle_mode(address)
                         await self._start_mpd_if_enabled(address)
                     await self._broadcast_all()
+                    succeeded = True
                     return True
                 logger.warning("%s sink for %s did not appear in PulseAudio", profile_label, address)
                 await self._broadcast_all()
@@ -1100,10 +1327,18 @@ class BluetoothAudioManager:
 
             # PulseAudio not available — connection may still work at BlueZ level
             await self._broadcast_all()
-            return await device.is_connected()
+            succeeded = await device.is_connected()
+            return succeeded
         finally:
             self._connecting.discard(address)
             self.event_bus.emit("status", {"message": ""})
+            # The explicit path cancelled any pending auto-reconnect above.
+            # If it failed, hand the device back to the reconnect service —
+            # otherwise a failed manual/forced connect silently disables
+            # automatic recovery for this device until its next disconnect.
+            # (Based on Cayouche1989/ha-bluetooth-audio-manager@2c38ea0.)
+            if not _from_reconnect and not succeeded:
+                self._reschedule_failed_explicit_connect(address)
 
     async def disconnect_device(self, address: str) -> None:
         """Disconnect a device without removing it from the store."""
@@ -1113,7 +1348,7 @@ class BluetoothAudioManager:
             self.reconnect_service.cancel_reconnect(address)
 
         # Suppress auto-reconnect for this user-initiated disconnect
-        self._suppress_reconnect.add(address)
+        self._suppress_auto_reconnect(address)
 
         try:
             device = await self._get_or_create_device(address)
@@ -1150,7 +1385,7 @@ class BluetoothAudioManager:
         self._last_pa_volume.pop(address, None)
         self._device_lifecycle_locks.pop(address, None)
         self._connecting.discard(address)
-        self._suppress_reconnect.discard(address)
+        self._clear_auto_reconnect_suppression(address)
         # Cancel reconnection
         if self.reconnect_service:
             self.reconnect_service.cancel_reconnect(address)
@@ -1221,7 +1456,7 @@ class BluetoothAudioManager:
         # 4. Disconnect all connected devices
         for i, addr in enumerate(addresses, 1):
             self._broadcast_status(f"Disconnecting device {i}/{total}...")
-            self._suppress_reconnect.add(addr)
+            self._suppress_auto_reconnect(addr)
             device = self.managed_devices.get(addr)
             if device:
                 try:
@@ -1563,12 +1798,26 @@ class BluetoothAudioManager:
             logger.debug("Could not reach HA Core API for Bluetooth integration info")
             return set()
 
+        macs = BluetoothAudioManager._ha_bluetooth_macs_from_entries(entries)
+        if macs:
+            logger.info("HA Bluetooth integration manages adapters: %s", macs)
+        return macs
+
+    @staticmethod
+    def _ha_bluetooth_macs_from_entries(entries: list[dict]) -> set[str]:
+        """MACs of adapters HA's Bluetooth integration uses, from its config entries.
+
+        An entry the user set to *Ignore* (``source == "ignore"``) is never
+        set up by HA — it is exactly how the docs tell users to hand an
+        adapter to this app — so it must not count as HA-managed.  A merely
+        *disabled* entry still does: HA can re-enable it at any time.
+        """
         import re
 
         mac_re = re.compile(r"([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})")
         macs: set[str] = set()
         for entry in entries:
-            if entry.get("domain") != "bluetooth":
+            if entry.get("domain") != "bluetooth" or entry.get("source") == "ignore":
                 continue
             # Prefer unique_id (may be a MAC); fall back to parsing title
             # e.g. "cyber-blue(HK)Ltd CSR8510 A10 (00:1A:7D:DA:71:11)"
@@ -1576,8 +1825,6 @@ class BluetoothAudioManager:
             m = mac_re.search(uid) or mac_re.search(entry.get("title", ""))
             if m:
                 macs.add(m.group(1).upper())
-        if macs:
-            logger.info("HA Bluetooth integration manages adapters: %s", macs)
         return macs
 
     @staticmethod
@@ -1609,6 +1856,9 @@ class BluetoothAudioManager:
                 if not self.pulse:
                     continue
                 sinks = await self.pulse.list_bt_sinks()
+                self._poll_running_sinks = {
+                    s["name"] for s in sinks if s.get("state") == "running"
+                }
                 # Log sink count transitions
                 if len(sinks) != prev_sink_count:
                     names = [s["name"] for s in sinks] if sinks else []
@@ -1621,10 +1871,83 @@ class BluetoothAudioManager:
                 if snapshot != self._last_sink_snapshot:
                     self._last_sink_snapshot = snapshot
                     self.event_bus.emit("sinks_changed", {"sinks": sinks})
+                try:
+                    await self._self_heal_mpd(sinks)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug("MPD self-heal error: %s", e)
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 logger.debug("Sink poll error: %s", e)
+
+    async def _self_heal_mpd(self, sinks: list[dict]) -> None:
+        """Start MPD for connected devices whose sink exists but MPD does not run.
+
+        MPD is only started at fixed moments (startup, connect, reconnect,
+        profile switch).  If the PulseAudio sink is not there yet at that
+        moment the start is merely "deferred" — and nothing ever retries it.
+        Likewise a daemon that exits on its own (its sink vanished during a
+        drop) is only replaced on the *next* connect.  Either way the device
+        stays connected with no MPD, so the HA media_player sits unavailable
+        until someone toggles mpd_enabled by hand.
+
+        This piggybacks on the sink poll (no extra PulseAudio queries): for
+        every Bluetooth sink present, if the device is connected, has MPD
+        enabled and no live daemon for at least MPD_SELF_HEAL_GRACE seconds
+        (so the normal connect path gets to start it first), start it.
+        Rate-limited per device so a daemon that keeps failing is not
+        restarted on every poll.
+        """
+        now = time.monotonic()
+        seen: set[str] = set()
+        for sink in sinks:
+            sink_name = sink.get("name", "") if isinstance(sink, dict) else ""
+            address = self._addr_from_sink_name(sink_name).upper()
+            if not address or address in self._connecting:
+                continue
+            if not self.store.get_device_settings(address).get("mpd_enabled", False):
+                continue
+            existing = self._mpd_instances.get(address)
+            if existing is not None and existing.is_running:
+                continue
+            device = self.managed_devices.get(address)
+            if device is None:
+                continue
+            seen.add(address)
+            first_seen = self._mpd_missing_since.setdefault(address, now)
+            if now - first_seen < self.MPD_SELF_HEAL_GRACE:
+                continue
+            if now - self._mpd_self_heal_at.get(address, float("-inf")) < self.MPD_SELF_HEAL_COOLDOWN:
+                continue
+            self._mpd_self_heal_at[address] = now
+
+            # Serialise against connect/disconnect handlers, then re-check:
+            # a disconnect may have torn the device down while we waited.
+            async with self._device_lock(address):
+                if address in self._connecting:
+                    continue
+                existing = self._mpd_instances.get(address)
+                if existing is not None and existing.is_running:
+                    continue
+                try:
+                    if not await device.is_connected():
+                        continue
+                except Exception as e:
+                    logger.debug("MPD self-heal: is_connected(%s) failed: %s", address, e)
+                    continue
+                logger.warning(
+                    "MPD for %s is not running although the device is connected "
+                    "and its sink %s exists — starting it (self-heal)",
+                    address, sink_name,
+                )
+                await self._start_mpd_if_enabled(address)
+        # Forget devices that are healthy again (or gone) so a later problem
+        # gets a fresh grace period.
+        for address in list(self._mpd_missing_since):
+            if address not in seen:
+                del self._mpd_missing_since[address]
 
     # -- RSSI tracking (D-Bus discovery events + silent refresh bursts) --
 
@@ -1679,6 +2002,16 @@ class BluetoothAudioManager:
                 if self._scanning:
                     continue
 
+                # Skip while audio is flowing: the burst runs an interleaved
+                # BR/EDR inquiry + LE scan (Transport=auto) on the radio that
+                # carries the A2DP links and causes a short dropout every
+                # minute (#319).  Connected BR/EDR-only speakers do not answer
+                # inquiries anyway, so the burst yields nothing for them.
+                # Two sources, so a missed PA event cannot re-enable it.
+                if self._audio_running():
+                    logger.debug("RSSI refresh skipped: audio is running")
+                    continue
+
                 # Skip if no connected devices need RSSI
                 if not self._device_connect_time:
                     # Cleanup stale entries while we're here
@@ -1704,6 +2037,10 @@ class BluetoothAudioManager:
                 return
             except Exception as e:
                 logger.debug("RSSI refresh error: %s", e)
+
+    def _audio_running(self) -> bool:
+        """True while any Bluetooth sink is playing (PA events or the 5 s poll)."""
+        return bool(self._running_sinks or self._poll_running_sinks)
 
     def _rssi_cleanup(self) -> None:
         """Remove stale RSSI entries for devices no longer visible."""
@@ -1780,11 +2117,18 @@ class BluetoothAudioManager:
         if address in self._connecting:
             # Active pair/connect flow in progress — don't start competing reconnect
             logger.info("Skipping auto-reconnect for %s (connection in progress)", address)
-        elif address in self._suppress_reconnect:
+        elif address in self._suppress_reconnect and not self._suppression_is_stale(address):
             # User-initiated disconnect — don't auto-reconnect
-            self._suppress_reconnect.discard(address)
+            self._clear_auto_reconnect_suppression(address)
             logger.info("Skipping auto-reconnect for %s (user-initiated disconnect)", address)
         elif self.reconnect_service:
+            if address in self._suppress_reconnect:
+                logger.info(
+                    "Ignoring stale user-initiated flag for %s (older than %ds) — "
+                    "scheduling auto-reconnect",
+                    address, self.USER_DISCONNECT_WINDOW,
+                )
+                self._clear_auto_reconnect_suppression(address)
             self.reconnect_service.handle_disconnect(address)
         self._fire_and_forget(self._broadcast_all())
 
@@ -1836,6 +2180,7 @@ class BluetoothAudioManager:
 
             # Serialize idle/MPD/transport setup against concurrent
             # disconnect handlers to prevent racing state changes.
+            a2dp_ready = False
             async with self._device_lock(address):
                 from .bluez.constants import HFP_SWITCHING_ENABLED
                 if HFP_SWITCHING_ENABLED:
@@ -1852,12 +2197,43 @@ class BluetoothAudioManager:
                                 await self._start_mpd_if_enabled(address)
                     else:
                         # Check/activate A2DP transport (may need ConnectProfile)
-                        await self._ensure_a2dp_transport(address)
+                        a2dp_ready = await self._ensure_a2dp_transport(address)
                 else:
                     # HFP switching disabled — just ensure A2DP transport
-                    await self._ensure_a2dp_transport(address)
+                    a2dp_ready = await self._ensure_a2dp_transport(address)
+
+            if a2dp_ready:
+                await self._finish_a2dp_reconnect(address)
         except Exception as e:
             logger.warning("Post-connect setup failed for %s: %s", address, e)
+
+    async def _finish_a2dp_reconnect(self, address: str) -> None:
+        """Idle mode + MPD for an A2DP device that connected outside connect_device.
+
+        connect_device() (UI, API, the reconnect scheduler) sets these up
+        once the sink appears; the HFP branch above does too.  An A2DP
+        connection that arrives only as a BlueZ signal — the speaker
+        reconnecting by itself after a power cycle, typically once the
+        scheduler has given up — never did, so the device sat connected with
+        a transport but no MPD daemon (#316).  Wait for the sink outside the
+        lock, then set up under it.
+        """
+        if not self.pulse:
+            return
+        sink_name = await self.pulse.wait_for_bt_sink(address, timeout=15)
+        if not sink_name:
+            return  # the sink-poll self-heal picks it up if it appears later
+        async with self._device_lock(address):
+            if address in self._connecting:
+                return  # an explicit connect owns the setup
+            device = self.managed_devices.get(address)
+            try:
+                if device is not None and not await device.is_connected():
+                    return
+            except Exception:
+                return
+            await self._apply_idle_mode(address)
+            await self._start_mpd_if_enabled(address)
 
     async def _log_transport_properties(self, address: str) -> bool:
         """Enumerate BlueZ objects to find and log MediaTransport1 for a device.
@@ -2968,7 +3344,22 @@ class BluetoothAudioManager:
         return None
 
     async def _start_mpd_if_enabled(self, address: str) -> None:
-        """Start a per-device MPD instance if mpd_enabled in its settings."""
+        """Start a per-device MPD instance if mpd_enabled in its settings.
+
+        Serialised per device: the connect path, the reconnect signal
+        handler, settings changes and the sink-poll self-heal can all ask for
+        a start at nearly the same moment.  Without the lock two callers can
+        both see "no instance", both allocate and both spawn a daemon,
+        leaving an orphan process bound to the port.
+        """
+        lock = self._mpd_start_locks.get(address)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._mpd_start_locks[address] = lock
+        async with lock:
+            await self._start_mpd_if_enabled_locked(address)
+
+    async def _start_mpd_if_enabled_locked(self, address: str) -> None:
         settings = self.store.get_device_settings(address)
         if not settings.get("mpd_enabled", False):
             return

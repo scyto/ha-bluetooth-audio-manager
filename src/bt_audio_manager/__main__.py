@@ -61,13 +61,25 @@ async def main() -> None:
         await web_server.start()
         await manager.start()
         logger.info("All services running. Waiting for shutdown signal...")
-        await shutdown_event.wait()
+        # Also wake up when the manager asks for a restart it could not get
+        # from the Supervisor (see BluetoothAudioManager.restart_requested).
+        waiters = {
+            asyncio.ensure_future(shutdown_event.wait()),
+            asyncio.ensure_future(manager.restart_requested.wait()),
+        }
+        _done, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
     except Exception as e:
         logger.error("Fatal error: %s", e, exc_info=True)
     finally:
         await web_server.stop()
         await manager.shutdown()
-        logger.info("Goodbye.")
+        if manager.restart_requested.is_set() and not shutdown_event.is_set():
+            # s6 restarts a longrun service whose process exits.
+            logger.info("Exiting for restart.")
+        else:
+            logger.info("Goodbye.")
 
 
 if __name__ == "__main__":
