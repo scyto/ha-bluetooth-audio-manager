@@ -27,11 +27,15 @@ DEFAULT_DEVICE_SETTINGS = {
     "mpd_enabled": False,
     "mpd_port": None,   # Auto-assigned from pool (6600-6609); user can override
     "mpd_hw_volume": 100,  # Hardware volume % set when MPD starts (1-100)
+    "volume_lock": False,  # Hold MPD, stream and speaker volume at 100%
     "avrcp_enabled": True,  # Auto-track PlaybackStatus; False = always Stopped
 }
 
 MPD_PORT_MIN = 6600
 MPD_PORT_MAX = 6609
+
+# Friendly names are free text shown instead of the Bluetooth name.
+FRIENDLY_NAME_MAX_LEN = 64
 
 
 def normalize_address(address: str) -> str:
@@ -52,6 +56,9 @@ class PersistenceStore:
     def __init__(self, path: str = DEFAULT_STORE_PATH):
         self._path = Path(path)
         self._devices: list[dict] = []
+        # Kept apart from the device records (keyed by address) so a name
+        # survives Forget + re-pair of the same speaker.
+        self._friendly_names: dict[str, str] = {}
 
     async def load(self) -> None:
         """Load paired devices from disk."""
@@ -64,12 +71,14 @@ class PersistenceStore:
 
         if not self._path.exists():
             self._devices = []
+            self._friendly_names = {}
             logger.info("No existing paired devices store found")
             return
 
         try:
             data = json.loads(self._path.read_text())
             self._devices = self._canonicalise(data.get("devices", []))
+            self._friendly_names = self._load_friendly_names(data.get("friendly_names"))
             logger.info("Loaded %d paired device(s) from store", len(self._devices))
             for d in self._devices:
                 non_defaults = {
@@ -82,6 +91,21 @@ class PersistenceStore:
         except (json.JSONDecodeError, KeyError) as e:
             logger.error("Failed to parse paired devices store: %s", e)
             self._devices = []
+            self._friendly_names = {}
+
+    @staticmethod
+    def _load_friendly_names(raw) -> dict[str, str]:
+        """Read the stored name map, skipping anything that is not a usable name."""
+        if not isinstance(raw, dict):
+            return {}
+        names: dict[str, str] = {}
+        for address, name in raw.items():
+            if not isinstance(address, str) or not isinstance(name, str):
+                continue
+            name = name.strip()
+            if name:
+                names[normalize_address(address)] = name
+        return names
 
     @staticmethod
     def _canonicalise(devices: list[dict]) -> list[dict]:
@@ -115,6 +139,8 @@ class PersistenceStore:
     async def save(self) -> None:
         """Write current device list to disk (atomic via temp + rename)."""
         data = {"devices": self._devices}
+        if self._friendly_names:
+            data["friendly_names"] = self._friendly_names
         tmp = self._path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2))
         os.replace(tmp, self._path)
@@ -152,12 +178,40 @@ class PersistenceStore:
         """Remove all devices from the store."""
         count = len(self._devices)
         self._devices.clear()
+        self._friendly_names.clear()
         await self.save()
         logger.info("Cleared all %d device(s) from store", count)
 
     def get_device(self, address: str) -> dict | None:
         """Get a device by address."""
         return self._find_device(address)
+
+    # -- Friendly names --
+
+    def get_friendly_name(self, address: str) -> str:
+        """The user's name for this speaker, or "" when none is set."""
+        return self._friendly_names.get(normalize_address(address), "")
+
+    async def set_friendly_name(self, address: str, name: str) -> str:
+        """Set (or, with an empty name, clear) the user's name for a speaker.
+
+        The caller validates the text; surrounding whitespace is dropped here.
+        Returns the name now in effect ("" when cleared).
+        """
+        address = normalize_address(address)
+        name = name.strip()
+        if name:
+            if self._friendly_names.get(address) == name:
+                return name
+            self._friendly_names[address] = name
+            logger.info("Friendly name for %s set to %r", address, name)
+        else:
+            if address not in self._friendly_names:
+                return ""
+            del self._friendly_names[address]
+            logger.info("Friendly name for %s cleared", address)
+        await self.save()
+        return name
 
     def _find_device(self, address: str) -> dict | None:
         address = normalize_address(address)

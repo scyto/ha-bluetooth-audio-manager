@@ -289,6 +289,53 @@
               Maximum delay between reconnection attempts with exponential backoff (60&ndash;3600).
             </div>
           </div>
+
+          <hr>
+
+          <!-- A2DP sample rate -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-a2dp-prefer-44k">
+              <label class="form-check-label" for="setting-a2dp-prefer-44k">
+                <strong>Prefer 44.1 kHz Bluetooth audio</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              A speaker that connects by itself (e.g. after a power cycle) may pick 48 kHz.
+              Its audio stream is then re-opened from here so it runs at 44.1&nbsp;kHz: no
+              resampling of 44.1&nbsp;kHz radio streams and about 9&nbsp;% less radio time per
+              speaker. The speaker is silent for a few seconds while this happens.
+            </div>
+          </div>
+
+          <hr>
+
+          <!-- Volume lock (all devices) -->
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="setting-volume-lock-all"
+                     onchange="this.indeterminate = false; window._volumeLockAllTouched = true;">
+              <label class="form-check-label" for="setting-volume-lock-all">
+                <strong>Lock volume (all devices)</strong>
+              </label>
+            </div>
+            <div class="form-text">
+              Switches &ldquo;Lock volume&rdquo; in every device's settings at once.
+              Shown half-set when only some devices are locked.
+            </div>
+          </div>
+          <div class="mb-3">
+            <label for="setting-volume-lock-level" class="form-label"><strong>Locked volume</strong></label>
+            <div class="input-group" style="max-width: 10rem;">
+              <input type="number" class="form-control" id="setting-volume-lock-level" min="10" max="100" step="1">
+              <span class="input-group-text">%</span>
+            </div>
+            <div class="form-text">
+              Level every locked device's MPD volume is held at (10&ndash;100%); the audio
+              stream and the speaker's own volume stay at 100%. Lower it if a speaker or
+              FM transmitter distorts at full level.
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -311,6 +358,15 @@
         <div class="modal-body">
           <h6 id="device-settings-name" class="fw-semibold mb-1"></h6>
           <p id="device-settings-address" class="font-monospace small text-muted mb-3"></p>
+
+          <!-- Friendly name -->
+          <div class="mb-3">
+            <label for="setting-friendly-name" class="form-label"><strong>Name</strong></label>
+            <input type="text" class="form-control" id="setting-friendly-name" maxlength="64" autocomplete="off">
+            <div class="form-text">Shown instead of the Bluetooth name in this app and used as the MPD output name from the next MPD start. Leave empty to use the Bluetooth name. Kept when the device is forgotten and paired again.</div>
+          </div>
+
+          <hr class="my-3">
 
           <!-- Audio Profile -->
           <div class="mb-3">
@@ -393,6 +449,20 @@
 
           <!-- MPD Config (shown when enabled) -->
           <div id="mpd-config-group" style="display:none;">
+            <div class="mb-3">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="setting-volume-lock">
+                <label class="form-check-label" for="setting-volume-lock">
+                  <strong>Lock volume</strong>
+                </label>
+              </div>
+              <div class="form-text">
+                Holds MPD volume at the level set in App Settings (<em>Locked volume</em>,
+                default 100%) and the audio stream and the speaker's own volume at 100%.
+                Any change (dashboard slider, automation, speaker buttons) is undone
+                within seconds. Hardware Volume below is then ignored.
+              </div>
+            </div>
             <div class="mb-3">
               <label for="setting-mpd-hw-volume" class="form-label">Hardware Volume (%)</label>
               <input type="number" class="form-control" id="setting-mpd-hw-volume"

@@ -105,6 +105,7 @@ const DANGEROUS_TAGS = ["img", "script", "iframe", "svg", "object", "embed"];
 for (const payload of PAYLOADS) {
   const device = {
     name: payload, address: "AA:BB:CC:DD:EE:FF", adapter: payload,
+    friendly_name: payload, bt_name: payload + " bt",
     connected: true, paired: true, stored: true,
     uuids: ["0000110b-0000-1000-8000-00805f9b34fb"],
     rssi: -55, signal_quality: payload,

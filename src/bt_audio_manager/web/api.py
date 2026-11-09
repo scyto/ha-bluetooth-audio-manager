@@ -11,7 +11,8 @@ from aiohttp import web
 from aiohttp.web import WebSocketResponse
 from dbus_next.errors import DBusError
 
-from ..persistence.store import normalize_address
+from ..config import VOLUME_LOCK_LEVEL_MAX, VOLUME_LOCK_LEVEL_MIN
+from ..persistence.store import FRIENDLY_NAME_MAX_LEN, normalize_address
 
 if TYPE_CHECKING:
     from ..manager import BluetoothAudioManager
@@ -373,13 +374,32 @@ def create_api_routes(
                 "idle_mode", "keep_alive_method",
                 "power_save_delay", "auto_disconnect_minutes",
                 "mpd_enabled", "mpd_port", "mpd_hw_volume",
-                "avrcp_enabled",
+                "volume_lock", "avrcp_enabled",
             }
             settings = {k: v for k, v in body.items() if k in allowed_keys}
-            if not settings:
+            # friendly_name is kept apart from the device record (it survives
+            # Forget + re-pair), so it is validated and stored separately.
+            friendly_name = body.get("friendly_name") if isinstance(body, dict) else None
+            if not settings and friendly_name is None:
                 return web.json_response(
                     {"error": "No valid settings provided"}, status=400
                 )
+            if friendly_name is not None:
+                if not isinstance(friendly_name, str):
+                    return web.json_response(
+                        {"error": "friendly_name must be a string"}, status=400
+                    )
+                friendly_name = friendly_name.strip()
+                if len(friendly_name) > FRIENDLY_NAME_MAX_LEN:
+                    return web.json_response(
+                        {"error": f"friendly_name must be at most {FRIENDLY_NAME_MAX_LEN} characters"},
+                        status=400,
+                    )
+                if any(ord(c) < 32 or ord(c) == 127 for c in friendly_name):
+                    return web.json_response(
+                        {"error": "friendly_name must not contain control characters"},
+                        status=400,
+                    )
             if "audio_profile" in settings:
                 from ..bluez.constants import HFP_SWITCHING_ENABLED
                 if not HFP_SWITCHING_ENABLED:
@@ -418,6 +438,11 @@ def create_api_routes(
                     return web.json_response(
                         {"error": "mpd_enabled must be a boolean"}, status=400
                     )
+            if "volume_lock" in settings:
+                if not isinstance(settings["volume_lock"], bool):
+                    return web.json_response(
+                        {"error": "volume_lock must be a boolean"}, status=400
+                    )
             if "avrcp_enabled" in settings:
                 if not isinstance(settings["avrcp_enabled"], bool):
                     return web.json_response(
@@ -442,22 +467,38 @@ def create_api_routes(
                     return web.json_response(
                         {"error": "mpd_hw_volume must be an integer 1-100"}, status=400
                     )
-            result = await manager.update_device_settings(address, settings)
-            if result is None:
+            if settings:
+                result = await manager.update_device_settings(address, settings)
+                if result is None:
+                    return web.json_response(
+                        {"error": f"Device {address} not found"}, status=404
+                    )
+            elif manager.store.get_device(address) is None:
                 return web.json_response(
                     {"error": f"Device {address} not found"}, status=404
                 )
+            if friendly_name is not None:
+                await manager.set_friendly_name(address, friendly_name)
             # Return current settings (includes auto-allocated port, etc.)
-            current = manager.store.get_device_settings(address)
+            current = dict(manager.store.get_device_settings(address))
+            current["friendly_name"] = manager.store.get_friendly_name(address)
             return web.json_response({"address": address, "settings": current})
         except Exception as e:
             logger.error("Failed to update settings for %s: %s", address, e)
             return web.json_response({"error": str(e)}, status=500)
 
+    def _settings_payload() -> dict:
+        # Runtime settings plus the aggregate per-device volume lock.
+        payload = dict(manager.config.runtime_settings)
+        summary = manager.volume_lock_summary()
+        if isinstance(summary, dict):
+            payload.update(summary)
+        return payload
+
     @routes.get("/api/settings")
     async def get_settings(request: web.Request) -> web.Response:
         """Return current runtime settings (auto_reconnect, intervals, etc.)."""
-        return web.json_response(manager.config.runtime_settings)
+        return web.json_response(_settings_payload())
 
     @routes.put("/api/settings")
     async def update_settings(request: web.Request) -> web.Response:
@@ -484,13 +525,26 @@ def create_api_routes(
             v = body["scan_duration_seconds"]
             if not isinstance(v, int) or v < 5 or v > 120:
                 errors.append("scan_duration_seconds must be an integer between 5 and 120")
+        if "volume_lock_all" in body and not isinstance(body["volume_lock_all"], bool):
+            errors.append("volume_lock_all must be a boolean")
+        if "a2dp_prefer_44k" in body and not isinstance(body["a2dp_prefer_44k"], bool):
+            errors.append("a2dp_prefer_44k must be a boolean")
+        if "volume_lock_level" in body:
+            v = body["volume_lock_level"]
+            if (not isinstance(v, int) or isinstance(v, bool)
+                    or v < VOLUME_LOCK_LEVEL_MIN or v > VOLUME_LOCK_LEVEL_MAX):
+                errors.append(
+                    f"volume_lock_level must be an integer between "
+                    f"{VOLUME_LOCK_LEVEL_MIN} and {VOLUME_LOCK_LEVEL_MAX}"
+                )
 
         if errors:
             return web.json_response({"error": "; ".join(errors)}, status=400)
 
         # Apply to live config
         allowed = {"auto_reconnect", "reconnect_interval_seconds",
-                    "reconnect_max_backoff_seconds", "scan_duration_seconds"}
+                    "reconnect_max_backoff_seconds", "scan_duration_seconds",
+                    "a2dp_prefer_44k"}
         was_auto_reconnect = manager.config.auto_reconnect
         for key in allowed:
             if key in body:
@@ -507,11 +561,20 @@ def create_api_routes(
         # Persist
         manager.config.save_settings()
 
+        # Level first, so a lock switched on in the same request starts at it
+        if "volume_lock_level" in body:
+            await manager.set_volume_lock_level(body["volume_lock_level"])
+            manager.config.save_settings()
+
+        # Volume lock for all devices: stored per device, not in settings.json
+        if "volume_lock_all" in body:
+            await manager.set_volume_lock_all(body["volume_lock_all"])
+
         # Broadcast change to all WS clients
         manager.event_bus.emit("settings_changed", manager.config.runtime_settings)
 
         logger.info("Runtime settings updated: %s", manager.config.runtime_settings)
-        return web.json_response(manager.config.runtime_settings)
+        return web.json_response(_settings_payload())
 
     @routes.get("/api/audio/sinks")
     async def audio_sinks(request: web.Request) -> web.Response:
@@ -627,6 +690,86 @@ def create_api_routes(
         except Exception as e:
             logger.error("debug_hfp_reconnect_cycle failed for %s: %s", address, e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
+
+    @routes.get("/api/diagnostics/audio-logs")
+    async def diagnostics_audio_logs(request: web.Request) -> web.Response:
+        """PulseAudio (audio plugin) log lines, read-only.
+
+        Query: ``lines`` (default 500), ``grep`` (case-insensitive
+        substring filter, applied after fetching), ``timestamps`` (1/0,
+        default 1).  Reading the log does not touch PulseAudio itself.
+        """
+        try:
+            lines = int(request.query.get("lines", 500))
+        except ValueError:
+            return web.json_response({"error": "lines must be an integer"}, status=400)
+        if lines < 1:
+            return web.json_response({"error": "lines must be >= 1"}, status=400)
+        timestamps = request.query.get("timestamps", "1") not in ("0", "false", "no")
+        needle = request.query.get("grep", "").lower()
+
+        fetched = await manager.fetch_audio_logs(lines, timestamps=timestamps)
+        if fetched is None:
+            return web.json_response(
+                {"error": "audio logs not available (no Supervisor access)"}, status=503,
+            )
+        matched = [line for line in fetched if needle in line.lower()] if needle else fetched
+        return web.json_response({
+            "fetched": len(fetched),
+            "count": len(matched),
+            "lines": matched,
+        })
+
+    @routes.get("/api/diagnostics/pulse-bluetooth")
+    async def diagnostics_pulse_bluetooth(request: web.Request) -> web.Response:
+        """PulseAudio's Bluetooth discovery modules and the bitrate recovery in effect."""
+        pulse = manager.pulse
+        if not pulse:
+            return web.json_response({"error": "PulseAudio not connected"}, status=503)
+        try:
+            modules = await pulse.bt_module_args()
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        bluez5 = next((m for m in modules if m["name"] == pulse.BT_DISCOVER_MODULE), None)
+        interval = pulse.rate_refresh_from_args(bluez5["argument"]) if bluez5 else None
+        return web.json_response({
+            "modules": modules,
+            "output_rate_refresh_interval_ms": interval,
+            "effective_interval_ms": interval or pulse.RATE_REFRESH_DEFAULT_MS,
+            "custom": interval is not None,
+        })
+
+    @routes.get("/api/diagnostics/gap-monitor")
+    async def gap_monitor_status(request: web.Request) -> web.Response:
+        """Result of the last/current gap diagnosis (404 if none ran)."""
+        status = manager.gap_monitor_status()
+        if status is None:
+            return web.json_response({"error": "no gap diagnosis has run"}, status=404)
+        return web.json_response(status)
+
+    @routes.post("/api/diagnostics/gap-monitor")
+    async def gap_monitor_start(request: web.Request) -> web.Response:
+        """Start a gap diagnosis: body ``{"minutes": 1-60}`` (default 10)."""
+        try:
+            body = await request.json() if request.can_read_body else {}
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        minutes = (body or {}).get("minutes", 10)
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or minutes <= 0:
+            return web.json_response({"error": "minutes must be a positive number"}, status=400)
+        try:
+            status = await manager.start_gap_monitor(minutes)
+        except RuntimeError as e:
+            return web.json_response({"error": str(e)}, status=409)
+        return web.json_response(status)
+
+    @routes.delete("/api/diagnostics/gap-monitor")
+    async def gap_monitor_stop(request: web.Request) -> web.Response:
+        """Stop a running gap diagnosis early and return its result."""
+        status = await manager.stop_gap_monitor()
+        if status is None:
+            return web.json_response({"error": "no gap diagnosis has run"}, status=404)
+        return web.json_response(status)
 
     @routes.get("/api/diagnostics/mpris")
     async def diagnostics_mpris(request: web.Request) -> web.Response:

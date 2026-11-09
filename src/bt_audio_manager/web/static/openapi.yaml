@@ -687,6 +687,158 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MprisDiagnostics" }
 
+  /api/diagnostics/audio-logs:
+    get:
+      tags: [Diagnostics]
+      summary: PulseAudio (audio plugin) log lines
+      description: >
+        Read-only view of the HAOS audio plugin's PulseAudio log, fetched
+        through the Supervisor. Useful to line up audible dropouts with
+        `Skipping N us (= M bytes) in audio stream` warnings, which
+        PulseAudio logs when a Bluetooth link did not take audio in time.
+        Reading the log does not query PulseAudio itself.
+      parameters:
+        - name: lines
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 500 }
+          description: Number of most recent journal lines to fetch.
+        - name: grep
+          in: query
+          required: false
+          schema: { type: string }
+          description: Case-insensitive substring filter applied to the fetched lines.
+        - name: timestamps
+          in: query
+          required: false
+          schema: { type: string, enum: ["1", "0"], default: "1" }
+          description: Annotated journal format with timestamps (`1`) or bare messages (`0`).
+      responses:
+        "200":
+          description: Matching log lines.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fetched: { type: integer }
+                  count: { type: integer }
+                  lines:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Invalid `lines`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Supervisor not reachable (no token).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/diagnostics/pulse-bluetooth:
+    get:
+      tags: [Diagnostics]
+      summary: PulseAudio Bluetooth module arguments
+      description: >
+        Lists the loaded `module-bluetooth-discover` / `module-bluez5-discover`
+        with their arguments and reports the A2DP bitrate recovery interval
+        in effect (`output_rate_refresh_interval_ms`, PulseAudio default
+        500 ms). Read-only; the interval is set through the audio plugin's
+        `/data/custom.pa` (see the documentation).
+      responses:
+        "200":
+          description: Modules and interval.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  modules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index: { type: integer }
+                        name: { type: string }
+                        argument: { type: string }
+                  output_rate_refresh_interval_ms: { type: integer, nullable: true }
+                  effective_interval_ms: { type: integer }
+                  custom: { type: boolean }
+        "503":
+          description: PulseAudio not connected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/diagnostics/gap-monitor:
+    get:
+      tags: [Diagnostics]
+      summary: Result of the current or last gap diagnosis
+      responses:
+        "200":
+          description: Status, gap count per sink and the gap events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "404":
+          description: No gap diagnosis has run since the app started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      tags: [Diagnostics]
+      summary: Start a gap diagnosis
+      description: >
+        Records every Bluetooth A2DP sink's PulseAudio monitor (8 kHz mono)
+        for the given time and logs two kinds of events. `silence`: at least
+        30 ms of exact digital silence, i.e. the audio was already missing
+        before Bluetooth (player, network). `stall`: PulseAudio's Bluetooth
+        output paused for at least 60 ms because the link, adapter or USB
+        path stopped taking data; stalls on all speakers at once point at
+        the shared path, single-speaker stalls at that link. An audible
+        dropout with neither happened inside the speaker or on the radio
+        without backing up the adapter. A running diagnosis is replaced.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                minutes: { type: number, minimum: 0.5, maximum: 60, default: 10 }
+      responses:
+        "200":
+          description: Diagnosis started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "400":
+          description: Invalid `minutes`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: No Bluetooth A2DP sink present.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [Diagnostics]
+      summary: Stop a running gap diagnosis early
+      responses:
+        "200":
+          description: Final status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "404":
+          description: No gap diagnosis has run since the app started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # --------------------------------------------------------------- Debug --
 
   /api/debug/avrcp-cycle:
@@ -927,6 +1079,49 @@ components:
 
   schemas:
 
+    GapMonitorStatus:
+      type: object
+      properties:
+        running: { type: boolean }
+        started_at: { type: number, description: Unix time }
+        ends_at: { type: number, description: Unix time }
+        min_gap_ms: { type: integer }
+        seconds_recorded:
+          type: object
+          additionalProperties: { type: number }
+        stall_threshold_ms: { type: integer }
+        events_per_sink:
+          type: object
+          description: Per sink, number of silence gaps and of output stalls.
+          additionalProperties:
+            type: object
+            properties:
+              silence: { type: integer }
+              stall: { type: integer }
+        stall_clusters:
+          type: array
+          description: Stalls grouped across speakers (within 0.5 s = same moment).
+          items:
+            type: object
+            properties:
+              at: { type: string }
+              ts: { type: number }
+              sinks: { type: array, items: { type: string } }
+              max_ms: { type: integer }
+              since_previous_s: { type: number }
+        errors:
+          type: object
+          additionalProperties: { type: string }
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [silence, stall] }
+              sink: { type: string }
+              at: { type: string, description: Local time HH:MM:SS.d }
+              ts: { type: number }
+              duration_ms: { type: integer }
     Error:
       type: object
       description: >
@@ -959,7 +1154,25 @@ components:
         visible to BlueZ.
       properties:
         address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
-        name: { type: string, example: Kitchen Speaker }
+        name:
+          type: string
+          example: Kitchen Speaker
+          description: >
+            Name to display: the user's `friendly_name` when set, otherwise
+            `bt_name`.
+        bt_name:
+          type: string
+          example: ES-BT17
+          description: >
+            Name the speaker reports over Bluetooth (or the one stored when it
+            was paired).
+        friendly_name:
+          type: string
+          example: "UKW 87.5"
+          description: >
+            The user's own name for this speaker; empty when none is set. Set
+            it with `PUT /api/devices/{address}/settings`. Stored per address,
+            so it survives Forget + re-pair; cleared by "Clear all devices".
         path:
           type: string
           description: BlueZ object path.
@@ -1021,6 +1234,7 @@ components:
         mpd_enabled: { type: boolean }
         mpd_port: { type: integer, nullable: true }
         mpd_hw_volume: { type: integer }
+        volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
 
     IdleMode:
@@ -1074,9 +1288,23 @@ components:
           type: integer
           minimum: 1
           maximum: 100
+        volume_lock:
+          type: boolean
+          description: >
+            Hold MPD volume at `volume_lock_level` (app setting, default 100)
+            and the MPD stream and the speaker's volume at 100%; any change is
+            undone. `mpd_hw_volume` is ignored while on.
         avrcp_enabled:
           type: boolean
           description: Route the speaker's transport buttons to MPD.
+        friendly_name:
+          type: string
+          maxLength: 64
+          description: >
+            Name shown instead of the Bluetooth name in the app, also used as
+            the MPD output name from the next MPD start. Surrounding
+            whitespace is dropped; an empty string clears it. Control
+            characters are rejected with 400.
 
     DeviceSettings:
       type: object
@@ -1090,7 +1318,11 @@ components:
         mpd_enabled: { type: boolean }
         mpd_port: { type: integer, nullable: true }
         mpd_hw_volume: { type: integer }
+        volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
+        friendly_name:
+          type: string
+          description: Present in the PUT response; empty when none is set.
 
     RuntimeSettings:
       type: object
@@ -1116,6 +1348,34 @@ components:
           type: integer
           minimum: 5
           maximum: 120
+        a2dp_prefer_44k:
+          type: boolean
+          default: true
+          description: >
+            When a speaker sets up its A2DP (SBC) stream by itself at 48 kHz,
+            close and re-open it from the app so PulseAudio picks 44.1 kHz
+            (no resampling of 44.1 kHz sources, about 9 % less airtime).
+            At most two attempts per speaker in 10 minutes.
+        volume_lock_level:
+          type: integer
+          minimum: 10
+          maximum: 100
+          default: 100
+          description: >
+            Level (percent) the volume lock holds MPD's volume at, for every
+            device with `volume_lock` on; their stream and speaker volume stay
+            at 100 %. Applied at once to running MPD instances. In a PUT that
+            also carries `volume_lock_all`, the level is applied first.
+        volume_lock_all:
+          type: boolean
+          description: >
+            GET: every stored device has `volume_lock` on. PUT: switch
+            `volume_lock` on or off for every stored device at once (stored
+            per device, not as a separate setting).
+        volume_lock_any:
+          type: boolean
+          readOnly: true
+          description: At least one stored device has `volume_lock` on.
 
     Adapter:
       type: object
