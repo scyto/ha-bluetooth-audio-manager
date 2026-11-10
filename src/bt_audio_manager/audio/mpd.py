@@ -251,18 +251,33 @@ class MPDManager:
 
     async def _stream_stderr(self) -> None:
         """Read MPD stderr line by line and forward to our logger."""
-        try:
-            while self._process and self._process.stderr:
+        # This reader must outlive odd input: once it stops, nothing drains
+        # MPD's stderr pipe, the pipe fills up and MPD blocks on its next
+        # log line — the daemon then hangs with the process still alive.
+        while self._process and self._process.stderr:
+            try:
                 line = await self._process.stderr.readline()
-                if not line:
-                    break
-                text = line.decode().rstrip()
+            except ValueError:
+                # Line longer than the stream limit; asyncio has already
+                # dropped it from the buffer, so just carry on.
+                logger.debug("[mpd:%d] over-long log line skipped", self._port)
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("[mpd:%d] log reader stopped: %s", self._port, e)
+                return
+            if not line:
+                return
+            try:
+                # MPD logs stream titles and URLs as received — not always UTF-8.
+                text = line.decode(errors="replace").rstrip()
                 if text:
                     logger.info("[mpd:%d] %s", self._port, text)
                     if "player: played " in text:
                         self._on_stream_end()
-        except Exception:
-            pass
+            except Exception as e:
+                logger.debug("[mpd:%d] log line not handled: %s", self._port, e)
 
     # -- Repeat mode ---------------------------------------------------------
     #
@@ -351,18 +366,32 @@ class MPDManager:
 
     async def _connect_client(self) -> None:
         """Connect the python-mpd2 async client."""
-        self._client = MPDClient()
+        last_error: Exception | None = None
         for attempt in range(5):
+            client = MPDClient()
             try:
-                await self._client.connect(MPD_HOST, self._port)
+                await client.connect(MPD_HOST, self._port)
                 if self._password:
-                    await self._client.password(self._password)
+                    await client.password(self._password)
+                self._client = client
                 logger.debug("MPD client connected (port %d)", self._port)
                 return
-            except (ConnectionRefusedError, OSError):
+            except Exception as e:
+                # Not only OSError: python-mpd2 raises its own ConnectionError
+                # / ProtocolError (no relation to the builtins) when MPD
+                # accepts the connection but does not answer the hello in
+                # time.  Letting those escape used to end _watch_playback.
+                last_error = e
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
                 if attempt < 4:
                     await asyncio.sleep(0.5)
-        logger.warning("Could not connect MPD client after retries (port %d)", self._port)
+        logger.warning(
+            "Could not connect MPD client after retries (port %d): %s",
+            self._port, last_error,
+        )
         self._client = None
 
     async def _ensure_connected(self) -> None:
@@ -451,9 +480,17 @@ class MPDManager:
         loop = asyncio.get_running_loop()
         attempt = 0
         next_try: float | None = None
-        try:
-            while self._running:
-                await asyncio.sleep(self.WATCH_INTERVAL)
+        failing = False
+        while self._running:
+            await asyncio.sleep(self.WATCH_INTERVAL)
+            if self._process is not None and self._process.returncode is not None:
+                # The daemon exited on its own; the manager replaces this
+                # instance (sink-poll self-heal).  Nothing left to watch.
+                logger.info("[mpd:%d] daemon has exited — playback watch ends", self._port)
+                return
+            # One bad round must not end the watch: it carries the volume
+            # lock and the retry after a stream error for this speaker.
+            try:
                 status = await self.get_status()
                 await self._enforce_volume_lock(status)
                 state = status.get("state")
@@ -464,30 +501,34 @@ class MPDManager:
                             self._port, attempt, "y" if attempt == 1 else "ies",
                         )
                     attempt, next_try = 0, None
-                    continue
-                error = status.get("error")
-                if state != "stop" or not error:
-                    attempt, next_try = 0, None  # paused, stopped on purpose, or unknown
-                    continue
-                now = loop.time()
-                if next_try is None:
-                    delay = self.PLAY_RETRY_DELAYS[min(attempt, len(self.PLAY_RETRY_DELAYS) - 1)]
-                    next_try = now + delay
-                    log = logger.warning if attempt == 0 else logger.info
-                    log(
-                        "[mpd:%d] playback stopped with error (%s) — retrying in %ds",
-                        self._port, error, delay,
-                    )
-                    continue
-                if now < next_try:
-                    continue
-                attempt += 1
-                next_try = None
-                await self._retry_play()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.debug("[mpd:%d] playback watch ended: %s", self._port, e)
+                else:
+                    error = status.get("error")
+                    if state != "stop" or not error:
+                        attempt, next_try = 0, None  # paused, stopped on purpose, or unknown
+                    else:
+                        now = loop.time()
+                        if next_try is None:
+                            delay = self.PLAY_RETRY_DELAYS[
+                                min(attempt, len(self.PLAY_RETRY_DELAYS) - 1)
+                            ]
+                            next_try = now + delay
+                            log = logger.warning if attempt == 0 else logger.info
+                            log(
+                                "[mpd:%d] playback stopped with error (%s) — retrying in %ds",
+                                self._port, error, delay,
+                            )
+                        elif now >= next_try:
+                            attempt += 1
+                            next_try = None
+                            await self._retry_play()
+                failing = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # Log the first failure of a streak visibly, the rest quietly.
+                log = logger.debug if failing else logger.warning
+                log("[mpd:%d] playback watch round failed: %s", self._port, e)
+                failing = True
 
     async def _enforce_volume_lock(self, status: dict) -> bool:
         """Put the software volume back to the lock level when the lock is on.
