@@ -71,10 +71,21 @@ _USB_BT_VENDORS: dict[str, str] = {
 }
 
 
+def _err(exc: BaseException) -> str:
+    """Text for a log line: the message, or the type when there is none."""
+    return str(exc) or type(exc).__name__
+
+
 class BluetoothAudioManager:
     """Central orchestrator for the Bluetooth Audio Manager app."""
 
     SINK_POLL_INTERVAL = 5  # seconds between sink state polls
+    SINK_POLL_TIMEOUT = 20  # seconds one sink poll may take (it can include a pactl run)
+    PULSE_RETRY_INTERVAL = 10  # seconds between attempts to (re)connect to PulseAudio
+    PULSE_CONNECT_TIMEOUT = 15  # seconds one (re)connect attempt may take
+    PULSE_FAILURES_BEFORE_RECONNECT = 3  # failed polls in a row on a connection that claims to be up
+    PULSE_DOWN_REPORT_INTERVAL = 300  # seconds between "still not reachable" log lines
+    PULSE_RESTORE_SETTLE = 5  # seconds a returned PulseAudio gets to load its Bluetooth modules
     VOLUME_LOCK_MAX_RESETS = 5  # speaker-volume resets per device per minute
     SCAN_RESUME_STAGGER = 2  # seconds between stream restarts after a scan
     USER_DISCONNECT_WINDOW = 30  # seconds a user-initiated disconnect flag stays valid
@@ -118,6 +129,12 @@ class BluetoothAudioManager:
         # source for "is audio flowing" next to the PA event callbacks.
         self._poll_running_sinks: set[str] = set()
         self._gap_monitor = None  # audio.gap_monitor.GapMonitor while a diagnosis runs
+        # PulseAudio watchdog (see _pulse_ready)
+        self._pulse_failures: int = 0  # failed sink polls in a row
+        self._pulse_down_since: float | None = None  # monotonic; None = connection fine
+        self._pulse_retry_at: float = 0.0
+        self._pulse_reported_at: float = 0.0
+        self._pulse_restore_task: asyncio.Task | None = None
         self._rate_fix_attempts: dict[str, list[float]] = {}
         self._rate_fix_running: set[str] = set()
         self._last_signaled_volume: dict[str, int] = {}  # addr → raw 0-127
@@ -739,19 +756,10 @@ class BluetoothAudioManager:
         else:
             await self._register_null_hfp_handler()
 
-        # 5. Initialize PulseAudio manager
-        self.pulse = PulseAudioManager()
-        try:
-            await self.pulse.connect()
-            self.pulse.on_volume_change(self._on_pa_volume_change)
-            self.pulse.on_sink_state_change(self._on_pa_sink_running)
-            self.pulse.on_sink_idle(self._on_pa_sink_idle)
-            self.pulse.set_stream_owner_resolver(self._mpd_stream_owner)
-            self.pulse.set_volume_lock_resolver(self._volume_locked)
-            await self.pulse.start_event_monitor()
-        except Exception as e:
-            logger.warning("PulseAudio connection failed (will retry): %s", e)
-            self.pulse = None
+        # 5. Initialize PulseAudio manager.  If PulseAudio is not reachable
+        #    yet, the sink poll keeps trying (see _pulse_ready).
+        if not await self._connect_pulse():
+            self._pulse_down_since = self._pulse_reported_at = time.monotonic()
 
         # 6. Register BluezDevice objects for all stored devices so UI
         #    actions (disconnect, forget) work immediately, even if the
@@ -965,7 +973,7 @@ class BluetoothAudioManager:
             logger.debug("Gap monitor stop failed: %s", e)
 
         # Stop sink and RSSI polling
-        for task in (self._sink_poll_task, self._rssi_poll_task):
+        for task in (self._sink_poll_task, self._rssi_poll_task, self._pulse_restore_task):
             if task and not task.done():
                 task.cancel()
                 try:
@@ -2005,15 +2013,29 @@ class BluetoothAudioManager:
         """Periodically check PulseAudio sink state and broadcast changes.
 
         Detects idle→running transitions (playback started/stopped) that
-        don't trigger D-Bus signals.
+        don't trigger D-Bus signals.  Also carries the PulseAudio watchdog
+        (_pulse_ready) and the MPD self-heal.
         """
         prev_sink_count = -1  # force first log
+        errors = 0  # unexpected errors in a row (first one is logged visibly)
         while True:
             try:
                 await asyncio.sleep(self.SINK_POLL_INTERVAL)
-                if not self.pulse:
+                if not await self._pulse_ready():
+                    errors = 0
                     continue
-                sinks = await self.pulse.list_bt_sinks()
+                try:
+                    sinks = await asyncio.wait_for(
+                        self.pulse.list_bt_sinks(), self.SINK_POLL_TIMEOUT,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self._pulse_failures += 1
+                    log = logger.warning if self._pulse_failures == 1 else logger.debug
+                    log("Sink poll failed (%d in a row): %s", self._pulse_failures, _err(e))
+                    continue
+                self._pulse_failures = 0
                 self._poll_running_sinks = {
                     s["name"] for s in sinks if s.get("state") == "running"
                 }
@@ -2035,10 +2057,162 @@ class BluetoothAudioManager:
                     raise
                 except Exception as e:
                     logger.debug("MPD self-heal error: %s", e)
+                errors = 0
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.debug("Sink poll error: %s", e)
+                errors += 1
+                log = logger.warning if errors == 1 else logger.debug
+                log("Sink poll error (%d in a row): %s", errors, _err(e))
+
+    # -- PulseAudio watchdog --------------------------------------------------
+    #
+    # PulseAudio runs in HAOS's audio plugin, a container of its own that can
+    # be restarted without this app (``ha audio restart``, an update of the
+    # plugin, a crash) and that may still be starting when this app starts.
+    # Before, either case was final until the app was restarted by hand: the
+    # client was never reconnected, so every sink lookup failed — speakers
+    # reconnected at Bluetooth level but got no sink and no MPD, and nothing
+    # but a debug line said why.
+
+    async def _connect_pulse(self) -> bool:
+        """Connect a fresh PulseAudio client and wire up its callbacks."""
+        pulse = PulseAudioManager()
+        try:
+            await asyncio.wait_for(pulse.connect(), self.PULSE_CONNECT_TIMEOUT)
+        except Exception as e:
+            log = logger.warning if self._pulse_down_since is None else logger.debug
+            log("PulseAudio connection failed (will retry): %s", _err(e))
+            try:
+                await pulse.disconnect()
+            except Exception:
+                pass
+            self.pulse = None
+            return False
+        pulse.on_volume_change(self._on_pa_volume_change)
+        pulse.on_sink_state_change(self._on_pa_sink_running)
+        pulse.on_sink_idle(self._on_pa_sink_idle)
+        pulse.set_stream_owner_resolver(self._mpd_stream_owner)
+        pulse.set_volume_lock_resolver(self._volume_locked)
+        await pulse.start_event_monitor()
+        self.pulse = pulse
+        return True
+
+    async def _pulse_ready(self) -> bool:
+        """True when the PulseAudio client is usable; (re)connects it when not.
+
+        Called from the sink poll every SINK_POLL_INTERVAL.  "Not usable" is
+        a client that never connected, one whose connection is gone, or one
+        that claims to be connected but failed
+        PULSE_FAILURES_BEFORE_RECONNECT polls in a row (a hung server).
+        """
+        pulse = self.pulse
+        if (
+            pulse is not None
+            and pulse.connected
+            and self._pulse_failures < self.PULSE_FAILURES_BEFORE_RECONNECT
+        ):
+            return True
+
+        now = time.monotonic()
+        if self._pulse_down_since is None:
+            self._pulse_down_since = self._pulse_reported_at = now
+            self._pulse_retry_at = 0.0
+            logger.warning(
+                "PulseAudio connection lost — reconnecting "
+                "(the audio service was probably restarted)"
+            )
+            self._broadcast_status("PulseAudio not reachable — reconnecting...")
+        if now < self._pulse_retry_at:
+            return False
+        self._pulse_retry_at = now + self.PULSE_RETRY_INTERVAL
+
+        if pulse is None:
+            ok = await self._connect_pulse()
+        else:
+            try:
+                await asyncio.wait_for(
+                    pulse.reconnect(retries=1), self.PULSE_CONNECT_TIMEOUT,
+                )
+                ok = True
+            except Exception as e:
+                logger.debug("PulseAudio reconnect failed: %s", _err(e))
+                ok = False
+        if not ok:
+            if now - self._pulse_reported_at >= self.PULSE_DOWN_REPORT_INTERVAL:
+                self._pulse_reported_at = now
+                logger.warning(
+                    "PulseAudio still not reachable after %d min — no Bluetooth "
+                    "audio until it is back", (now - self._pulse_down_since) // 60,
+                )
+            return False
+
+        logger.warning(
+            "PulseAudio is reachable again after %d s — restoring Bluetooth audio",
+            now - self._pulse_down_since,
+        )
+        self._pulse_down_since = None
+        self._pulse_failures = 0
+        self._broadcast_status("")
+        if not (self._pulse_restore_task and not self._pulse_restore_task.done()):
+            self._pulse_restore_task = asyncio.create_task(
+                self._restore_audio_after_pulse_return()
+            )
+        return True
+
+    async def _restore_audio_after_pulse_return(self) -> None:
+        """Give every connected speaker its sink back once PulseAudio returned.
+
+        A restarted PulseAudio has lost its Bluetooth cards, sinks and
+        streams.  A speaker that dropped its link meanwhile comes back
+        through the normal reconnect path, which sets everything up.  A
+        speaker that is still connected at BlueZ level produces no signal at
+        all, so nothing would ever set it up: treat it like a speaker that
+        just connected by itself (A2DP transport via ConnectProfile or a
+        disconnect/reconnect cycle, then idle mode and MPD); if it still has
+        no sink after that, force a reconnect.
+        """
+        try:
+            await asyncio.sleep(self.PULSE_RESTORE_SETTLE)
+            for address, device in list(self.managed_devices.items()):
+                try:
+                    if address in self._connecting or not await device.is_connected():
+                        continue
+                    if await self._sink_or_none(address):
+                        continue  # nothing lost; the MPD self-heal covers the rest
+                    logger.warning(
+                        "%s is connected but has no audio sink after PulseAudio "
+                        "returned — setting its audio up again", address,
+                    )
+                    self._a2dp_attempts.pop(address, None)
+                    await self._on_device_connected_async(address)
+                    if await self._sink_or_none(address):
+                        continue
+                    if address in self._connecting or not await device.is_connected():
+                        continue  # dropped meanwhile: the reconnect path owns it
+                    logger.warning(
+                        "%s still has no audio sink — forcing a reconnect", address,
+                    )
+                    await self.force_reconnect_device(address)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning("Audio restore for %s failed: %s", address, e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Audio restore after PulseAudio return failed: %s", e)
+
+    async def _sink_or_none(self, address: str) -> str | None:
+        """The device's PulseAudio sink name, None if absent or PA unusable."""
+        pulse = self.pulse
+        if pulse is None:
+            return None
+        try:
+            return await pulse.get_sink_for_address(address)
+        except Exception as e:
+            logger.debug("Sink lookup for %s failed: %s", address, e)
+            return None
 
     async def _self_heal_mpd(self, sinks: list[dict]) -> None:
         """Start MPD for connected devices whose sink exists but MPD does not run.
@@ -2952,11 +3126,17 @@ class BluetoothAudioManager:
                             logger.info("Audio service restart requested via Supervisor")
                             # Wait for PA to come back, then reconnect our client
                             await asyncio.sleep(5)
+                            if self.pulse is None:
+                                return  # the PulseAudio watchdog connects it
                             try:
                                 await self.pulse.reconnect(retries=10, delay=2.0)
                                 logger.info("PA client reconnected after audio restart")
-                            except ConnectionError:
-                                logger.error("PA did not come back after audio restart")
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as e:
+                                # Not a reason to ask for a second restart;
+                                # the PulseAudio watchdog keeps trying.
+                                logger.error("PA did not come back after audio restart: %s", e)
                             return
                         body = await resp.text()
                         logger.warning("Audio restart via %s returned %d: %s", url, resp.status, body)

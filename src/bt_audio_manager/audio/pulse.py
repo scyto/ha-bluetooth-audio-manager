@@ -119,6 +119,17 @@ class PulseAudioManager:
         self._spec_cache: dict[str, dict] = {}
         self._spec_sink_index: dict[str, int] = {}
         self._spec_failed_at: float | None = None
+        self._reconnect_lock = asyncio.Lock()
+
+    @property
+    def connected(self) -> bool:
+        """True while the main connection to PulseAudio is up.
+
+        Goes False by itself when PulseAudio exits or is restarted — every
+        call on the connection raises from then on until reconnect().
+        """
+        pulse = self._pulse
+        return pulse is not None and bool(pulse.connected)
 
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
@@ -127,9 +138,16 @@ class PulseAudioManager:
         """
         # If PULSE_SERVER is set, try it directly
         if os.environ.get("PULSE_SERVER"):
-            self._pulse = PulseAsync("bt-audio-manager")
-            with _capture_stderr():
-                await self._pulse.connect()
+            pulse = PulseAsync("bt-audio-manager")
+            try:
+                with _capture_stderr():
+                    await pulse.connect()
+            except BaseException:
+                # Do not keep (or leak) a client that never connected.
+                with contextlib.suppress(Exception):
+                    pulse.close()
+                raise
+            self._pulse = pulse
             self._server = os.environ["PULSE_SERVER"]
             logger.info(
                 "Connected to PulseAudio via PULSE_SERVER=%s",
@@ -173,32 +191,37 @@ class PulseAudioManager:
 
         Closes the old connection and retries until PA is back.
         The event monitor is restarted automatically on success.
+        Raises ConnectionError when PulseAudio stays unreachable.
         """
-        if self._pulse:
-            try:
-                self._pulse.close()
-            except Exception:
-                pass
-            self._pulse = None
+        seen = self._pulse
+        async with self._reconnect_lock:
+            if self._pulse is not seen and self.connected:
+                return  # another caller reconnected while we waited
+            if self._pulse:
+                try:
+                    self._pulse.close()
+                except Exception:
+                    pass
+                self._pulse = None
+            # A restarted PulseAudio numbers sinks and streams from scratch:
+            # nothing remembered by index is valid any more.
+            self._spec_cache = {}
+            self._spec_sink_index = {}
+            self._spec_failed_at = None
+            self._pin_history.clear()
 
-        for attempt in range(1, retries + 1):
-            try:
-                self._pulse = PulseAsync("bt-audio-manager")
-                await self._pulse.connect()
-                logger.info("Reconnected to PulseAudio (attempt %d)", attempt)
-                await self.start_event_monitor()
-                return
-            except Exception:
-                if self._pulse:
-                    try:
-                        self._pulse.close()
-                    except Exception:
-                        pass
-                    self._pulse = None
-                if attempt < retries:
-                    await asyncio.sleep(delay)
+            for attempt in range(1, retries + 1):
+                try:
+                    await self.connect()
+                    logger.info("Reconnected to PulseAudio (attempt %d)", attempt)
+                    await self.start_event_monitor()
+                    return
+                except Exception as e:
+                    logger.debug("PulseAudio reconnect attempt %d failed: %s", attempt, e)
+                    if attempt < retries:
+                        await asyncio.sleep(delay)
 
-        raise ConnectionError("PulseAudio not reachable after audio restart")
+            raise ConnectionError("PulseAudio not reachable after audio restart")
 
     def on_volume_change(self, callback) -> None:
         """Register a callback for Bluetooth sink volume changes.
