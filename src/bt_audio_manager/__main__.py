@@ -27,6 +27,28 @@ def setup_logging(level_name: str) -> None:
     logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 
+async def start_or_stop(start, stop_wait: asyncio.Future) -> bool:
+    """Run the startup coroutine unless the stop signal arrives first.
+
+    Startup can wait for a long time (for the configured Bluetooth adapter
+    to show up).  A SIGTERM in that phase used to go unnoticed until the
+    Supervisor killed the container.  Returns True when startup finished;
+    False when it was cancelled by the stop signal.  Startup errors are
+    raised.
+    """
+    start_task = asyncio.ensure_future(start)
+    await asyncio.wait({start_task, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
+    if start_task.done():
+        start_task.result()
+        return True
+    start_task.cancel()
+    try:
+        await start_task
+    except asyncio.CancelledError:
+        pass
+    return False
+
+
 async def main() -> None:
     """Start all services and run until signalled to stop."""
     config = AppConfig.load()
@@ -59,17 +81,20 @@ async def main() -> None:
     try:
         # Start web server first so ingress doesn't show 502 during init
         await web_server.start()
-        await manager.start()
-        logger.info("All services running. Waiting for shutdown signal...")
-        # Also wake up when the manager asks for a restart it could not get
-        # from the Supervisor (see BluetoothAudioManager.restart_requested).
-        waiters = {
-            asyncio.ensure_future(shutdown_event.wait()),
-            asyncio.ensure_future(manager.restart_requested.wait()),
-        }
-        _done, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
+        stop_wait = asyncio.ensure_future(shutdown_event.wait())
+        if await start_or_stop(manager.start(), stop_wait):
+            logger.info("All services running. Waiting for shutdown signal...")
+            # Also wake up when the manager asks for a restart it could not get
+            # from the Supervisor (see BluetoothAudioManager.restart_requested).
+            waiters = {
+                stop_wait,
+                asyncio.ensure_future(manager.restart_requested.wait()),
+            }
+            _done, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+        else:
+            logger.info("Stopped during startup")
     except Exception as e:
         logger.error("Fatal error: %s", e, exc_info=True)
     finally:

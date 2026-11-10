@@ -90,6 +90,8 @@ class BluetoothAudioManager:
     SCAN_RESUME_STAGGER = 2  # seconds between stream restarts after a scan
     USER_DISCONNECT_WINDOW = 30  # seconds a user-initiated disconnect flag stays valid
     ADAPTER_RETURN_SETTLE = 5  # seconds to let a re-added adapter power up before restarting
+    ADAPTER_WAIT_INTERVAL = 5  # seconds between looks for a configured adapter that is missing
+    ADAPTER_WAIT_REPORT_INTERVAL = 300  # seconds between "still waiting" log lines
     MPD_SELF_HEAL_GRACE = 10  # seconds MPD must be missing before self-heal steps in
     MPD_SELF_HEAL_COOLDOWN = 30  # min seconds between MPD self-heal attempts per device
     RSSI_REFRESH_INTERVAL = 60  # seconds between silent discovery bursts
@@ -464,24 +466,13 @@ class BluetoothAudioManager:
 
         if cfg.bt_adapter_is_mac:
             # New format: look up by MAC address
-            match = next((a for a in adapters if a["address"] == cfg.bt_adapter), None)
+            match = self._adapter_by_mac(adapters, cfg.bt_adapter)
             if match:
                 logger.info(
                     "Resolved adapter MAC %s → %s", cfg.bt_adapter, match["path"],
                 )
                 return match["path"]
-            # Configured adapter not found — fall back to auto for this session
-            logger.warning(
-                "Configured adapter %s not found — falling back to auto "
-                "(adapter may be disconnected; settings preserved)",
-                cfg.bt_adapter,
-            )
-            self._broadcast_status(
-                f"Configured adapter {cfg.bt_adapter} not found — using default"
-            )
-            powered = [a for a in adapters if a["powered"]]
-            choice = powered[0] if powered else (adapters[0] if adapters else None)
-            return choice["path"] if choice else "/org/bluez/hci0"
+            return await self._wait_for_configured_adapter()
 
         # Legacy format: HCI name like "hci1"
         match = next((a for a in adapters if a["name"] == cfg.bt_adapter), None)
@@ -501,6 +492,72 @@ class BluetoothAudioManager:
         powered = [a for a in adapters if a["powered"]]
         choice = powered[0] if powered else (adapters[0] if adapters else None)
         return choice["path"] if choice else "/org/bluez/hci0"
+
+    @staticmethod
+    def _adapter_by_mac(adapters: list[dict], mac: str) -> dict | None:
+        wanted = mac.upper()
+        return next(
+            (a for a in adapters if str(a.get("address", "")).upper() == wanted), None,
+        )
+
+    async def _wait_for_configured_adapter(self) -> str:
+        """Wait until the adapter configured by MAC shows up in BlueZ.
+
+        It used to fall back to "the first powered adapter" for the session.
+        On a host with more than one adapter that is somebody else's adapter
+        (typically the one Home Assistant itself uses): the speakers are not
+        paired there, the app scans and registers its players on it, and —
+        because the adapter-return watch follows the adapter the app is bound
+        to — nothing ever switched back once the configured one appeared (a
+        USB stick that enumerates a few seconds late is enough).  The app
+        then needed a manual restart to play again.
+
+        Waiting costs nothing: the web UI is up before this runs, so a
+        different adapter (or "auto") can still be chosen there — the wait
+        notices the changed setting and carries on with it.
+        """
+        wanted = self.config.bt_adapter
+        started = reported = time.monotonic()
+        logger.warning(
+            "Configured Bluetooth adapter %s not found — waiting for it "
+            "(not falling back to another adapter; choose a different one "
+            "in the settings to continue without it)", wanted,
+        )
+        while True:
+            self._broadcast_status(
+                f"Configured Bluetooth adapter {wanted} not found — waiting for it"
+            )
+            await asyncio.sleep(self.ADAPTER_WAIT_INTERVAL)
+            cfg = self.config
+            if cfg.bt_adapter != wanted:
+                logger.info(
+                    "Adapter setting changed to %s while waiting — using it", cfg.bt_adapter,
+                )
+                self._broadcast_status("")
+                return await self._resolve_adapter_path()
+            try:
+                adapters = await BluezAdapter.list_all(self.bus)
+            except Exception as e:
+                logger.debug("Listing adapters failed while waiting: %s", _err(e))
+                continue
+            match = self._adapter_by_mac(adapters, wanted)
+            now = time.monotonic()
+            if match:
+                logger.warning(
+                    "Configured Bluetooth adapter %s appeared as %s after %d s",
+                    wanted, match["path"], now - started,
+                )
+                # Freshly enumerated: let it power up before it is used.
+                await asyncio.sleep(self.ADAPTER_RETURN_SETTLE)
+                self._broadcast_status("")
+                return match["path"]
+            if now - reported >= self.ADAPTER_WAIT_REPORT_INTERVAL:
+                reported = now
+                logger.warning(
+                    "Still waiting for Bluetooth adapter %s (%d min) — present: %s",
+                    wanted, (now - started) // 60,
+                    ", ".join(f"{a['name']} {a['address']}" for a in adapters) or "none",
+                )
 
     async def _pick_best_adapter(self, adapters: list[dict]) -> dict:
         """Pick the powered adapter with the most paired audio devices.
