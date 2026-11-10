@@ -17,7 +17,7 @@ from dbus_next.errors import DBusError
 
 from .audio.keepalive import KeepAliveService
 from .audio.mpd import MPDManager
-from .audio.pulse import PulseAudioManager
+from .audio.pulse import PulseAudioManager, run_pactl
 from .bluez.adapter import BluezAdapter
 from .bluez.agent import PairingAgent
 from .bluez.constants import cod_major_label
@@ -2894,35 +2894,20 @@ class BluetoothAudioManager:
         """
         # --- Attempt 1: pactl unload + load ---
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "list", "modules", "short",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
+            _, stdout, _ = await run_pactl("list", "modules", "short")
             module_index = None
-            for line in stdout.decode().splitlines():
+            for line in stdout.decode(errors="replace").splitlines():
                 if "module-bluez5-discover" in line:
                     module_index = line.split()[0]
                     break
 
             if module_index:
-                proc = await asyncio.create_subprocess_exec(
-                    "pactl", "unload-module", module_index,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await proc.communicate()
+                await run_pactl("unload-module", module_index)
                 logger.info("Unloaded module-bluez5-discover (index %s)", module_index)
                 await asyncio.sleep(2)
 
-                proc = await asyncio.create_subprocess_exec(
-                    "pactl", "load-module", "module-bluez5-discover",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                _, stderr = await proc.communicate()
-                if proc.returncode == 0:
+                returncode, _, stderr = await run_pactl("load-module", "module-bluez5-discover")
+                if returncode == 0:
                     logger.info("Reloaded module-bluez5-discover — PA HFP/HSP handler restored")
                     await asyncio.sleep(2)
                     return

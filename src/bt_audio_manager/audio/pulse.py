@@ -51,6 +51,39 @@ def _capture_stderr():
             logger.debug("libpulse stderr: %s", captured)
 
 
+PACTL_TIMEOUT = 10.0  # seconds a pactl call may take
+
+
+async def run_pactl(*args: str, timeout: float = PACTL_TIMEOUT) -> tuple[int | None, bytes, bytes]:
+    """Run ``pactl`` with a time limit.
+
+    Returns ``(returncode, stdout, stderr)``.  ``returncode`` is None when
+    pactl had to be killed after *timeout*: a PulseAudio that accepts the
+    connection but never answers would otherwise block the caller for good
+    — and one caller is the 5 s sink poll that also carries the MPD
+    self-heal.  Raises FileNotFoundError/OSError if pactl cannot be started.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "pactl", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), 5)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        logger.warning(
+            "pactl %s did not finish within %.0f s — killed", " ".join(args), timeout,
+        )
+        return None, b"", b""
+    return proc.returncode, stdout, stderr
+
+
 def sink_state_name(state) -> str:
     """Plain state name ("running", "idle", "suspended") of a pulsectl sink.
 
@@ -330,13 +363,8 @@ class PulseAudioManager:
         ``{"bluez_sink.XX.a2dp_sink": {"format": "s16le", "rate": 48000, "channels": 2}}``
         """
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "list", "sinks",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
-            if proc.returncode != 0:
+            returncode, stdout, _ = await run_pactl("list", "sinks")
+            if returncode != 0:
                 return {}
         except (FileNotFoundError, OSError) as exc:
             logger.debug("pactl not available: %s", exc)
@@ -837,19 +865,15 @@ class PulseAudioManager:
         """
         vol_str = f"{max(0, min(100, volume_pct))}%"
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "set-sink-volume", sink_name, vol_str,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode == 0:
+            returncode, _, stderr = await run_pactl("set-sink-volume", sink_name, vol_str)
+            if returncode == 0:
                 logger.info("PA sink volume set: %s → %s", sink_name, vol_str)
                 return True
-            logger.warning(
-                "pactl set-sink-volume %s %s failed: %s",
-                sink_name, vol_str, stderr.decode(errors="replace").strip(),
-            )
+            if returncode is not None:  # a timeout was already logged
+                logger.warning(
+                    "pactl set-sink-volume %s %s failed: %s",
+                    sink_name, vol_str, stderr.decode(errors="replace").strip(),
+                )
             return False
         except (FileNotFoundError, OSError) as exc:
             logger.warning("pactl not available: %s", exc)
