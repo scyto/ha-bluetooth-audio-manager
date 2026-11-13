@@ -278,13 +278,42 @@ class UsbResetTest(unittest.IsolatedAsyncioTestCase):
 
 class ReconnectAllStaggerTest(unittest.IsolatedAsyncioTestCase):
 
-    def _service(self, addresses):
+    def _service(self, addresses, connected=()):
         mgr = MagicMock()
         mgr.config.auto_reconnect = True
         mgr.store.auto_connect_devices = [{"address": a} for a in addresses]
+        mgr.managed_devices = {}
+        for a in addresses:
+            dev = MagicMock()
+            dev.is_connected = AsyncMock(return_value=a in connected)
+            mgr.managed_devices[a] = dev
         svc = ReconnectService(mgr)
         svc._running = True
         return svc
+
+    async def test_connected_speakers_take_no_slot(self):
+        """A restart with two of three still connected must not delay the third."""
+        svc = self._service(["A", "B", "C"], connected=("A", "B"))
+        started = []
+
+        async def fake_loop(self_, address):
+            started.append(address)
+
+        with patch.object(ReconnectService, "_reconnect_loop", fake_loop), \
+                patch("bt_audio_manager.reconnect.asyncio.sleep", new=AsyncMock()) as sl:
+            await svc.reconnect_all(stagger=20)
+            await asyncio.gather(*svc._tasks.values())
+        self.assertEqual(started, ["C"])
+        sl.assert_not_awaited()
+
+    async def test_startup_staggers(self):
+        """The app's startup reconnect is staggered (the stick got stuck twice
+        right after all three speakers reconnected together)."""
+        m = BluetoothAudioManager.__new__(BluetoothAudioManager)
+        self.assertGreater(m.ADAPTER_RESET_RECONNECT_STAGGER, 0)
+        import inspect
+        src = inspect.getsource(BluetoothAudioManager.start)
+        self.assertIn("reconnect_all(\n            stagger=self.ADAPTER_RESET_RECONNECT_STAGGER", src)
 
     async def test_stagger_starts_devices_one_after_another(self):
         svc = self._service(["A", "B", "C"])

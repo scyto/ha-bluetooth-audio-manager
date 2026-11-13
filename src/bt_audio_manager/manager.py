@@ -103,7 +103,7 @@ class BluetoothAudioManager:
     ADAPTER_RESET_MIN_INTERVAL = 60  # seconds between two adapter resets (any mode)
     ADAPTER_RESET_OFF_SECONDS = 3  # how long the adapter stays powered off in a soft reset
     ADAPTER_RESET_POWER_TIMEOUT = 10  # seconds to wait for Powered=true after a soft reset
-    ADAPTER_RESET_RECONNECT_STAGGER = 20  # seconds between speakers reconnecting after a reset
+    ADAPTER_RESET_RECONNECT_STAGGER = 20  # seconds between speakers reconnecting (startup, after a reset)
     ADAPTER_USB_RESET_GRACE = 30  # seconds for the adapter to re-register after a USB reset
     ADAPTER_WAIT_REPORT_INTERVAL = 300  # seconds between "still waiting" log lines
     MPD_SELF_HEAL_GRACE = 10  # seconds MPD must be missing before self-heal steps in
@@ -1153,7 +1153,9 @@ class BluetoothAudioManager:
         await self.reconnect_service.start()
 
         # 8. Reconnect stored devices that aren't already connected
-        await self.reconnect_service.reconnect_all()
+        await self.reconnect_service.reconnect_all(
+            stagger=self.ADAPTER_RESET_RECONNECT_STAGGER,
+        )
 
         # 9. Migrate global keep-alive → per-device (one-time for upgrading users)
         await self._migrate_global_keepalive()
@@ -1350,6 +1352,40 @@ class BluetoothAudioManager:
         self._last_rssi_refresh_start = time.time()
         self.event_bus.emit("scan_started", {"duration": duration})
         self._scan_task = asyncio.create_task(self._run_scan(duration, resume=playing))
+
+    STREAM_MOVE_RESTART_DELAY = 2.0  # seconds after a move back before re-opening MPD's output
+
+    def _on_mpd_stream_moved_back(self, address: str) -> None:
+        """A speaker's MPD stream strayed and was moved back: re-open it.
+
+        Seen 13.11.2026: when 87.5 reconnected, PulseAudio moved the 97.0
+        stream onto it; moved back within milliseconds, it then carried
+        only digital silence until playback was restarted — while HA showed
+        "playing", so nothing in HA noticed.  Re-opening costs a moment of
+        that one station and rules this out.
+        """
+        tasks = self.__dict__.setdefault("_stream_restart_tasks", {})
+        task = tasks.get(address)
+        if task and not task.done():
+            return
+        tasks[address] = asyncio.create_task(self._restart_mpd_after_move(address))
+
+    async def _restart_mpd_after_move(self, address: str) -> None:
+        await asyncio.sleep(self.STREAM_MOVE_RESTART_DELAY)
+        mpd = self._mpd_instances.get(address)
+        if mpd is None or not mpd.is_running:
+            return
+        try:
+            status = await mpd.get_status()
+        except Exception:
+            return
+        if status.get("state") != "play":
+            return
+        if await mpd.restart_playback():
+            logger.warning(
+                "Re-opened the MPD stream for %s after it was moved back "
+                "(a moved stream can stay silent)", address,
+            )
 
     async def _playing_mpd_addresses(self) -> list[str]:
         """Speakers whose MPD daemon is currently playing."""
@@ -2301,6 +2337,7 @@ class BluetoothAudioManager:
         pulse.on_sink_state_change(self._on_pa_sink_running)
         pulse.on_sink_idle(self._on_pa_sink_idle)
         pulse.set_stream_owner_resolver(self._mpd_stream_owner)
+        pulse.on_stream_moved_back(self._on_mpd_stream_moved_back)
         pulse.set_volume_lock_resolver(self._volume_locked)
         await pulse.start_event_monitor()
         self.pulse = pulse

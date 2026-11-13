@@ -201,6 +201,21 @@ class TestMpdStreamPinning(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await manager._pin_mpd_stream(10))
         self.assertEqual(manager._pulse.moves, [(10, 1)])
 
+    async def test_move_back_is_reported_with_the_owner(self):
+        """A moved stream can stay silent (13.11.2026) — the owner must hear of it."""
+        manager = self.build([_sink(1, A), _sink(3, C)], [_mpd_stream(10, sink=3, mac=A)])
+        moved = []
+        manager.on_stream_moved_back(moved.append)
+        await manager._pin_mpd_stream(10)
+        self.assertEqual(moved, [A.upper()])
+
+    async def test_no_report_when_nothing_moved(self):
+        manager = self.build([_sink(1, A), _sink(3, C)], [_mpd_stream(10, sink=1, mac=A)])
+        moved = []
+        manager.on_stream_moved_back(moved.append)
+        await manager._pin_mpd_stream(10)
+        self.assertEqual(moved, [])
+
     async def test_gives_up_when_something_keeps_moving_the_stream(self):
         manager = self.build([_sink(1, A), _sink(3, C)], [_mpd_stream(10, sink=3, mac=A)])
         for _ in range(manager.PIN_MAX_MOVES):

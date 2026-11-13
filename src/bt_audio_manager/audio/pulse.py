@@ -113,6 +113,7 @@ class PulseAudioManager:
         self._pin_history: dict[int, list[float]] = {}
         # Optional fallback for _stream_owner(): proplist → speaker MAC
         self._stream_owner_resolver: Callable[[dict], str | None] | None = None
+        self._stream_moved_callback: Callable[[str], None] | None = None
         # address -> True when that speaker's volume is locked at 100 %
         self._volume_lock_resolver: Callable[[str], bool] | None = None
         # Cached `pactl list sinks` sample specs (see list_bt_sinks)
@@ -727,6 +728,15 @@ class PulseAudioManager:
         )
         return True
 
+    def on_stream_moved_back(self, callback: Callable[[str], None]) -> None:
+        """``callback(address)`` after that speaker's MPD stream was moved back.
+
+        A stream moved away and back can stay silent: on 13.11.2026 the
+        97.0 stream played digital silence after its move back, while HA
+        still showed "playing".  The manager re-opens the MPD output.
+        """
+        self._stream_moved_callback = callback
+
     def set_stream_owner_resolver(self, resolver: Callable[[dict], str | None]) -> None:
         """Fallback used when a stream carries no module-stream-restore.id."""
         self._stream_owner_resolver = resolver
@@ -818,6 +828,11 @@ class PulseAudioManager:
             "MPD stream for %s was playing on %s — moved back to %s",
             address, current.name, target.name,
         )
+        if self._stream_moved_callback:
+            try:
+                self._stream_moved_callback(address)
+            except Exception as e:
+                logger.debug("Stream-moved callback failed for %s: %s", address, e)
         return True
 
     async def _normalize_new_mpd_stream(self, stream_index: int) -> bool:

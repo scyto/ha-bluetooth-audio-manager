@@ -112,9 +112,10 @@ class ReconnectService:
     async def reconnect_all(self, stagger: float = 0.0) -> None:
         """Attempt to reconnect all auto-connect devices (called on startup).
 
-        *stagger* > 0 starts the devices one after another, that many seconds
-        apart (used after an adapter reset: a USB stick that has just been
-        reset copes badly with several speakers connecting at once).
+        *stagger* > 0 starts the devices that are not connected one after
+        another, that many seconds apart: a USB stick copes badly with several
+        speakers connecting at once (it got stuck twice right after all three
+        reconnected together).  Used at startup and after an adapter reset.
 
         Honours the Auto Reconnect setting.  Without this guard the add-on
         seized every stored device on startup even with the toggle off, so a
@@ -132,15 +133,39 @@ class ReconnectService:
             return
 
         logger.info("Attempting to reconnect %d stored device(s)...", len(devices))
-        for index, device_info in enumerate(devices):
+        slot = 0
+        for device_info in devices:
             address = device_info["address"]
             if address in self._tasks and not self._tasks[address].done():
                 continue
-            if stagger > 0 and index:
-                coro = self._delayed_reconnect(address, index * stagger)
+            if stagger > 0:
+                # Only devices that actually need connecting take a slot, so a
+                # restart with everything still connected waits for nobody.
+                if await self._is_connected(address):
+                    logger.info("Device %s already connected, skipping reconnect", address)
+                    continue
+                if slot:
+                    logger.info(
+                        "Reconnect to %s starts in %ds (one speaker at a time)",
+                        address, int(slot * stagger),
+                    )
+                    coro = self._delayed_reconnect(address, slot * stagger)
+                else:
+                    coro = self._reconnect_loop(address)
+                slot += 1
             else:
                 coro = self._reconnect_loop(address)
             self._tasks[address] = asyncio.create_task(coro)
+
+    async def _is_connected(self, address: str) -> bool:
+        device = self._manager.managed_devices.get(address)
+        if not device:
+            return False
+        try:
+            return bool(await device.is_connected())
+        except Exception as e:
+            logger.debug("is_connected check failed for %s: %s", address, e)
+            return False
 
     async def _delayed_reconnect(self, address: str, delay: float) -> None:
         await asyncio.sleep(delay)
