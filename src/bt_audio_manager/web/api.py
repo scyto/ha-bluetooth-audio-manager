@@ -202,6 +202,35 @@ def create_api_routes(
             logger.error("Failed to set adapter: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
+    @routes.post("/api/adapter/reset")
+    async def adapter_reset(request: web.Request) -> web.Response:
+        """Reset the Bluetooth adapter: body ``{"mode": "soft"|"usb"}`` (default soft)."""
+        from ..bluez.usb_reset import UsbResetError
+        from ..manager import AdapterResetBusy
+
+        try:
+            body = await request.json() if request.can_read_body else {}
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            return web.json_response({"error": "body must be a JSON object"}, status=400)
+        mode = body.get("mode", "soft")
+        if mode not in ("soft", "usb"):
+            return web.json_response({"error": "mode must be 'soft' or 'usb'"}, status=400)
+        try:
+            result = await manager.reset_adapter(mode)
+        except AdapterResetBusy as e:
+            return web.json_response({"error": str(e)}, status=409)
+        except UsbResetError as e:
+            logger.error("Adapter reset (usb) not possible: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+        except Exception as e:
+            logger.error("Adapter reset (%s) failed: %s", mode, e)
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response(result)
+
     @routes.post("/api/restart")
     async def restart_addon(request: web.Request) -> web.Response:
         """Restart this app via the HA Supervisor API."""

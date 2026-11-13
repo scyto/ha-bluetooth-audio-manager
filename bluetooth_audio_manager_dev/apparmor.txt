@@ -89,6 +89,12 @@ profile bluetooth_audio_manager flags=(attach_disconnected,mediate_deleted) {
   /sys/devices/**/idProduct r,
   /sys/devices/**/manufacturer r,
   /sys/devices/**/product r,
+  # USB address of the adapter (busnum/devnum) and its device node -
+  # only for the adapter reset (USBDEVFS_RESET, like unplugging the stick)
+  /sys/devices/**/busnum r,
+  /sys/devices/**/devnum r,
+  /dev/bus/usb/ r,
+  /dev/bus/usb/** rw,
 
   # Network (ingress web UI, PulseAudio, D-Bus)
   network inet stream,

@@ -23,6 +23,11 @@ from .bluez.agent import PairingAgent
 from .bluez.constants import cod_major_label
 from .bluez.device import BluezDevice
 from .bluez.media_player import AVRCPMediaPlayer
+from .bluez.usb_reset import (
+    check_usb_device_access,
+    reset_usb_device,
+    usb_device_for_hci,
+)
 from .config import AppConfig
 from .persistence.store import PersistenceStore
 from .reconnect import ReconnectService
@@ -71,6 +76,10 @@ _USB_BT_VENDORS: dict[str, str] = {
 }
 
 
+class AdapterResetBusy(RuntimeError):
+    """An adapter reset is running or the last one was too recent."""
+
+
 def _err(exc: BaseException) -> str:
     """Text for a log line: the message, or the type when there is none."""
     return str(exc) or type(exc).__name__
@@ -91,6 +100,11 @@ class BluetoothAudioManager:
     USER_DISCONNECT_WINDOW = 30  # seconds a user-initiated disconnect flag stays valid
     ADAPTER_RETURN_SETTLE = 5  # seconds to let a re-added adapter power up before restarting
     ADAPTER_WAIT_INTERVAL = 5  # seconds between looks for a configured adapter that is missing
+    ADAPTER_RESET_MIN_INTERVAL = 60  # seconds between two adapter resets (any mode)
+    ADAPTER_RESET_OFF_SECONDS = 3  # how long the adapter stays powered off in a soft reset
+    ADAPTER_RESET_POWER_TIMEOUT = 10  # seconds to wait for Powered=true after a soft reset
+    ADAPTER_RESET_RECONNECT_STAGGER = 20  # seconds between speakers reconnecting after a reset
+    ADAPTER_USB_RESET_GRACE = 30  # seconds for the adapter to re-register after a USB reset
     ADAPTER_WAIT_REPORT_INTERVAL = 300  # seconds between "still waiting" log lines
     MPD_SELF_HEAL_GRACE = 10  # seconds MPD must be missing before self-heal steps in
     MPD_SELF_HEAL_COOLDOWN = 30  # min seconds between MPD self-heal attempts per device
@@ -157,6 +171,11 @@ class BluetoothAudioManager:
         self._adapter_address: str | None = None  # MAC of the adapter we bound to at startup
         self._adapter_lost: bool = False
         self._adapter_restart_task: asyncio.Task | None = None
+        # Adapter reset (POST /api/adapter/reset, see reset_adapter)
+        self._adapter_reset_lock = asyncio.Lock()
+        self._adapter_reset_at: float | None = None
+        self._adapter_resetting: bool = False
+        self._usb_reset_task: asyncio.Task | None = None
         # Set when the app must restart itself and the Supervisor API is unavailable;
         # __main__ then shuts down cleanly and exits so s6 restarts the service.
         self.restart_requested: asyncio.Event = asyncio.Event()
@@ -440,6 +459,138 @@ class BluetoothAudioManager:
             except Exception as e:
                 logger.warning("App restart via %s failed: %s", url, e)
         return False
+
+    # -- Adapter reset ----------------------------------------------------
+    #
+    # A Realtek USB stick carrying three A2DP streams has twice got into a
+    # state only a reset clears (11.11.2026: firmware crash; 13.11.2026:
+    # "link tx timeout", stale connection handles — only unplugging it
+    # helped).  Two levels, both reachable from Home Assistant:
+    #
+    #   soft — BlueZ powers the adapter off and on: the kernel resets the
+    #          controller, BlueZ rebuilds its state; firmware stays loaded.
+    #   usb  — USBDEVFS_RESET: the kernel resets the USB device and rebinds
+    #          btusb, which reloads the firmware — what unplugging does,
+    #          minus the power cut.  The adapter re-registers, and the
+    #          adapter-return watch above restarts the app.
+    #
+    # Speakers are reconnected one after another afterwards; a freshly reset
+    # stick copes badly with several connecting at once.
+
+    async def reset_adapter(self, mode: str = "soft") -> dict:
+        """Reset the Bluetooth adapter (``soft`` or ``usb``); see above."""
+        if mode not in ("soft", "usb"):
+            raise ValueError("mode must be 'soft' or 'usb'")
+        if self._adapter_reset_lock.locked():
+            raise AdapterResetBusy("an adapter reset is already running")
+        now = time.monotonic()
+        if (
+            self._adapter_reset_at is not None
+            and now - self._adapter_reset_at < self.ADAPTER_RESET_MIN_INTERVAL
+        ):
+            raise AdapterResetBusy(
+                f"last adapter reset was {int(now - self._adapter_reset_at)} s ago — "
+                f"wait at least {self.ADAPTER_RESET_MIN_INTERVAL} s between resets"
+            )
+        async with self._adapter_reset_lock:
+            if mode == "usb":
+                # Resolve and check access *before* counting it as a reset,
+                # so a missing permission can be fixed and retried at once.
+                hci = (self._adapter_path or "").rsplit("/", 1)[-1]
+                busnum, devnum, _ = await asyncio.to_thread(usb_device_for_hci, hci)
+                node = await asyncio.to_thread(check_usb_device_access, busnum, devnum)
+                self._adapter_reset_at = time.monotonic()
+                return self._start_usb_reset(hci, busnum, devnum, node)
+            self._adapter_reset_at = time.monotonic()
+            return await self._soft_reset_adapter()
+
+    async def _soft_reset_adapter(self) -> dict:
+        adapter = self.adapter
+        if adapter is None:
+            raise RuntimeError("no Bluetooth adapter initialised")
+        logger.warning(
+            "Resetting Bluetooth adapter %s: powering it off and on via BlueZ",
+            self._adapter_path,
+        )
+        self._broadcast_status("Resetting Bluetooth adapter...")
+        # Disconnect events during the reset must not start their own
+        # reconnects; the guard stays up until the staggered reconnect below
+        # owns every speaker (handle_disconnect skips addresses with a task).
+        self._adapter_resetting = True
+        try:
+            if self.reconnect_service:
+                self.reconnect_service.cancel_all()
+            await adapter.set_powered(False)
+            await asyncio.sleep(self.ADAPTER_RESET_OFF_SECONDS)
+            await adapter.set_powered(True)
+            powered = False
+            deadline = time.monotonic() + self.ADAPTER_RESET_POWER_TIMEOUT
+            while True:
+                try:
+                    powered = await adapter.is_powered()
+                except Exception as e:
+                    logger.debug("Powered check after reset failed: %s", e)
+                if powered or time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(1)
+            if not powered:
+                logger.warning(
+                    "Bluetooth adapter %s did not power on again within %d s after the reset",
+                    self._adapter_path, self.ADAPTER_RESET_POWER_TIMEOUT,
+                )
+                self._broadcast_status(
+                    "Bluetooth adapter did not power on again after the reset"
+                )
+                return {"mode": "soft", "powered": False}
+            logger.warning(
+                "Bluetooth adapter %s is on again — reconnecting speakers one by one "
+                "(%d s apart)", self._adapter_path, self.ADAPTER_RESET_RECONNECT_STAGGER,
+            )
+            self._broadcast_status("")
+            if self.reconnect_service:
+                await self.reconnect_service.reconnect_all(
+                    stagger=self.ADAPTER_RESET_RECONNECT_STAGGER,
+                )
+            return {"mode": "soft", "powered": True}
+        finally:
+            self._adapter_resetting = False
+
+    def _start_usb_reset(self, hci: str, busnum: int, devnum: int, node: str) -> dict:
+        logger.warning(
+            "Resetting Bluetooth adapter %s via USB (%s) — like unplugging it; "
+            "the app restarts once the adapter is back",
+            hci, node,
+        )
+        self._broadcast_status("Resetting Bluetooth adapter (USB) — the app will restart...")
+        self._adapter_resetting = True
+        if self.reconnect_service:
+            self.reconnect_service.cancel_all()
+        self._usb_reset_task = asyncio.create_task(self._run_usb_reset(busnum, devnum))
+        return {"mode": "usb", "device": node, "restart_expected": True}
+
+    async def _run_usb_reset(self, busnum: int, devnum: int) -> None:
+        await asyncio.sleep(0.5)  # let the HTTP response go out first
+        try:
+            await asyncio.to_thread(reset_usb_device, busnum, devnum)
+        except Exception as e:
+            logger.error("USB reset of the Bluetooth adapter failed: %s", _err(e))
+            self._adapter_resetting = False
+            self._broadcast_status("USB reset of the Bluetooth adapter failed")
+            if self.reconnect_service:
+                await self.reconnect_service.reconnect_all(
+                    stagger=self.ADAPTER_RESET_RECONNECT_STAGGER,
+                )
+            return
+        logger.warning("USB reset of the Bluetooth adapter done — waiting for it to come back")
+        await asyncio.sleep(self.ADAPTER_USB_RESET_GRACE)
+        if self._adapter_restart_task and not self._adapter_restart_task.done():
+            return  # the adapter-return watch is restarting the app
+        logger.warning(
+            "Adapter did not re-register within %d s after the USB reset — "
+            "restarting the app anyway", self.ADAPTER_USB_RESET_GRACE,
+        )
+        if not await self._request_self_restart():
+            self.restart_requested.set()
 
     async def _resolve_adapter_path(self) -> str:
         """Resolve the configured bt_adapter to a BlueZ D-Bus path.
@@ -2510,6 +2661,9 @@ class BluetoothAudioManager:
             # User-initiated disconnect — don't auto-reconnect
             self._clear_auto_reconnect_suppression(address)
             logger.info("Skipping auto-reconnect for %s (user-initiated disconnect)", address)
+        elif getattr(self, "_adapter_resetting", False):
+            # The adapter reset reconnects everyone itself, one by one
+            logger.info("Skipping auto-reconnect for %s (adapter reset in progress)", address)
         elif self.reconnect_service:
             if address in self._suppress_reconnect:
                 logger.info(

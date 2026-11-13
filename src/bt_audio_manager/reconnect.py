@@ -109,8 +109,12 @@ class ReconnectService:
         if not any(not t.done() for t in self._tasks.values()):
             self._manager._broadcast_status("")
 
-    async def reconnect_all(self) -> None:
+    async def reconnect_all(self, stagger: float = 0.0) -> None:
         """Attempt to reconnect all auto-connect devices (called on startup).
+
+        *stagger* > 0 starts the devices one after another, that many seconds
+        apart (used after an adapter reset: a USB stick that has just been
+        reset copes badly with several speakers connecting at once).
 
         Honours the Auto Reconnect setting.  Without this guard the add-on
         seized every stored device on startup even with the toggle off, so a
@@ -128,11 +132,22 @@ class ReconnectService:
             return
 
         logger.info("Attempting to reconnect %d stored device(s)...", len(devices))
-        for device_info in devices:
+        for index, device_info in enumerate(devices):
             address = device_info["address"]
-            self._tasks[address] = asyncio.create_task(
-                self._reconnect_loop(address)
-            )
+            if address in self._tasks and not self._tasks[address].done():
+                continue
+            if stagger > 0 and index:
+                coro = self._delayed_reconnect(address, index * stagger)
+            else:
+                coro = self._reconnect_loop(address)
+            self._tasks[address] = asyncio.create_task(coro)
+
+    async def _delayed_reconnect(self, address: str, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if not self._reconnect_enabled():
+            self._abandon(address)
+            return
+        await self._reconnect_loop(address)
 
     async def _reconnect_loop(self, address: str) -> None:
         """Attempt reconnection with exponential backoff and jitter."""

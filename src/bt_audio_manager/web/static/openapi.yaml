@@ -556,6 +556,65 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /api/adapter/reset:
+    post:
+      tags: [Adapters]
+      summary: Reset the Bluetooth adapter
+      description: >
+        For an adapter that has got stuck (speakers drop and will not come
+        back, firmware errors in the host log). `soft` (default) has BlueZ
+        power the adapter off and on, which resets the controller; the app
+        then reconnects auto-connect speakers one by one, 20 s apart.
+        `usb` resets the USB device behind the adapter (USBDEVFS_RESET) —
+        the software equivalent of unplugging it, firmware reload included —
+        and then restarts the app; the response is sent first. `usb` needs a
+        USB adapter and the app's USB access. At most one reset per 60 s.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [soft, usb]
+                  default: soft
+      responses:
+        "200":
+          description: Reset done (soft) or started (usb).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode: { type: string, enum: [soft, usb] }
+                  powered:
+                    type: boolean
+                    description: soft only — whether the adapter came back on.
+                  device:
+                    type: string
+                    description: usb only — the device node that is reset.
+                    example: /dev/bus/usb/001/005
+                  restart_expected:
+                    type: boolean
+                    description: usb only — the app restarts once the adapter is back.
+        "400":
+          description: Invalid JSON, or an unknown mode.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: A reset is already running, or the last one was less than 60 s ago.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: >
+            The reset failed — no adapter, not a USB adapter, or no USB access.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/restart:
     post:
       tags: [Adapters]
