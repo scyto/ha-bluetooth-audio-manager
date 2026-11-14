@@ -805,10 +805,15 @@ paths:
         with their arguments and reports the A2DP bitrate recovery interval
         in effect (`output_rate_refresh_interval_ms`, PulseAudio default
         500 ms). Read-only; the interval is set through the audio plugin's
-        `/data/custom.pa` (see the documentation).
+        `/data/custom.pa` (see the documentation). `sinks` shows how far
+        PulseAudio has lowered each speaker's SBC bitrate, read from the
+        sink's fixed latency (25 ms + one Bluetooth packet): more SBC frames
+        per packet = lower bitpool; 15 is the lowest step that can be told
+        apart (bitpool about 22 or lower). Reconnecting a speaker restores
+        full bitrate.
       responses:
         "200":
-          description: Modules and interval.
+          description: Modules, interval and per-sink SBC estimate.
           content:
             application/json:
               schema:
@@ -825,6 +830,16 @@ paths:
                   output_rate_refresh_interval_ms: { type: integer, nullable: true }
                   effective_interval_ms: { type: integer }
                   custom: { type: boolean }
+                  sinks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sink: { type: string }
+                        rate: { type: integer, nullable: true }
+                        configured_latency_ms: { type: number, example: 45.3 }
+                        sbc_frames_per_packet: { type: integer, nullable: true, example: 7 }
+                        at_lowest_step: { type: boolean }
         "503":
           description: PulseAudio not connected.
           content:

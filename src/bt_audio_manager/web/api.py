@@ -761,11 +761,17 @@ def create_api_routes(
             return web.json_response({"error": str(e)}, status=500)
         bluez5 = next((m for m in modules if m["name"] == pulse.BT_DISCOVER_MODULE), None)
         interval = pulse.rate_refresh_from_args(bluez5["argument"]) if bluez5 else None
+        try:
+            sinks = await pulse.bt_sink_encoder_estimates()
+        except Exception as e:
+            logger.debug("SBC estimate failed: %s", e)
+            sinks = []
         return web.json_response({
             "modules": modules,
             "output_rate_refresh_interval_ms": interval,
             "effective_interval_ms": interval or pulse.RATE_REFRESH_DEFAULT_MS,
             "custom": interval is not None,
+            "sinks": sinks,
         })
 
     @routes.get("/api/diagnostics/gap-monitor")

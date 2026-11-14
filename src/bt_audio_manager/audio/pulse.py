@@ -888,6 +888,72 @@ class PulseAudioManager:
             if m.name in ("module-bluetooth-discover", self.BT_DISCOVER_MODULE)
         ]
 
+    # -- How far PulseAudio has lowered the SBC bitrate (read-only) ----------
+    #
+    # PulseAudio does not report the SBC bitpool, but it shows through: after
+    # every change module-bluez5-device sets the sink's fixed latency to
+    # 25 ms + the audio in one Bluetooth packet.  A packet holds as many SBC
+    # frames (128 samples each) as fit into the link MTU, at most 15, so a
+    # lower bitpool means more frames per packet.  With the ES-BT17 at
+    # 44.1 kHz joint stereo, full quality (bitpool 53) is 7 frames per packet;
+    # 15 frames means bitpool 22 or lower.  On 14.11.2026 all three speakers
+    # sounded "extremely noisy" on FM while Bluetooth delivered without gaps;
+    # reconnecting one speaker over Bluetooth only (its FM part untouched)
+    # made it clean — the bitpool had collapsed and, with the bitrate
+    # recovery set to once an hour, stayed down.
+
+    A2DP_FIXED_LATENCY_USEC = 25_000  # FIXED_LATENCY_PLAYBACK_A2DP
+    SBC_FRAME_SAMPLES = 128  # 16 blocks x 8 subbands
+    SBC_MAX_FRAMES_PER_PACKET = 15
+
+    @classmethod
+    def parse_sink_latencies(cls, text: str) -> dict[str, dict]:
+        """``{sink: {"latency_usec", "configured_usec"}}`` from ``pactl list sinks``."""
+        out: dict[str, dict] = {}
+        name = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Name:"):
+                name = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Latency:") and name:
+                m = re.match(r"Latency:\s*(\d+)\s*usec,\s*configured\s*(\d+)\s*usec", stripped)
+                if m:
+                    out[name] = {"latency_usec": int(m.group(1)), "configured_usec": int(m.group(2))}
+        return out
+
+    @classmethod
+    def sbc_frames_per_packet(cls, configured_usec: int, rate: int) -> int | None:
+        """SBC frames per Bluetooth packet derived from a sink's fixed latency."""
+        if not configured_usec or not rate:
+            return None
+        block_usec = configured_usec - cls.A2DP_FIXED_LATENCY_USEC
+        frame_usec = cls.SBC_FRAME_SAMPLES * 1_000_000 / rate
+        if block_usec <= 0:
+            return None
+        return round(block_usec / frame_usec)
+
+    async def bt_sink_encoder_estimates(self) -> list[dict]:
+        """Per Bluetooth sink: fixed latency and SBC frames per packet."""
+        returncode, stdout, _ = await run_pactl("list", "sinks")
+        if returncode != 0:
+            return []
+        latencies = self.parse_sink_latencies(stdout.decode(errors="replace"))
+        specs = await self._pactl_sample_specs()
+        result = []
+        for name, lat in sorted(latencies.items()):
+            if not name.startswith("bluez_sink.") or not name.endswith(".a2dp_sink"):
+                continue
+            rate = (specs.get(name) or {}).get("rate")
+            frames = self.sbc_frames_per_packet(lat["configured_usec"], rate)
+            result.append({
+                "sink": name,
+                "rate": rate,
+                "configured_latency_ms": round(lat["configured_usec"] / 1000, 1),
+                "sbc_frames_per_packet": frames,
+                "at_lowest_step": frames is not None and frames >= self.SBC_MAX_FRAMES_PER_PACKET,
+            })
+        return result
+
     @classmethod
     def rate_refresh_from_args(cls, args: str) -> int | None:
         match = re.search(rf"(?:^|\s){cls.RATE_REFRESH_ARG}=(\d+)", args or "")
