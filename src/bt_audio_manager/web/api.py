@@ -141,6 +141,10 @@ def create_api_routes(
             "adapter_mac": manager.config.bt_adapter
             if manager.config.bt_adapter_is_mac else None,
             "hfp_switching_enabled": HFP_SWITCHING_ENABLED,
+            "extra_adapters": {
+                mac: p.rsplit("/", 1)[-1]
+                for mac, p in getattr(manager, "_extra_adapter_paths", {}).items()
+            },
             "hostname": socket.gethostname(),
             "mpd_password_set": manager._get_mpd_password() is not None,
         })
@@ -219,10 +223,18 @@ def create_api_routes(
         mode = body.get("mode", "soft")
         if mode not in ("soft", "usb"):
             return web.json_response({"error": "mode must be 'soft' or 'usb'"}, status=400)
+        adapter = body.get("adapter") or None
+        if adapter is not None and (not isinstance(adapter, str) or not _MAC_RE.match(adapter)):
+            return web.json_response({"error": "adapter must be an adapter MAC"}, status=400)
         try:
-            result = await manager.reset_adapter(mode)
+            if adapter:
+                result = await manager.reset_adapter(mode, adapter=adapter.upper())
+            else:
+                result = await manager.reset_adapter(mode)
         except AdapterResetBusy as e:
             return web.json_response({"error": str(e)}, status=409)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
         except UsbResetError as e:
             logger.error("Adapter reset (usb) not possible: %s", e)
             return web.json_response({"error": str(e)}, status=500)
@@ -279,8 +291,13 @@ def create_api_routes(
         try:
             body = await request.json() if request.body_exists else {}
             duration = body.get("duration", manager.config.scan_duration_seconds)
-            await manager.scan_devices(duration)
+            adapter = body.get("adapter") or None
+            if adapter is not None and (not isinstance(adapter, str) or not _MAC_RE.match(adapter)):
+                return web.json_response({"error": "adapter must be an adapter MAC"}, status=400)
+            await manager.scan_devices(duration, adapter=adapter)
             return web.json_response({"scanning": True, "duration": duration})
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
         except Exception as e:
             if "In Progress" in str(e):
                 return web.json_response({"scanning": True})
@@ -301,7 +318,10 @@ def create_api_routes(
             address, err = _get_validated_address(body)
             if err:
                 return err
-            result = await manager.pair_device(address)
+            adapter = body.get("adapter") if isinstance(body, dict) else None
+            if adapter is not None and (not isinstance(adapter, str) or not _MAC_RE.match(adapter)):
+                return web.json_response({"error": "adapter must be an adapter MAC"}, status=400)
+            result = await manager.pair_device(address, adapter=adapter.upper() if adapter else None)
             return web.json_response(result)
         except Exception as e:
             logger.error("Pair failed for %s: %s", address, e)
@@ -403,7 +423,7 @@ def create_api_routes(
                 "idle_mode", "keep_alive_method",
                 "power_save_delay", "auto_disconnect_minutes",
                 "mpd_enabled", "mpd_port", "mpd_hw_volume",
-                "volume_lock", "avrcp_enabled",
+                "volume_lock", "avrcp_enabled", "adapter",
             }
             settings = {k: v for k, v in body.items() if k in allowed_keys}
             # friendly_name is kept apart from the device record (it survives
@@ -477,6 +497,26 @@ def create_api_routes(
                     return web.json_response(
                         {"error": "avrcp_enabled must be a boolean"}, status=400
                     )
+            if "adapter" in settings:
+                mac = settings["adapter"]
+                if mac is None:
+                    mac = ""
+                if not isinstance(mac, str) or (mac and not _MAC_RE.match(mac)):
+                    return web.json_response(
+                        {"error": "adapter must be an adapter MAC (XX:XX:XX:XX:XX:XX) "
+                                  "or \"\" for the main adapter"},
+                        status=400,
+                    )
+                mac = mac.upper()
+                if mac:
+                    ha_macs = await manager._get_ha_bluetooth_macs()
+                    if mac in ha_macs:
+                        return web.json_response(
+                            {"error": f"adapter {mac} is used by Home Assistant's Bluetooth "
+                                      "integration — set it to 'ignore' there first"},
+                            status=409,
+                        )
+                settings["adapter"] = mac
             if "mpd_port" in settings:
                 port = settings["mpd_port"]
                 if not isinstance(port, int) or port < 6600 or port > 6609:

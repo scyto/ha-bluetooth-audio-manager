@@ -43,6 +43,11 @@ class BluezDevice:
         self._avrcp_last_search: float = 0.0  # monotonic timestamp of last failed search
         self._avrcp_cooldown: float = 60.0  # seconds to wait before searching again
 
+    @property
+    def adapter_path(self) -> str:
+        """D-Bus path of the adapter this wrapper talks through (``/org/bluez/hciN``)."""
+        return self._path.rsplit("/", 1)[0]
+
     async def initialize(self) -> None:
         """Connect to the device's D-Bus interfaces and start monitoring."""
         introspection = await self._bus.introspect(BLUEZ_SERVICE, self._path)

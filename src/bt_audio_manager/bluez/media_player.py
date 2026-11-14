@@ -209,13 +209,29 @@ class AVRCPMediaPlayer:
         self._bus = bus
         self._player = MPRISPlayerInterface(command_callback)
         self._adapter_path = adapter_path
+        # Further adapters the same exported player is registered with
+        # (speakers on a second Bluetooth adapter, see manager).
+        self._extra_adapter_paths: list[str] = []
         self._registered = False
 
-    async def register(self) -> None:
-        """Export the player interface and register with BlueZ Media1."""
-        self._bus.export(PLAYER_PATH, self._player)
+    async def add_adapter(self, adapter_path: str) -> None:
+        """Register the player with one more adapter's Media1 as well."""
+        if adapter_path == self._adapter_path or adapter_path in self._extra_adapter_paths:
+            return
+        self._extra_adapter_paths.append(adapter_path)
+        if self._registered:
+            await self._register_with(adapter_path)
 
-        properties = {
+    async def _register_with(self, adapter_path: str) -> None:
+        introspection = await self._bus.introspect(BLUEZ_SERVICE, adapter_path)
+        proxy = self._bus.get_proxy_object(BLUEZ_SERVICE, adapter_path, introspection)
+        media = proxy.get_interface(MEDIA_INTERFACE)
+        await media.call_register_player(PLAYER_PATH, self._player_properties())
+        logger.info("AVRCP media player also registered on adapter %s", adapter_path)
+
+    @staticmethod
+    def _player_properties() -> dict:
+        return {
             "PlaybackStatus": Variant("s", "Stopped"),
             "LoopStatus": Variant("s", "None"),
             "Rate": Variant("d", 1.0),
@@ -237,6 +253,12 @@ class AVRCPMediaPlayer:
             "CanControl": Variant("b", True),
         }
 
+    async def register(self) -> None:
+        """Export the player interface and register with BlueZ Media1."""
+        self._bus.export(PLAYER_PATH, self._player)
+
+        properties = self._player_properties()
+
         introspection = await self._bus.introspect(BLUEZ_SERVICE, self._adapter_path)
         proxy = self._bus.get_proxy_object(
             BLUEZ_SERVICE, self._adapter_path, introspection
@@ -249,6 +271,11 @@ class AVRCPMediaPlayer:
             "AVRCP media player registered at %s on adapter %s (bus %s)",
             PLAYER_PATH, self._adapter_path, self._bus.unique_name,
         )
+        for extra in self._extra_adapter_paths:
+            try:
+                await self._register_with(extra)
+            except Exception as e:
+                logger.warning("AVRCP player registration on %s failed: %s", extra, e)
 
         # Verify the player object is exported locally (no D-Bus round-trip;
         # the system bus default policy blocks method calls to our own unique
@@ -279,14 +306,17 @@ class AVRCPMediaPlayer:
         if not self._registered:
             return
         try:
-            introspection = await self._bus.introspect(BLUEZ_SERVICE, self._adapter_path)
-            proxy = self._bus.get_proxy_object(
-                BLUEZ_SERVICE, self._adapter_path, introspection
-            )
-            media = proxy.get_interface(MEDIA_INTERFACE)
-            await media.call_unregister_player(PLAYER_PATH)
-        except DBusError as e:
-            logger.debug("Player unregister failed (may already be gone): %s", e)
+            for adapter_path in [self._adapter_path, *self._extra_adapter_paths]:
+                try:
+                    introspection = await self._bus.introspect(BLUEZ_SERVICE, adapter_path)
+                    proxy = self._bus.get_proxy_object(
+                        BLUEZ_SERVICE, adapter_path, introspection
+                    )
+                    media = proxy.get_interface(MEDIA_INTERFACE)
+                    await media.call_unregister_player(PLAYER_PATH)
+                except DBusError as e:
+                    logger.debug("Player unregister on %s failed (may already be gone): %s",
+                                 adapter_path, e)
         finally:
             self._bus.unexport(PLAYER_PATH, self._player)
             self._registered = False

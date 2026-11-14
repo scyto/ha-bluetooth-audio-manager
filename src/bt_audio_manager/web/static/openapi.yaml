@@ -231,6 +231,12 @@ paths:
                   type: integer
                   description: Scan length in seconds. Defaults to the app's `scan_duration_seconds` setting.
                   example: 30
+                adapter:
+                  type: string
+                  description: >
+                    Scan on this additional adapter (its MAC) instead of the
+                    main one; it must be in use (a speaker assigned to it).
+                  example: "AA:BB:CC:DD:EE:01"
       responses:
         "200":
           description: Scan started, or already in progress.
@@ -265,11 +271,27 @@ paths:
       description: >
         Runs the full onboarding sequence: pair, mark trusted, persist to the
         device store, then connect. The device must be in pairing mode.
+
+
+        The speaker is paired on `adapter` if given, else on the adapter its
+        `adapter` setting names, else on the main adapter. On another adapter
+        than the main one the speaker is first searched for there (up to 40 s,
+        pairing mode), and after pairing its pairing on the app's other
+        adapters is removed and the `adapter` setting updated — this is how a
+        speaker moves to a second Bluetooth adapter.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/AddressRequest" }
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+                adapter:
+                  type: string
+                  description: MAC of the adapter to pair on.
+                  example: "AA:BB:CC:DD:EE:01"
       responses:
         "200":
           description: Pairing completed.
@@ -580,6 +602,11 @@ paths:
                   type: string
                   enum: [soft, usb]
                   default: soft
+                adapter:
+                  type: string
+                  description: >
+                    Reset only this adapter (MAC); without it every adapter the
+                    app uses is reset.
       responses:
         "200":
           description: Reset done (soft) or started (usb).
@@ -1310,6 +1337,9 @@ components:
         mpd_hw_volume: { type: integer }
         volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
+        assigned_adapter:
+          type: string
+          description: The speaker's `adapter` setting; empty = main adapter.
 
     IdleMode:
       type: string
@@ -1371,6 +1401,15 @@ components:
         avrcp_enabled:
           type: boolean
           description: Route the speaker's transport buttons to MPD.
+        adapter:
+          type: string
+          description: >
+            MAC of the Bluetooth adapter this speaker uses; empty = the main
+            adapter from the app settings. Changing it does not move the
+            pairing: pair the speaker on the new adapter afterwards
+            (`POST /api/pair`, speaker in pairing mode). An adapter in use by
+            Home Assistant's Bluetooth integration is refused (409).
+          example: "AA:BB:CC:DD:EE:01"
         friendly_name:
           type: string
           maxLength: 64
@@ -1394,6 +1433,7 @@ components:
         mpd_hw_volume: { type: integer }
         volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
+        adapter: { type: string, description: "Adapter MAC; empty = main adapter." }
         friendly_name:
           type: string
           description: Present in the PUT response; empty when none is set.
@@ -1468,7 +1508,14 @@ components:
         discovering: { type: boolean }
         selected:
           type: boolean
-          description: The adapter this add-on is currently using.
+          description: The add-on's main adapter.
+        in_use:
+          type: boolean
+          description: The main adapter, or an additional one speakers are assigned to.
+        assigned_devices:
+          type: array
+          items: { type: string }
+          description: Speakers that use this adapter.
         ble_scanning:
           type: boolean
           description: Mirrors `discovering`; the adapter is running a scan.

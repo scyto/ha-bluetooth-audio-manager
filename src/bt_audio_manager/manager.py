@@ -176,6 +176,12 @@ class BluetoothAudioManager:
         self._adapter_reset_at: float | None = None
         self._adapter_resetting: bool = False
         self._usb_reset_task: asyncio.Task | None = None
+        # Additional adapters (per-speaker "adapter" setting, see _bind_extra_adapters)
+        self._extra_adapters: dict[str, BluezAdapter] = {}  # adapter MAC → wrapper
+        self._extra_adapter_paths: dict[str, str] = {}  # adapter MAC → D-Bus path
+        self._missing_extra_adapters: set[str] = set()  # assigned, not present (yet)
+        self._lost_extra_adapters: set[str] = set()  # bound, then gone from BlueZ
+        self._scan_adapter: BluezAdapter | None = None  # adapter the running scan uses
         # Set when the app must restart itself and the Supervisor API is unavailable;
         # __main__ then shuts down cleanly and exits so s6 restarts the service.
         self.restart_requested: asyncio.Event = asyncio.Event()
@@ -373,7 +379,13 @@ class BluetoothAudioManager:
     # without it could grab a different adapter that belongs to someone else.
 
     def _on_adapter_lifecycle_signal(self, msg) -> None:
-        """Watch ObjectManager signals for our adapter going away and returning."""
+        """Watch ObjectManager signals for our adapters going away and returning.
+
+        Covers the main adapter and every additional adapter a speaker is
+        assigned to.  An additional adapter that was missing at startup is
+        bound when it first appears; one that was bound, went away and came
+        back restarts the app like the main adapter does.
+        """
         if (
             msg.message_type != MessageType.SIGNAL
             or msg.path != "/"
@@ -383,9 +395,12 @@ class BluetoothAudioManager:
         ):
             return
         obj_path, ifaces = msg.body[0], msg.body[1]
+        extra_paths = getattr(self, "_extra_adapter_paths", {})
 
         if msg.member == "InterfacesRemoved":
-            if obj_path == self._adapter_path and "org.bluez.Adapter1" in (ifaces or ()):
+            if "org.bluez.Adapter1" not in (ifaces or ()):
+                return
+            if obj_path == self._adapter_path:
                 self._adapter_lost = True
                 logger.warning(
                     "Bluetooth adapter %s (%s) disappeared from BlueZ — "
@@ -393,26 +408,49 @@ class BluetoothAudioManager:
                     self._adapter_path, self._adapter_address or "unknown MAC",
                 )
                 self._broadcast_status("Bluetooth adapter disappeared — waiting for it to return")
+                return
+            for mac, path in extra_paths.items():
+                if path == obj_path:
+                    self._lost_extra_adapters.add(mac)
+                    logger.warning(
+                        "Additional Bluetooth adapter %s (%s) disappeared from BlueZ — "
+                        "waiting for it to come back", path, mac,
+                    )
             return
 
         # InterfacesAdded
         if not isinstance(ifaces, dict) or "org.bluez.Adapter1" not in ifaces:
             return
-        if not self._adapter_address:
-            return
         props = ifaces.get("org.bluez.Adapter1") or {}
         raw = props.get("Address")
         address = raw.value if hasattr(raw, "value") else raw
-        if not address or str(address).upper() != self._adapter_address:
-            return  # some other adapter — not ours
-        if obj_path == self._adapter_path and not self._adapter_lost:
-            return  # nothing changed as far as we know
+        address = str(address).upper() if address else ""
+        if not address:
+            return
+        if self._adapter_address and address == self._adapter_address:
+            if obj_path == self._adapter_path and not self._adapter_lost:
+                return  # nothing changed as far as we know
+            self._schedule_adapter_restart(address, obj_path, self._adapter_path)
+            return
+        if address in extra_paths:
+            if obj_path == extra_paths[address] and address not in self._lost_extra_adapters:
+                return
+            self._schedule_adapter_restart(address, obj_path, extra_paths[address])
+            return
+        if address in getattr(self, "_missing_extra_adapters", set()):
+            logger.warning(
+                "Bluetooth adapter %s appeared as %s — binding it for its speakers",
+                address, obj_path,
+            )
+            self._fire_and_forget(self._bind_extra_adapters(settle=True))
+
+    def _schedule_adapter_restart(self, address: str, new_path: str, old_path: str | None) -> None:
         if self._adapter_restart_task and not self._adapter_restart_task.done():
             return
         logger.warning(
             "Bluetooth adapter %s is back as %s (was %s) — restarting the app "
             "so every Bluetooth object is rebuilt",
-            self._adapter_address, obj_path, self._adapter_path,
+            address, new_path, old_path,
         )
         self._adapter_restart_task = asyncio.create_task(
             self._restart_after_adapter_return()
@@ -460,6 +498,258 @@ class BluetoothAudioManager:
                 logger.warning("App restart via %s failed: %s", url, e)
         return False
 
+    # -- Additional adapters (per-speaker "adapter" setting) ----------------
+    #
+    # One app instance can drive speakers on more than one Bluetooth adapter.
+    # A speaker's "adapter" setting (the adapter's MAC; "" = the main adapter
+    # chosen in the app settings) says which adapter it is paired with and
+    # connected through.  Reason: three A2DP streams on one Realtek stick
+    # overload it now and then, and every overload makes PulseAudio lower the
+    # SBC bitrate for a long time; with two streams per stick that did not
+    # happen (measured 03.11. and 14.11.2026).
+    #
+    # The main adapter keeps everything it did before (startup wait, scans,
+    # RSSI bursts).  An additional adapter is bound when a speaker is assigned
+    # to it and it is present: its D-Bus subtree is subscribed, the AVRCP
+    # player is registered on it, and it is watched like the main adapter.
+    # A missing additional adapter does not hold up startup: its speakers use
+    # the main adapter if they are paired there, and it is bound once it
+    # appears.
+
+    def _main_adapter_mac(self) -> str:
+        return (getattr(self, "_adapter_address", None) or "").upper()
+
+    def _assigned_adapter_mac(self, address: str) -> str:
+        """The additional adapter a speaker is assigned to, "" for the main one."""
+        if not self.store:
+            return ""
+        mac = str(self.store.get_device_settings(address).get("adapter") or "").upper()
+        return "" if mac == self._main_adapter_mac() else mac
+
+    def _wanted_extra_adapter_macs(self) -> dict[str, list[str]]:
+        """``{adapter MAC: [speaker addresses]}`` for all additional adapters in use."""
+        wanted: dict[str, list[str]] = {}
+        if not self.store:
+            return wanted
+        for d in self.store.devices:
+            mac = self._assigned_adapter_mac(d["address"])
+            if mac:
+                wanted.setdefault(mac, []).append(d["address"])
+        return wanted
+
+    def _active_adapter_paths(self) -> list[str]:
+        """D-Bus paths of the main adapter and all bound additional adapters."""
+        paths = [self._adapter_path] if self._adapter_path else []
+        for path in getattr(self, "_extra_adapter_paths", {}).values():
+            if path not in paths:
+                paths.append(path)
+        return paths
+
+    def _active_adapters(self) -> list[tuple[str, str, BluezAdapter]]:
+        """``(mac, path, wrapper)`` for the main and every bound additional adapter."""
+        result = []
+        if self.adapter is not None and self._adapter_path:
+            result.append((self._main_adapter_mac(), self._adapter_path, self.adapter))
+        for mac, adapter in getattr(self, "_extra_adapters", {}).items():
+            path = self._extra_adapter_paths.get(mac)
+            if path and path != self._adapter_path:
+                result.append((mac, path, adapter))
+        return result
+
+    def _adapter_wrapper(self, mac: str | None) -> BluezAdapter | None:
+        """Wrapper for an adapter MAC; None/"" or the main MAC = main adapter."""
+        mac = (mac or "").upper()
+        if not mac or mac == self._main_adapter_mac():
+            return self.adapter
+        return getattr(self, "_extra_adapters", {}).get(mac)
+
+    def _preferred_adapter_path(self, address: str) -> str | None:
+        """Path of the adapter a speaker should use (its assigned one if bound)."""
+        mac = self._assigned_adapter_mac(address)
+        if mac:
+            path = getattr(self, "_extra_adapter_paths", {}).get(mac)
+            if path and mac not in getattr(self, "_lost_extra_adapters", set()):
+                return path
+        return self._adapter_path
+
+    async def _bind_extra_adapters(self, *, settle: bool = False) -> None:
+        """Bind every assigned additional adapter that is present and not bound yet."""
+        wanted = self._wanted_extra_adapter_macs()
+        todo = {m: a for m, a in wanted.items() if m not in self._extra_adapters}
+        if not todo:
+            return
+        if settle:
+            await asyncio.sleep(self.ADAPTER_RETURN_SETTLE)
+        try:
+            adapters = await BluezAdapter.list_all(self.bus)
+        except Exception as e:
+            logger.debug("Listing adapters for binding failed: %s", _err(e))
+            return
+        for mac, speakers in sorted(todo.items()):
+            match = self._adapter_by_mac(adapters, mac)
+            if not match:
+                if mac not in self._missing_extra_adapters:
+                    self._missing_extra_adapters.add(mac)
+                    logger.warning(
+                        "Bluetooth adapter %s (assigned to %s) not found — those "
+                        "speakers use the main adapter if they are paired there; "
+                        "the adapter is used as soon as it appears",
+                        mac, ", ".join(speakers),
+                    )
+                continue
+            await self._bind_adapter(mac, match["path"], speakers)
+
+    async def _bind_adapter(self, mac: str, path: str, speakers: list[str] | None = None) -> BluezAdapter | None:
+        mac = mac.upper()
+        if mac in self._extra_adapters:
+            return self._extra_adapters[mac]
+        try:
+            await self._add_bluez_match(self._adapter_match_rule(path))
+            adapter = BluezAdapter(self.bus, path)
+            await adapter.initialize()
+        except Exception as e:
+            logger.warning("Could not use Bluetooth adapter %s (%s): %s", mac, path, _err(e))
+            self._missing_extra_adapters.add(mac)
+            return None
+        self._extra_adapters[mac] = adapter
+        self._extra_adapter_paths[mac] = path
+        self._missing_extra_adapters.discard(mac)
+        self._lost_extra_adapters.discard(mac)
+        if self.media_player:
+            try:
+                await self.media_player.add_adapter(path)
+            except Exception as e:
+                logger.warning("AVRCP player registration on %s failed: %s", path, _err(e))
+        logger.info(
+            "Additional Bluetooth adapter %s bound at %s (speakers: %s)",
+            mac, path, ", ".join(speakers or []) or "none yet",
+        )
+        return adapter
+
+    async def _adapter_path_for_mac(self, mac: str) -> str | None:
+        """Present adapter path for a MAC (main, bound or just listed)."""
+        mac = (mac or "").upper()
+        if not mac or mac == self._main_adapter_mac():
+            return self._adapter_path
+        if mac in self._extra_adapter_paths and mac not in self._lost_extra_adapters:
+            return self._extra_adapter_paths[mac]
+        try:
+            match = self._adapter_by_mac(await BluezAdapter.list_all(self.bus), mac)
+        except Exception:
+            match = None
+        return match["path"] if match else None
+
+    async def _device_object_paths(self, address: str) -> list[str]:
+        """BlueZ object paths of a speaker on every adapter that knows it."""
+        from .bluez.constants import BLUEZ_SERVICE, OBJECT_MANAGER_INTERFACE
+
+        dev_suffix = f"/dev_{address.replace(':', '_')}"
+        intro = await self.bus.introspect(BLUEZ_SERVICE, "/")
+        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", intro)
+        obj_mgr = proxy.get_interface(OBJECT_MANAGER_INTERFACE)
+        objects = await obj_mgr.call_get_managed_objects()
+        return [p for p in objects if p.endswith(dev_suffix)]
+
+    PAIR_DISCOVERY_TIMEOUT = 40  # seconds to find a speaker in pairing mode on another adapter
+
+    async def _ensure_device_object(self, address: str, adapter_path: str) -> None:
+        """Make sure BlueZ knows the speaker on *adapter_path* (discovery if not).
+
+        Pairing needs the device object on that adapter, which BlueZ only
+        creates when the adapter sees the speaker — i.e. the speaker must be
+        in pairing mode while we discover.
+        """
+        dev_path = f"{adapter_path}/dev_{address.replace(':', '_')}"
+        if dev_path in await self._device_object_paths(address):
+            return
+        adapter = next((a for _, p, a in self._active_adapters() if p == adapter_path), None)
+        if adapter is None:
+            raise RuntimeError(f"adapter {adapter_path} is not in use by this app")
+        hci = adapter_path.rsplit("/", 1)[-1]
+        self._broadcast_status(
+            f"Looking for {address} on {hci} — put the speaker in pairing mode..."
+        )
+        logger.info("Discovering %s on %s for pairing", address, hci)
+        await adapter.start_discovery()
+        try:
+            deadline = time.monotonic() + self.PAIR_DISCOVERY_TIMEOUT
+            while time.monotonic() < deadline:
+                await asyncio.sleep(1)
+                if dev_path in await self._device_object_paths(address):
+                    logger.info("Found %s on %s", address, hci)
+                    return
+        finally:
+            try:
+                await adapter.stop_discovery()
+            except Exception:
+                pass
+        raise RuntimeError(
+            f"{address} not found on {hci} within {self.PAIR_DISCOVERY_TIMEOUT} s — "
+            "is the speaker in pairing mode?"
+        )
+
+    async def _remove_from_other_adapters(self, address: str, keep_path: str) -> list[str]:
+        """Remove the speaker's pairing from this app's other adapters.
+
+        A speaker paired on two of our adapters may connect through either
+        (it calls the host it last used), so after pairing it on its new
+        adapter the old pairing goes.  Adapters this app does not use are
+        never touched.
+        """
+        from .bluez.constants import ADAPTER_INTERFACE, BLUEZ_SERVICE
+
+        removed = []
+        active = set(self._active_adapter_paths())
+        for path in await self._device_object_paths(address):
+            adapter_path = path[: path.rfind("/")]
+            if adapter_path == keep_path or adapter_path not in active:
+                continue
+            try:
+                intr = await self.bus.introspect(BLUEZ_SERVICE, adapter_path)
+                a_iface = self.bus.get_proxy_object(BLUEZ_SERVICE, adapter_path, intr) \
+                    .get_interface(ADAPTER_INTERFACE)
+                await a_iface.call_remove_device(path)
+                removed.append(adapter_path)
+                logger.info("Removed old pairing of %s on %s", address, adapter_path)
+            except Exception as e:
+                logger.warning("Could not remove %s from %s: %s", address, adapter_path, _err(e))
+        return removed
+
+    async def _block_on_other_adapters(self, address: str, keep_path: str, blocked: bool) -> list[str]:
+        """Set ``Blocked`` on the speaker's object on this app's other adapters.
+
+        While a speaker is moved to another adapter it must not reconnect to
+        the old one (it calls the host it knows, and then it cannot be found
+        on the new adapter): blocking rejects its connections there and drops
+        an existing one.  Undone if the move fails; a successful move removes
+        the old pairing instead.
+        """
+        from dbus_next import Variant
+        from .bluez.constants import BLUEZ_SERVICE, DEVICE_INTERFACE, PROPERTIES_INTERFACE
+
+        changed = []
+        active = set(self._active_adapter_paths())
+        for path in await self._device_object_paths(address):
+            adapter_path = path[: path.rfind("/")]
+            if adapter_path == keep_path or adapter_path not in active:
+                continue
+            try:
+                intr = await self.bus.introspect(BLUEZ_SERVICE, path)
+                props = self.bus.get_proxy_object(BLUEZ_SERVICE, path, intr) \
+                    .get_interface(PROPERTIES_INTERFACE)
+                await props.call_set(DEVICE_INTERFACE, "Blocked", Variant("b", blocked))
+                changed.append(adapter_path)
+                logger.info("%s %s on %s", "Blocked" if blocked else "Unblocked", address, adapter_path)
+            except Exception as e:
+                logger.warning("Could not %s %s on %s: %s",
+                               "block" if blocked else "unblock", address, adapter_path, _err(e))
+        return changed
+
+    def _drop_device_wrapper(self, address: str) -> None:
+        device = self.managed_devices.pop(address, None)
+        if device is not None:
+            device.cleanup()
+
     # -- Adapter reset ----------------------------------------------------
     #
     # A Realtek USB stick carrying three A2DP streams has twice got into a
@@ -477,10 +767,20 @@ class BluetoothAudioManager:
     # Speakers are reconnected one after another afterwards; a freshly reset
     # stick copes badly with several connecting at once.
 
-    async def reset_adapter(self, mode: str = "soft") -> dict:
-        """Reset the Bluetooth adapter (``soft`` or ``usb``); see above."""
+    async def reset_adapter(self, mode: str = "soft", adapter: str | None = None) -> dict:
+        """Reset the Bluetooth adapter(s) (``soft`` or ``usb``); see above.
+
+        *adapter* (a MAC) limits the reset to that adapter; without it every
+        adapter this app uses is reset.
+        """
         if mode not in ("soft", "usb"):
             raise ValueError("mode must be 'soft' or 'usb'")
+        targets = self._active_adapters()
+        if adapter:
+            wanted = adapter.upper()
+            targets = [t for t in targets if t[0] == wanted]
+            if not targets:
+                raise ValueError(f"adapter {adapter} is not in use by this app")
         if self._adapter_reset_lock.locked():
             raise AdapterResetBusy("an adapter reset is already running")
         now = time.monotonic()
@@ -496,21 +796,25 @@ class BluetoothAudioManager:
             if mode == "usb":
                 # Resolve and check access *before* counting it as a reset,
                 # so a missing permission can be fixed and retried at once.
-                hci = (self._adapter_path or "").rsplit("/", 1)[-1]
-                busnum, devnum, _ = await asyncio.to_thread(usb_device_for_hci, hci)
-                node = await asyncio.to_thread(check_usb_device_access, busnum, devnum)
+                usb = []
+                for _, path, _ in targets:
+                    hci = path.rsplit("/", 1)[-1]
+                    busnum, devnum, _ = await asyncio.to_thread(usb_device_for_hci, hci)
+                    node = await asyncio.to_thread(check_usb_device_access, busnum, devnum)
+                    usb.append((hci, busnum, devnum, node))
                 self._adapter_reset_at = time.monotonic()
-                return self._start_usb_reset(hci, busnum, devnum, node)
+                return self._start_usb_reset(usb)
             self._adapter_reset_at = time.monotonic()
-            return await self._soft_reset_adapter()
+            return await self._soft_reset_adapter(targets)
 
-    async def _soft_reset_adapter(self) -> dict:
-        adapter = self.adapter
-        if adapter is None:
+    async def _soft_reset_adapter(self, targets=None) -> dict:
+        if targets is None:
+            targets = self._active_adapters()
+        if not targets:
             raise RuntimeError("no Bluetooth adapter initialised")
+        names = ", ".join(path for _, path, _ in targets)
         logger.warning(
-            "Resetting Bluetooth adapter %s: powering it off and on via BlueZ",
-            self._adapter_path,
+            "Resetting Bluetooth adapter %s: powering it off and on via BlueZ", names,
         )
         self._broadcast_status("Resetting Bluetooth adapter...")
         # Disconnect events during the reset must not start their own
@@ -520,60 +824,73 @@ class BluetoothAudioManager:
         try:
             if self.reconnect_service:
                 self.reconnect_service.cancel_all()
-            await adapter.set_powered(False)
+            for _, _, adapter in targets:
+                await adapter.set_powered(False)
             await asyncio.sleep(self.ADAPTER_RESET_OFF_SECONDS)
-            await adapter.set_powered(True)
-            powered = False
+            for _, _, adapter in targets:
+                await adapter.set_powered(True)
+            powered = {path: False for _, path, _ in targets}
             deadline = time.monotonic() + self.ADAPTER_RESET_POWER_TIMEOUT
             while True:
-                try:
-                    powered = await adapter.is_powered()
-                except Exception as e:
-                    logger.debug("Powered check after reset failed: %s", e)
-                if powered or time.monotonic() >= deadline:
+                for _, path, adapter in targets:
+                    if powered[path]:
+                        continue
+                    try:
+                        powered[path] = await adapter.is_powered()
+                    except Exception as e:
+                        logger.debug("Powered check after reset failed: %s", e)
+                if all(powered.values()) or time.monotonic() >= deadline:
                     break
                 await asyncio.sleep(1)
-            if not powered:
+            if not all(powered.values()):
+                off = ", ".join(p for p, on in powered.items() if not on)
                 logger.warning(
                     "Bluetooth adapter %s did not power on again within %d s after the reset",
-                    self._adapter_path, self.ADAPTER_RESET_POWER_TIMEOUT,
+                    off, self.ADAPTER_RESET_POWER_TIMEOUT,
                 )
                 self._broadcast_status(
                     "Bluetooth adapter did not power on again after the reset"
                 )
-                return {"mode": "soft", "powered": False}
+                return {"mode": "soft", "powered": False, "adapters": list(powered)}
             logger.warning(
                 "Bluetooth adapter %s is on again — reconnecting speakers one by one "
-                "(%d s apart)", self._adapter_path, self.ADAPTER_RESET_RECONNECT_STAGGER,
+                "(%d s apart)", names, self.ADAPTER_RESET_RECONNECT_STAGGER,
             )
             self._broadcast_status("")
             if self.reconnect_service:
                 await self.reconnect_service.reconnect_all(
                     stagger=self.ADAPTER_RESET_RECONNECT_STAGGER,
                 )
-            return {"mode": "soft", "powered": True}
+            return {"mode": "soft", "powered": True, "adapters": list(powered)}
         finally:
             self._adapter_resetting = False
 
-    def _start_usb_reset(self, hci: str, busnum: int, devnum: int, node: str) -> dict:
+    def _start_usb_reset(self, usb: list[tuple[str, int, int, str]]) -> dict:
         logger.warning(
             "Resetting Bluetooth adapter %s via USB (%s) — like unplugging it; "
             "the app restarts once the adapter is back",
-            hci, node,
+            ", ".join(u[0] for u in usb), ", ".join(u[3] for u in usb),
         )
         self._broadcast_status("Resetting Bluetooth adapter (USB) — the app will restart...")
         self._adapter_resetting = True
         if self.reconnect_service:
             self.reconnect_service.cancel_all()
-        self._usb_reset_task = asyncio.create_task(self._run_usb_reset(busnum, devnum))
-        return {"mode": "usb", "device": node, "restart_expected": True}
+        self._usb_reset_task = asyncio.create_task(
+            self._run_usb_reset([(b, d) for _, b, d, _ in usb])
+        )
+        nodes = [u[3] for u in usb]
+        return {"mode": "usb", "device": nodes[0], "devices": nodes, "restart_expected": True}
 
-    async def _run_usb_reset(self, busnum: int, devnum: int) -> None:
+    async def _run_usb_reset(self, devices: list[tuple[int, int]]) -> None:
         await asyncio.sleep(0.5)  # let the HTTP response go out first
-        try:
-            await asyncio.to_thread(reset_usb_device, busnum, devnum)
-        except Exception as e:
-            logger.error("USB reset of the Bluetooth adapter failed: %s", _err(e))
+        failed = 0
+        for busnum, devnum in devices:
+            try:
+                await asyncio.to_thread(reset_usb_device, busnum, devnum)
+            except Exception as e:
+                failed += 1
+                logger.error("USB reset of the Bluetooth adapter failed: %s", _err(e))
+        if failed == len(devices):
             self._adapter_resetting = False
             self._broadcast_status("USB reset of the Bluetooth adapter failed")
             if self.reconnect_service:
@@ -953,6 +1270,9 @@ class BluetoothAudioManager:
         self.store = PersistenceStore()
         await self.store.load()
 
+        # 4b. Bind additional adapters that speakers are assigned to
+        await self._bind_extra_adapters()
+
         # 3c. Register null HFP handler to prevent HFP from being established
         #     Speakers like Bose send volume buttons as HFP AT+VGS commands
         #     instead of AVRCP.  Blocking HFP forces AVRCP volume.
@@ -1074,8 +1394,8 @@ class BluetoothAudioManager:
                     reimport_adapters.add(adapter_path)
                     logger.info("Auto-imported paired device %s (%s) from %s", addr, name, adapter_path)
 
-                # Create managed_device wrappers only for the SELECTED adapter
-                if connected and addr not in self.managed_devices and path.startswith(self._adapter_path + "/"):
+                # Create managed_device wrappers only for adapters this app uses
+                if connected and addr not in self.managed_devices and adapter_path in self._active_adapter_paths():
                     logger.info(
                         "Found connected device %s not in managed_devices — initializing",
                         addr,
@@ -1097,7 +1417,7 @@ class BluetoothAudioManager:
             })
             logger.info("Queued reimport toast for %d device(s)", reimported_count)
 
-        if len(reimport_adapters) > 1:
+        if len(reimport_adapters) > 1 and reimport_adapters - set(self._active_adapter_paths()):
             self._pending_toasts.append({
                 "type": "warning_banner",
                 "message": (
@@ -1224,8 +1544,11 @@ class BluetoothAudioManager:
             await self.agent.unregister()
 
         # Stop any active discovery
-        if self.adapter:
-            await self.adapter.stop_discovery()
+        for _, _, adapter in self._active_adapters():
+            try:
+                await adapter.stop_discovery()
+            except Exception as e:
+                logger.debug("Stop discovery failed: %s", e)
 
         # Disconnect PulseAudio
         if self.pulse:
@@ -1285,33 +1608,45 @@ class BluetoothAudioManager:
 
             if not found_adapters:
                 return None
-            # Prefer the configured adapter if device exists there
-            if self._adapter_path in found_adapters:
-                return self._adapter_path
+            # Prefer the speaker's own adapter, then the main one, then any
+            # other adapter of this app, then whatever knows it.
+            preferred = self._preferred_adapter_path(address)
+            for candidate in (preferred, self._adapter_path, *self._active_adapter_paths()):
+                if candidate and candidate in found_adapters:
+                    if candidate != preferred:
+                        logger.info(
+                            "%s is not paired on its adapter %s — using %s "
+                            "(pair it there to move it)", address, preferred, candidate,
+                        )
+                    return candidate
             return found_adapters[0]
         except Exception as e:
             logger.debug("_find_device_adapter for %s: %s", address, e)
             return None
 
-    async def _get_or_create_device(self, address: str) -> BluezDevice:
+    async def _get_or_create_device(self, address: str, adapter_path: str | None = None) -> BluezDevice:
         """Get an existing managed device or create and register a new one.
 
         Ensures only one BluezDevice (and one D-Bus subscription) exists per address.
         Discovers the actual adapter the device is on via ObjectManager rather
-        than assuming the configured adapter.
+        than assuming the configured adapter.  *adapter_path* forces a
+        specific adapter (pairing on a speaker's new adapter).
         """
         device = self.managed_devices.get(address)
-        if device:
+        if device and (adapter_path is None or device.adapter_path == adapter_path):
             return device
+        if device:
+            self._drop_device_wrapper(address)
 
-        # Discover actual adapter (device may be paired on a different adapter)
-        actual_adapter = await self._find_device_adapter(address)
-        adapter_path = actual_adapter or self._adapter_path
-        if actual_adapter and actual_adapter != self._adapter_path:
-            logger.info(
-                "Device %s is on %s (configured: %s)",
-                address, actual_adapter, self._adapter_path,
-            )
+        if adapter_path is None:
+            # Discover actual adapter (device may be paired on a different adapter)
+            actual_adapter = await self._find_device_adapter(address)
+            adapter_path = actual_adapter or self._preferred_adapter_path(address) or self._adapter_path
+            if actual_adapter and actual_adapter != self._adapter_path:
+                logger.info(
+                    "Device %s is on %s (main adapter: %s)",
+                    address, actual_adapter, self._adapter_path,
+                )
 
         device = BluezDevice(self.bus, address, adapter_path)
         await device.initialize()
@@ -1323,13 +1658,18 @@ class BluetoothAudioManager:
 
     SCAN_DEBOUNCE_SECONDS = 1.0  # coalesce rapid D-Bus signals during scan
 
-    async def scan_devices(self, duration: int | None = None) -> None:
+    async def scan_devices(self, duration: int | None = None, adapter: str | None = None) -> None:
         """Start a background discovery scan for A2DP audio devices.
 
         Returns immediately. Devices appear incrementally via WebSocket
         'devices_changed' events. A 'scan_finished' event is emitted when done.
+        *adapter* (MAC) scans on one of the app's additional adapters instead
+        of the main one.
         """
         duration = duration or self.config.scan_duration_seconds
+        scan_adapter = self._adapter_wrapper(adapter)
+        if scan_adapter is None:
+            raise ValueError(f"adapter {adapter} is not in use by this app")
 
         # If already scanning, cancel the old scan and start fresh
         if self._scanning and self._scan_task and not self._scan_task.done():
@@ -1338,7 +1678,8 @@ class BluetoothAudioManager:
                 await self._scan_task
             except asyncio.CancelledError:
                 pass
-            await self.adapter.stop_discovery()
+            await (getattr(self, "_scan_adapter", None) or self.adapter).stop_discovery()
+        self._scan_adapter = scan_adapter
 
         playing = await self._playing_mpd_addresses()
         if playing:
@@ -1421,8 +1762,9 @@ class BluetoothAudioManager:
     async def _run_scan(self, duration: int, resume: list[str] | None = None) -> None:
         """Background scan task: runs discovery for *duration* seconds."""
         cancelled = False
+        adapter = getattr(self, "_scan_adapter", None) or self.adapter
         try:
-            await self.adapter.start_discovery()
+            await adapter.start_discovery()
             await asyncio.sleep(duration)
         except asyncio.CancelledError:
             # Superseded by a new scan (which re-collects the playing streams
@@ -1438,7 +1780,7 @@ class BluetoothAudioManager:
             self._scanning = False
             self._cancel_scan_debounce()
             try:
-                await self.adapter.stop_discovery()
+                await adapter.stop_discovery()
             except Exception:
                 pass
             if resume and not cancelled:
@@ -1481,15 +1823,41 @@ class BluetoothAudioManager:
         """Whether a background scan is currently in progress."""
         return self._scanning
 
-    async def pair_device(self, address: str) -> dict:
-        """Pair, trust, persist, and connect a Bluetooth audio device."""
+    async def pair_device(self, address: str, adapter: str | None = None) -> dict:
+        """Pair, trust, persist, and connect a Bluetooth audio device.
+
+        The speaker is paired on *adapter* (MAC), else on the adapter its
+        "adapter" setting names, else on the main adapter.  When that is not
+        the adapter it was paired on so far, the speaker must be in pairing
+        mode: it is searched for on the new adapter first, and its old
+        pairing on the app's other adapter is removed afterwards.
+        """
         self._broadcast_status(f"Pairing with {address}...")
         self._a2dp_attempts.pop(address, None)  # fresh pair — reset retry counter
+        target_mac = (adapter or self._assigned_adapter_mac(address) or "").upper()
+        if target_mac == self._main_adapter_mac():
+            target_mac = ""
+        target_path = None
+        if target_mac or adapter:
+            target_path = await self._adapter_path_for_mac(target_mac)
+            if target_path is None:
+                self.event_bus.emit("status", {"message": ""})
+                raise RuntimeError(f"Bluetooth adapter {target_mac} not found")
+            if target_mac:
+                bound = await self._bind_adapter(target_mac, target_path, [address])
+                if bound is None:
+                    self.event_bus.emit("status", {"message": ""})
+                    raise RuntimeError(f"Bluetooth adapter {target_mac} cannot be used")
         # Mark as connecting early so the Connected signal fired during pair()
         # doesn't race with connect_device() and double-fire HFP disconnect.
         self._connecting.add(address)
+        blocked_on: list[str] = []
         try:
-            device = await self._get_or_create_device(address)
+            if target_path:
+                # Keep it from calling its old adapter while we look for it
+                blocked_on = await self._block_on_other_adapters(address, target_path, True)
+                await self._ensure_device_object(address, target_path)
+            device = await self._get_or_create_device(address, adapter_path=target_path)
 
             # Pair
             await device.pair()
@@ -1502,8 +1870,15 @@ class BluetoothAudioManager:
 
             # Persist
             await self.store.add_device(address, name)
+            if adapter is not None or target_mac:
+                await self.store.update_device_settings(address, {"adapter": target_mac})
+            if target_path:
+                await self._remove_from_other_adapters(address, keep_path=target_path)
+                blocked_on = []
 
-            logger.info("Device %s (%s) paired and stored", address, name)
+            logger.info(
+                "Device %s (%s) paired on %s and stored", address, name, device.adapter_path,
+            )
             await self._broadcast_all()
 
             # Follow through with full connect + A2DP sink wait
@@ -1528,6 +1903,9 @@ class BluetoothAudioManager:
         except Exception:
             self._connecting.discard(address)
             self.event_bus.emit("status", {"message": ""})
+            if blocked_on and target_path:
+                # The move failed: let the speaker back onto its old adapter
+                await self._block_on_other_adapters(address, target_path, False)
             raise
 
     async def connect_device(
@@ -1880,8 +2258,10 @@ class BluetoothAudioManager:
         """Get combined list of discovered and paired devices."""
         if not self.adapter:
             return []  # still initializing
-        # Get currently visible devices from BlueZ
-        discovered = await self.adapter.get_audio_devices(cod_fallback=cod_fallback)
+        # Get currently visible devices from BlueZ (all adapters)
+        discovered = self._dedupe_devices(
+            await self.adapter.get_audio_devices(cod_fallback=cod_fallback)
+        )
 
         # Merge with persistent store info
         stored_addresses = {d["address"] for d in self.store.devices}
@@ -1903,6 +2283,7 @@ class BluetoothAudioManager:
                 device["mpd_hw_volume"] = s.get("mpd_hw_volume", 100)
                 device["volume_lock"] = s.get("volume_lock", False)
                 device["avrcp_enabled"] = s.get("avrcp_enabled", True)
+                device["assigned_adapter"] = s.get("adapter", "") or ""
 
         # Add stored devices not currently visible
         discovered_addresses = {d["address"] for d in discovered}
@@ -1932,6 +2313,7 @@ class BluetoothAudioManager:
                         "mpd_hw_volume": s.get("mpd_hw_volume", 100),
                         "volume_lock": s.get("volume_lock", False),
                         "avrcp_enabled": s.get("avrcp_enabled", True),
+                        "assigned_adapter": s.get("adapter", "") or "",
                     }
                 )
 
@@ -1967,6 +2349,33 @@ class BluetoothAudioManager:
 
         self._apply_friendly_names(discovered)
         return discovered
+
+    def _dedupe_devices(self, devices: list[dict]) -> list[dict]:
+        """One entry per address when a speaker is known to several adapters.
+
+        Prefers the connected entry, then the one on the speaker's own
+        adapter, then a paired one; the order of first appearance is kept.
+        """
+        best: dict[str, dict] = {}
+        order: list[str] = []
+        for d in devices:
+            addr = d.get("address")
+            prev = best.get(addr)
+            if prev is None:
+                best[addr] = d
+                order.append(addr)
+                continue
+            preferred = self._preferred_adapter_path(addr)
+
+            def rank(entry):
+                return (
+                    bool(entry.get("connected")),
+                    str(entry.get("path", "")).startswith(f"{preferred}/") if preferred else False,
+                    bool(entry.get("paired")),
+                )
+            if rank(d) > rank(prev):
+                best[addr] = d
+        return [best[a] for a in order]
 
     def _apply_friendly_names(self, devices: list[dict]) -> None:
         """Show the user's name for a speaker in place of its Bluetooth name.
@@ -2047,10 +2456,18 @@ class BluetoothAudioManager:
 
         ha_bt_macs = await self._get_ha_bluetooth_macs()
 
+        wanted = self._wanted_extra_adapter_macs()
+        main_devices = [
+            d["address"] for d in (self.store.devices if self.store else [])
+            if not self._assigned_adapter_mac(d["address"])
+        ]
         for a in adapters:
+            mac = a["address"].upper()
             a["selected"] = a["path"] == self._adapter_path
             a["ble_scanning"] = a["discovering"]
-            a["ha_managed"] = a["address"].upper() in ha_bt_macs
+            a["ha_managed"] = mac in ha_bt_macs
+            a["in_use"] = a["selected"] or mac in self._extra_adapters
+            a["assigned_devices"] = main_devices if a["selected"] else wanted.get(mac, [])
         return adapters
 
     @staticmethod
@@ -2682,7 +3099,11 @@ class BluetoothAudioManager:
         }
         burst_addrs = [a for a, t in self._recent_disconnects.items() if now - t < 3]
         if len(burst_addrs) >= 2:
-            adapter_name = (self._adapter_path or "").rsplit("/", 1)[-1] or "unknown"
+            adapter_name = ", ".join(sorted({
+                (self.managed_devices[a].adapter_path if a in self.managed_devices
+                 else self._adapter_path or "").rsplit("/", 1)[-1] or "unknown"
+                for a in burst_addrs
+            }))
             logger.warning(
                 "%d devices disconnected simultaneously (%s) — probable "
                 "Bluetooth adapter disruption on %s",
@@ -4233,9 +4654,23 @@ class BluetoothAudioManager:
 
     async def update_device_settings(self, address: str, settings: dict) -> dict | None:
         """Update per-device settings and react to changes immediately."""
+        previous_adapter = self._assigned_adapter_mac(address) if "adapter" in settings else None
         device_info = await self.store.update_device_settings(address, settings)
         if device_info is None:
             return None
+
+        # A speaker moved to another adapter: bind that adapter and forget the
+        # wrapper on the old one.  The speaker keeps using its current pairing
+        # until it is paired on the new adapter (pair it while in pairing mode).
+        if "adapter" in settings and self._assigned_adapter_mac(address) != previous_adapter:
+            new_mac = self._assigned_adapter_mac(address) or self._main_adapter_mac() or "main"
+            logger.info(
+                "Speaker %s assigned to adapter %s — pair it there (pairing mode) to move it",
+                address, new_mac,
+            )
+            if address not in self._device_connect_time:
+                self._drop_device_wrapper(address)
+            await self._bind_extra_adapters()
 
         # React to audio profile changes — fire as background task so
         # the settings API returns immediately and the modal can close.

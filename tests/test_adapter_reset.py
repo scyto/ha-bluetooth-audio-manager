@@ -140,7 +140,7 @@ class SoftResetTest(unittest.IsolatedAsyncioTestCase):
             lambda stagger: order.append(f"reconnect stagger={stagger}")
         )
         result = await m.reset_adapter("soft")
-        self.assertEqual(result, {"mode": "soft", "powered": True})
+        self.assertEqual(result, {"mode": "soft", "powered": True, "adapters": ["/org/bluez/hci1"]})
         self.assertEqual(order, [
             "cancel", "powered=False", "powered=True",
             f"reconnect stagger={m.ADAPTER_RESET_RECONNECT_STAGGER}",
@@ -164,7 +164,7 @@ class SoftResetTest(unittest.IsolatedAsyncioTestCase):
         m.adapter.is_powered = AsyncMock(return_value=False)
         m.ADAPTER_RESET_POWER_TIMEOUT = 0
         result = await m.reset_adapter("soft")
-        self.assertEqual(result, {"mode": "soft", "powered": False})
+        self.assertEqual(result, {"mode": "soft", "powered": False, "adapters": ["/org/bluez/hci1"]})
         m.reconnect_service.reconnect_all.assert_not_called()
         self.assertFalse(m._adapter_resetting)
 

@@ -29,6 +29,7 @@ DEFAULT_DEVICE_SETTINGS = {
     "mpd_hw_volume": 100,  # Hardware volume % set when MPD starts (1-100)
     "volume_lock": False,  # Hold MPD, stream and speaker volume at 100%
     "avrcp_enabled": True,  # Auto-track PlaybackStatus; False = always Stopped
+    "adapter": "",  # MAC of the Bluetooth adapter to use; "" = the app's main adapter
 }
 
 MPD_PORT_MIN = 6600

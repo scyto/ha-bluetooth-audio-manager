@@ -610,9 +610,12 @@ function renderAdaptersModal(adapters) {
 
   container.innerHTML = adapters
     .map((a) => {
+      const nAssigned = (a.assigned_devices || []).length;
       const selectedBadge = a.selected
-        ? '<span class="badge bg-success ms-2">In Use</span>'
-        : "";
+        ? '<span class="badge bg-success ms-2">Main adapter</span>'
+        : a.in_use
+          ? `<span class="badge bg-success ms-2">In use · ${nAssigned} speaker${nAssigned === 1 ? "" : "s"}</span>`
+          : "";
       const bleScanBadge = a.ble_scanning
         ? '<span class="badge bg-warning ms-2">HA BLE Scanning</span>'
         : "";
@@ -636,7 +639,7 @@ function renderAdaptersModal(adapters) {
 
       const displayLabel = friendlyName || a.name;
       const selectBtn =
-        !a.selected && a.powered
+        !a.selected && !a.in_use && a.powered
           ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${safeJsString(a.address)}', '${safeJsString(displayLabel)}')">
                <i class="fas fa-check me-1"></i>Select
              </button>`
@@ -1171,7 +1174,73 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   }
   toggleIdleModeOptions();
   toggleMpdConfigVisibility();
+  loadAdapterOptions(address);
   new bootstrap.Modal("#deviceSettingsModal").show();
+}
+
+// Bluetooth adapter select: shown when more than one adapter could be used.
+// Options are built with textContent — adapter names come from the hardware.
+let _adapterSelectLoaded = false;
+
+async function loadAdapterOptions(address) {
+  const group = $("#adapter-setting-group");
+  const select = $("#setting-adapter");
+  _adapterSelectLoaded = false;
+  group.style.display = "none";
+  select.innerHTML = "";
+  let adapters = [];
+  try {
+    adapters = (await apiGet("/api/adapters")).adapters || [];
+  } catch (e) {
+    return;
+  }
+  const main = adapters.find((a) => a.selected);
+  const others = adapters.filter((a) => !a.selected && !a.ha_managed);
+  const device = (lastDevices || []).find((d) => d.address === address);
+  const assigned = (device && device.assigned_adapter) || "";
+  if (!main || (others.length === 0 && !assigned)) return;
+  const label = (a) => `${a.name} · ${a.hw_model || "Bluetooth adapter"} · ${a.address}`;
+  const mainOpt = document.createElement("option");
+  mainOpt.value = "";
+  mainOpt.dataset.mac = main.address;
+  mainOpt.textContent = `Main adapter (${label(main)})`;
+  select.appendChild(mainOpt);
+  for (const a of others) {
+    const opt = document.createElement("option");
+    opt.value = a.address;
+    opt.dataset.mac = a.address;
+    opt.textContent = label(a) + (a.in_use ? "" : " (not in use yet)");
+    select.appendChild(opt);
+  }
+  if (assigned && !others.some((a) => a.address === assigned)) {
+    const opt = document.createElement("option");
+    opt.value = assigned;
+    opt.dataset.mac = assigned;
+    opt.textContent = `${assigned} (not present)`;
+    select.appendChild(opt);
+  }
+  select.value = assigned;
+  _adapterSelectLoaded = true;
+  group.style.display = "";
+}
+
+async function pairOnSelectedAdapter() {
+  if (!_settingsAddress || !_adapterSelectLoaded) return;
+  const select = $("#setting-adapter");
+  const opt = select.options[select.selectedIndex];
+  const mac = opt ? opt.dataset.mac : "";
+  const btn = $("#btnPairOnAdapter");
+  btn.disabled = true;
+  showToast("Put the speaker in pairing mode — searching on the chosen adapter…", "info");
+  try {
+    const result = await apiPost("/api/pair", { address: _settingsAddress, adapter: mac });
+    showToast(result.connected ? "Paired and connected on the chosen adapter" : "Paired on the chosen adapter", "success");
+    bootstrap.Modal.getInstance($("#deviceSettingsModal"))?.hide();
+  } catch (e) {
+    showToast(`Pairing failed: ${e.message}`, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function toggleIdleModeOptions() {
@@ -1241,6 +1310,10 @@ async function saveDeviceSettings() {
   const avrcpToggle = $("#setting-avrcp-enabled");
   if (!avrcpToggle.disabled) {
     settings.avrcp_enabled = avrcpToggle.checked;
+  }
+  // Bluetooth adapter, only when the select is shown
+  if (_adapterSelectLoaded) {
+    settings.adapter = $("#setting-adapter").value;
   }
   try {
     const resp = await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);

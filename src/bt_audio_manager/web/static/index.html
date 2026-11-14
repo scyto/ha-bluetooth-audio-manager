@@ -366,6 +366,14 @@
             <div class="form-text">Shown instead of the Bluetooth name in this app and used as the MPD output name from the next MPD start. Leave empty to use the Bluetooth name. Kept when the device is forgotten and paired again.</div>
           </div>
 
+          <!-- Bluetooth adapter (several adapters in one app) -->
+          <div class="mb-3" id="adapter-setting-group" style="display: none;">
+            <label for="setting-adapter" class="form-label"><strong>Bluetooth adapter</strong></label>
+            <select class="form-select" id="setting-adapter"></select>
+            <div class="form-text">Which Bluetooth adapter this speaker is paired with and connected through. To move it: choose the adapter, put the speaker in pairing mode and press <em>Pair on this adapter</em> — its pairing on the other adapter is removed. An adapter Home Assistant's Bluetooth integration uses cannot be chosen.</div>
+            <button type="button" class="btn btn-sm btn-outline-primary mt-2" id="btnPairOnAdapter" onclick="pairOnSelectedAdapter()"><i class="fas fa-link me-1"></i>Pair on this adapter</button>
+          </div>
+
           <hr class="my-3">
 
           <!-- Audio Profile -->
