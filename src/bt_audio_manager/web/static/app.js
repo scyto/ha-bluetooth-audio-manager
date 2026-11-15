@@ -656,7 +656,7 @@ function renderAdaptersModal(adapters) {
             </div>
             <div class="d-flex align-items-center gap-2">
               ${poweredBadge}${selectedBadge}${haManagedBadge}${bleScanBadge}
-              ${a.ha_managed ? "" : `<button type="button" class="btn btn-sm btn-outline-secondary" title="Name this adapter" onclick="renameAdapter('${safeJsString(a.address)}', '${safeJsString(a.friendly_name || "")}')"><i class="fas fa-pen"></i></button>`}
+              ${a.ha_managed ? "" : `<button type="button" class="btn btn-sm btn-outline-secondary" title="Name this adapter" onclick="renameAdapter('${safeJsString(a.address)}', '${safeJsString(a.friendly_name || "")}', '${safeJsString(hwResolved ? a.hw_model : a.name)}')"><i class="fas fa-pen"></i></button>`}
               ${selectBtn}
             </div>
           </div>
@@ -666,15 +666,35 @@ function renderAdaptersModal(adapters) {
     .join("");
 }
 
-async function renameAdapter(mac, current) {
-  const name = window.prompt(`Name for adapter ${mac} (empty = no name):`, current || "");
-  if (name === null) return;
+let _renameAdapterMac = null;
+
+function renameAdapter(mac, current, hwLabel) {
+  _renameAdapterMac = mac;
+  $("#adapter-name-hw").textContent = hwLabel || "Bluetooth adapter";
+  $("#adapter-name-mac").textContent = mac;
+  const input = $("#adapter-name-input");
+  input.value = current || "";
+  input.placeholder = hwLabel || "";
+  input.onkeydown = (ev) => { if (ev.key === "Enter") saveAdapterName(); };
+  const el = $("#adapterNameModal");
+  el.addEventListener("shown.bs.modal", () => input.focus(), { once: true });
+  bootstrap.Modal.getOrCreateInstance(el).show();
+}
+
+async function saveAdapterName() {
+  if (!_renameAdapterMac) return;
+  const name = $("#adapter-name-input").value.trim();
+  const btn = $("#btnSaveAdapterName");
+  btn.disabled = true;
   try {
-    await apiPut(`/api/adapters/${encodeURIComponent(mac)}/name`, { name: name.trim() });
-    showToast(name.trim() ? `Adapter named “${name.trim()}”` : "Adapter name cleared", "success");
+    await apiPut(`/api/adapters/${encodeURIComponent(_renameAdapterMac)}/name`, { name });
+    showToast(name ? `Adapter named “${name}”` : "Adapter name removed", "success");
+    bootstrap.Modal.getInstance($("#adapterNameModal"))?.hide();
     loadAdapters();
   } catch (e) {
     showToast(`Failed to name adapter: ${e.message}`, "error");
+  } finally {
+    btn.disabled = false;
   }
 }
 

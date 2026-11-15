@@ -207,6 +207,30 @@
   </div>
 
   <!-- ========== ADAPTER SWITCH CONFIRMATION MODAL ========== -->
+  <div class="modal fade" id="adapterNameModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="fas fa-pen me-2"></i>Name adapter</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p id="adapter-name-hw" class="fw-semibold mb-1"></p>
+          <p id="adapter-name-mac" class="font-monospace small text-muted mb-3"></p>
+          <label for="adapter-name-input" class="form-label"><strong>Name</strong></label>
+          <input type="text" class="form-control" id="adapter-name-input" maxlength="64" autocomplete="off">
+          <div class="form-text">Shown instead of the hci name in this app, e.g. on the device cards ("on Stick 87.5"). Leave empty to remove the name. Kept when the adapter is unplugged.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnSaveAdapterName" onclick="saveAdapterName()">
+            <i class="fas fa-save me-1"></i>Save
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal fade" id="adapterSwitchModal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content">
