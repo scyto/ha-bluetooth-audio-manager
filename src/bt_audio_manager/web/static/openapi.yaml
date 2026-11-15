@@ -532,6 +532,49 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /api/adapters/{address}/name:
+    put:
+      tags: [Adapters]
+      summary: Name a Bluetooth adapter
+      description: >
+        A name of your own for an adapter (e.g. "Stick 87.5"), shown instead of
+        its hci name and hardware model in the app and returned as
+        `friendly_name` by `GET /api/adapters` and as `adapter_name` on
+        devices. Kept by MAC, also when the adapter is unplugged or the
+        devices are cleared. An empty name clears it.
+      parameters:
+        - name: address
+          in: path
+          required: true
+          description: The adapter's MAC address.
+          schema: { type: string, example: "AA:BB:CC:DD:EE:01" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 64, example: Stick 87.5 }
+      responses:
+        "200":
+          description: Name stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address: { type: string, example: "AA:BB:CC:DD:EE:01" }
+                  friendly_name: { type: string, example: Stick 87.5 }
+        "400":
+          description: Invalid address, JSON or name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
   /api/set-adapter:
     post:
       tags: [Adapters]
@@ -1340,6 +1383,9 @@ components:
         assigned_adapter:
           type: string
           description: The speaker's `adapter` setting; empty = main adapter.
+        adapter_name:
+          type: string
+          description: Your name for the adapter the entry is on, else its hci name.
 
     IdleMode:
       type: string
@@ -1506,6 +1552,9 @@ components:
         usb_id: { type: string, example: "8087:0029" }
         powered: { type: boolean }
         discovering: { type: boolean }
+        friendly_name:
+          type: string
+          description: Your own name for the adapter ("" when none is set).
         selected:
           type: boolean
           description: The add-on's main adapter.

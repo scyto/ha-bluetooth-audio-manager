@@ -565,7 +565,7 @@ function buildDeviceCard(d) {
             </div>
           </div>
           <div class="device-slot-badges">${buildCapBadges(d)}</div>
-          <div class="device-slot-meta device-meta-text font-monospace text-muted">${btNameHtml}${escapeHtml(d.address)}${rssiHtml}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
+          <div class="device-slot-meta device-meta-text font-monospace text-muted">${btNameHtml}${escapeHtml(d.address)}${rssiHtml}${d.adapter ? ` on ${escapeHtml(d.adapter_name || d.adapter)}` : ""}</div>
           <div class="device-slot-profiles device-meta-text">${profilesHtml}</div>
           ${signalHtml}
           ${sinkHtml}
@@ -630,10 +630,11 @@ function renderAdaptersModal(adapters) {
       // Filter out hostname-like aliases (contain dots) — BlueZ defaults alias to hostname
       const hwResolved = a.hw_model && a.hw_model !== a.modalias;
       const aliasUseful = a.alias && a.alias !== a.name && !a.alias.includes(".");
-      const friendlyName = hwResolved ? a.hw_model : (aliasUseful ? a.alias : "");
+      const friendlyName = a.friendly_name || (hwResolved ? a.hw_model : (aliasUseful ? a.alias : ""));
 
-      // Technical line: hci name + modalias
+      // Technical line: hci name (+ hardware model under a user's name) + modalias
       const techParts = [a.name];
+      if (a.friendly_name && hwResolved) techParts.push(a.hw_model);
       if (a.modalias) techParts.push(a.modalias);
       const techLine = techParts.join(" \u2014 ");
 
@@ -655,6 +656,7 @@ function renderAdaptersModal(adapters) {
             </div>
             <div class="d-flex align-items-center gap-2">
               ${poweredBadge}${selectedBadge}${haManagedBadge}${bleScanBadge}
+              ${a.ha_managed ? "" : `<button type="button" class="btn btn-sm btn-outline-secondary" title="Name this adapter" onclick="renameAdapter('${safeJsString(a.address)}', '${safeJsString(a.friendly_name || "")}')"><i class="fas fa-pen"></i></button>`}
               ${selectBtn}
             </div>
           </div>
@@ -662,6 +664,18 @@ function renderAdaptersModal(adapters) {
       `;
     })
     .join("");
+}
+
+async function renameAdapter(mac, current) {
+  const name = window.prompt(`Name for adapter ${mac} (empty = no name):`, current || "");
+  if (name === null) return;
+  try {
+    await apiPut(`/api/adapters/${encodeURIComponent(mac)}/name`, { name: name.trim() });
+    showToast(name.trim() ? `Adapter named “${name.trim()}”` : "Adapter name cleared", "success");
+    loadAdapters();
+  } catch (e) {
+    showToast(`Failed to name adapter: ${e.message}`, "error");
+  }
 }
 
 function openAdaptersModal() {
@@ -1199,7 +1213,9 @@ async function loadAdapterOptions(address) {
   const device = (lastDevices || []).find((d) => d.address === address);
   const assigned = (device && device.assigned_adapter) || "";
   if (!main || (others.length === 0 && !assigned)) return;
-  const label = (a) => `${a.name} · ${a.hw_model || "Bluetooth adapter"} · ${a.address}`;
+  const label = (a) => a.friendly_name
+    ? `${a.friendly_name} (${a.name} · ${a.address})`
+    : `${a.name} · ${a.hw_model || "Bluetooth adapter"} · ${a.address}`;
   const mainOpt = document.createElement("option");
   mainOpt.value = "";
   mainOpt.dataset.mac = main.address;
@@ -1576,7 +1592,7 @@ document.addEventListener("DOMContentLoaded", () => {
     .then((data) => {
       const ver = data.version;
       $("#build-version").textContent = ver;
-      $("#version-label").textContent = `${ver} (${data.adapter})`;
+      $("#version-label").textContent = `${ver} (${data.adapter_friendly_name || data.adapter})`;
       window._hfpSwitchingEnabled = !!data.hfp_switching_enabled;
       window._mpdHostname = data.hostname || location.hostname;
       window._mpdPasswordSet = !!data.mpd_password_set;

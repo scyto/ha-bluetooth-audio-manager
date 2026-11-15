@@ -2377,14 +2377,36 @@ class BluetoothAudioManager:
                 best[addr] = d
         return [best[a] for a in order]
 
+    def adapter_label(self, path_or_hci: str | None) -> str:
+        """The user's name for an adapter of this app, else its hci name."""
+        hci = (path_or_hci or "").rsplit("/", 1)[-1]
+        if not hci or not self.store:
+            return hci
+        macs = {}
+        if self._adapter_path and self._adapter_address:
+            macs[self._adapter_path.rsplit("/", 1)[-1]] = self._adapter_address
+        for mac, path in getattr(self, "_extra_adapter_paths", {}).items():
+            macs[path.rsplit("/", 1)[-1]] = mac
+        mac = macs.get(hci)
+        return (self.store.get_adapter_name(mac) if mac else "") or hci
+
+    async def set_adapter_name(self, mac: str, name: str) -> str:
+        """Set or clear an adapter's name and refresh the UI."""
+        result = await self.store.set_adapter_name(mac, name)
+        await self._broadcast_devices()
+        return result
+
     def _apply_friendly_names(self, devices: list[dict]) -> None:
         """Show the user's name for a speaker in place of its Bluetooth name.
 
         ``name`` is what every UI view displays; ``bt_name`` keeps the name
         the speaker reports (or the one stored at pairing) and
         ``friendly_name`` the user's own one ("" when none is set).
+        ``adapter_name`` is the user's name for the adapter the entry is on
+        (else its hci name).
         """
         for device in devices:
+            device["adapter_name"] = self.adapter_label(device.get("adapter", ""))
             bt_name = device.get("name", "")
             friendly = self.store.get_friendly_name(device["address"])
             device["bt_name"] = bt_name
@@ -2463,6 +2485,7 @@ class BluetoothAudioManager:
         ]
         for a in adapters:
             mac = a["address"].upper()
+            a["friendly_name"] = self.store.get_adapter_name(mac) if self.store else ""
             a["selected"] = a["path"] == self._adapter_path
             a["ble_scanning"] = a["discovering"]
             a["ha_managed"] = mac in ha_bt_macs

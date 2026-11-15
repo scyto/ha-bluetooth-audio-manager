@@ -60,6 +60,8 @@ class PersistenceStore:
         # Kept apart from the device records (keyed by address) so a name
         # survives Forget + re-pair of the same speaker.
         self._friendly_names: dict[str, str] = {}
+        # The user's names for Bluetooth adapters, keyed by adapter MAC.
+        self._adapter_names: dict[str, str] = {}
 
     async def load(self) -> None:
         """Load paired devices from disk."""
@@ -73,6 +75,7 @@ class PersistenceStore:
         if not self._path.exists():
             self._devices = []
             self._friendly_names = {}
+            self._adapter_names = {}
             logger.info("No existing paired devices store found")
             return
 
@@ -80,6 +83,7 @@ class PersistenceStore:
             data = json.loads(self._path.read_text())
             self._devices = self._canonicalise(data.get("devices", []))
             self._friendly_names = self._load_friendly_names(data.get("friendly_names"))
+            self._adapter_names = self._load_friendly_names(data.get("adapter_names"))
             logger.info("Loaded %d paired device(s) from store", len(self._devices))
             for d in self._devices:
                 non_defaults = {
@@ -93,6 +97,7 @@ class PersistenceStore:
             logger.error("Failed to parse paired devices store: %s", e)
             self._devices = []
             self._friendly_names = {}
+            self._adapter_names = {}
 
     @staticmethod
     def _load_friendly_names(raw) -> dict[str, str]:
@@ -142,6 +147,8 @@ class PersistenceStore:
         data = {"devices": self._devices}
         if self._friendly_names:
             data["friendly_names"] = self._friendly_names
+        if self._adapter_names:
+            data["adapter_names"] = self._adapter_names
         tmp = self._path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2))
         os.replace(tmp, self._path)
@@ -211,6 +218,36 @@ class PersistenceStore:
                 return ""
             del self._friendly_names[address]
             logger.info("Friendly name for %s cleared", address)
+        await self.save()
+        return name
+
+    # -- Adapter names --
+    #
+    # Kept by adapter MAC and not cleared by "Clear all devices": they name
+    # hardware, not pairings.
+
+    def get_adapter_name(self, mac: str) -> str:
+        """The user's name for a Bluetooth adapter, or "" when none is set."""
+        return self._adapter_names.get(normalize_address(mac), "")
+
+    @property
+    def adapter_names(self) -> dict[str, str]:
+        return dict(self._adapter_names)
+
+    async def set_adapter_name(self, mac: str, name: str) -> str:
+        """Set (or, with an empty name, clear) the user's name for an adapter."""
+        mac = normalize_address(mac)
+        name = name.strip()
+        if name:
+            if self._adapter_names.get(mac) == name:
+                return name
+            self._adapter_names[mac] = name
+            logger.info("Name for adapter %s set to %r", mac, name)
+        else:
+            if mac not in self._adapter_names:
+                return ""
+            del self._adapter_names[mac]
+            logger.info("Name for adapter %s cleared", mac)
         await self.save()
         return name
 

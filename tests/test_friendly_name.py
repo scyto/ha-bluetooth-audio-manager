@@ -178,9 +178,9 @@ class ManagerFriendlyNameTest(unittest.TestCase):
         m = self.build({A: "UKW 87.5"})
         devices = [{"address": A, "name": "ES-BT17"}, {"address": B, "name": "ES-BT17"}]
         m._apply_friendly_names(devices)
-        self.assertEqual(devices[0], {"address": A, "name": "UKW 87.5",
+        self.assertEqual(devices[0], {"address": A, "name": "UKW 87.5", "adapter_name": "",
                                       "bt_name": "ES-BT17", "friendly_name": "UKW 87.5"})
-        self.assertEqual(devices[1], {"address": B, "name": "ES-BT17",
+        self.assertEqual(devices[1], {"address": B, "name": "ES-BT17", "adapter_name": "",
                                       "bt_name": "ES-BT17", "friendly_name": ""})
 
     def test_mpd_output_name_uses_friendly_name(self):

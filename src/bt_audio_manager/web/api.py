@@ -114,6 +114,18 @@ async def _ws_sender(
         pass
 
 
+def _friendly_name_error(name, field: str = "name") -> str | None:
+    """Why a user-given name (speaker or adapter) is not acceptable, else None."""
+    if not isinstance(name, str):
+        return f"{field} must be a string"
+    name = name.strip()
+    if len(name) > FRIENDLY_NAME_MAX_LEN:
+        return f"{field} must be at most {FRIENDLY_NAME_MAX_LEN} characters"
+    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+        return f"{field} must not contain control characters"
+    return None
+
+
 def create_api_routes(
     manager: "BluetoothAudioManager",
     log_handler: "WebSocketLogHandler | None" = None,
@@ -145,6 +157,7 @@ def create_api_routes(
                 mac: p.rsplit("/", 1)[-1]
                 for mac, p in getattr(manager, "_extra_adapter_paths", {}).items()
             },
+            "adapter_friendly_name": manager.adapter_label(path) if manager.store else adapter_name,
             "hostname": socket.gethostname(),
             "mpd_password_set": manager._get_mpd_password() is not None,
         })
@@ -158,6 +171,30 @@ def create_api_routes(
         except Exception as e:
             logger.error("Failed to list adapters: %s", e)
             return web.json_response({"error": str(e)}, status=500)
+
+    @routes.put("/api/adapters/{address}/name")
+    async def set_adapter_name(request: web.Request) -> web.Response:
+        """Give a Bluetooth adapter a name of your own: body ``{"name": "..."}`` ("" clears)."""
+        address = request.match_info["address"]
+        if not _MAC_RE.match(address):
+            return web.json_response(
+                {"error": "Invalid adapter address format (expected XX:XX:XX:XX:XX:XX)"},
+                status=400,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        name = body.get("name") if isinstance(body, dict) else None
+        error = _friendly_name_error(name)
+        if error:
+            return web.json_response({"error": error}, status=400)
+        try:
+            result = await manager.set_adapter_name(normalize_address(address), name.strip())
+        except Exception as e:
+            logger.error("Failed to name adapter %s: %s", address, e)
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"address": normalize_address(address), "friendly_name": result})
 
     @routes.post("/api/set-adapter")
     async def set_adapter(request: web.Request) -> web.Response:
@@ -434,21 +471,10 @@ def create_api_routes(
                     {"error": "No valid settings provided"}, status=400
                 )
             if friendly_name is not None:
-                if not isinstance(friendly_name, str):
-                    return web.json_response(
-                        {"error": "friendly_name must be a string"}, status=400
-                    )
+                error = _friendly_name_error(friendly_name, "friendly_name")
+                if error:
+                    return web.json_response({"error": error}, status=400)
                 friendly_name = friendly_name.strip()
-                if len(friendly_name) > FRIENDLY_NAME_MAX_LEN:
-                    return web.json_response(
-                        {"error": f"friendly_name must be at most {FRIENDLY_NAME_MAX_LEN} characters"},
-                        status=400,
-                    )
-                if any(ord(c) < 32 or ord(c) == 127 for c in friendly_name):
-                    return web.json_response(
-                        {"error": "friendly_name must not contain control characters"},
-                        status=400,
-                    )
             if "audio_profile" in settings:
                 from ..bluez.constants import HFP_SWITCHING_ENABLED
                 if not HFP_SWITCHING_ENABLED:
