@@ -149,6 +149,13 @@ Open a device's menu (**⋮**) and select **Settings** to configure per-device
 options. Settings are stored in `/config/paired_devices.json` (addon_config) and
 persist across restarts, HA backups, and add-on reinstalls.
 
+### Name
+
+Your own name for the speaker, shown instead of its Bluetooth name (which
+stays visible in small print on the card and in the settings dialog). Leave it
+empty to use the Bluetooth name. The name is kept when the device is forgotten
+and paired again.
+
 ### When Idle
 
 Controls what happens when audio playback stops on a connected device.
@@ -210,22 +217,62 @@ Lists all Bluetooth adapters detected on the system. Each adapter shows:
 - Friendly name (resolved from USB hardware model when available)
 - HCI name and modalias
 - MAC address
-- Status badges: *Powered* / *Off*, *In Use*, *HA Bluetooth* (if managed by
-  HA's Bluetooth integration), *HA BLE Scanning* (if active BLE scanning)
+- Status badges: *Powered* / *Off*, *Main adapter*, *In use · N speakers*
+  (an additional adapter, see below), *HA Bluetooth* (if managed by HA's
+  Bluetooth integration), *HA BLE Scanning* (if active BLE scanning)
+
+**Names:** the pencil button gives an adapter a name of your own (e.g.
+"Stick 87.5"). It is shown in this list, in the speaker settings and on the
+device cards ("on Stick 87.5" instead of "on hci2"), and kept by MAC — also
+when the adapter is unplugged or the devices are cleared. API:
+`PUT /api/adapters/<MAC>/name {"name": "Stick 87.5"}`; an empty name clears
+it.
 
 **Recommendation:** Use a dedicated USB Bluetooth adapter that is **not**
 configured in Home Assistant's Bluetooth integration.
 
-**Switching adapters:** Click **Select** on a different adapter. A confirmation
-dialog warns that all current device pairings will be cleared. The add-on
-restarts with the new adapter. The adapter selection is stored by MAC address
-so it survives reboots.
+**Switching the main adapter:** Click **Make main** on a different adapter.
+This **unpairs every speaker and deletes its settings**; switching back does
+not restore them. The confirmation dialog lists the speakers that will be
+unpaired, and the switch only runs after you tick the acknowledgement. The
+add-on then restarts with the new adapter. The adapter selection is stored by
+MAC address so it survives reboots. To use an extra adapter for some speakers
+only, do **not** switch — set it in those speakers' settings (see below).
+Through the API, `POST /api/set-adapter` with `clean: true` needs
+`confirm_unpair` set to the number from `GET /api/set-adapter/impact`.
+
+**Several adapters:** one app instance can drive speakers on
+more than one adapter — useful when one adapter cannot carry all streams
+(three A2DP streams on one Realtek RTL8761B stick overload it now and then,
+and every overload lowers the SBC bitrate for a long time). The adapter
+chosen above stays the *main adapter*; each speaker can be moved to another
+one:
+
+1. Plug in the adapter. If Home Assistant's Bluetooth integration offers it,
+   set it to **Ignore** there (an adapter HA uses cannot be chosen).
+2. Open the speaker's **Settings**, choose the adapter under *Bluetooth
+   adapter*, put the speaker in pairing mode and press **Pair on this
+   adapter**. The app searches for the speaker on that adapter (up to 40 s),
+   pairs and connects it there, removes its pairing on the other adapter and
+   stores the choice. While it searches, the speaker is blocked on its old
+   adapter so it cannot reconnect there; if the move fails, that is undone. Via the API: `POST /api/pair
+   {"address": "<speaker>", "adapter": "<adapter MAC>"}`.
+
+Everything else follows: connects and reconnects use the speaker's adapter,
+the adapter is watched like the main one (unplugged and back → the app
+restarts), `POST /api/adapter/reset` resets all adapters or the one given as
+`adapter`, and `POST /api/scan` takes an `adapter` too. If an additional
+adapter is missing at startup the app does not wait for it — its speakers are
+unavailable until it appears, then it is used without a restart. Changing the
+setting alone does not move a speaker; it keeps its old pairing until it is
+paired on the new adapter.
 
 ## Usage
 
 1. Open the add-on from the Home Assistant sidebar (**BT Audio Dev**)
 2. If you have multiple Bluetooth adapters, go to **Settings > Bluetooth
-   Adapters** and select the one to use
+   Adapters** and make the one to use the main adapter (**Make main**) —
+   before you pair any speakers
 3. Put your Bluetooth speaker in pairing mode
 4. Click the **Add Device** tile — a scan runs for the configured duration,
    showing a countdown
@@ -270,6 +317,44 @@ on your real devices.
 Full guide with automation examples and troubleshooting:
 <https://github.com/scyto/ha-bluetooth-audio-manager/blob/main/docs/api.md>
 
+## Connection and playback behaviour
+
+- **Startup** — speakers that are not connected are reconnected one after
+  another, 20 s apart; speakers that are still connected take no slot.
+- **Configured adapter missing at startup** — the app waits for the adapter
+  configured by MAC instead of binding to the first powered one (on a host
+  with two adapters usually Home Assistant's own). The UI stays reachable;
+  choosing another adapter there ends the wait.
+- **PulseAudio watchdog** — the connection to PulseAudio is checked with
+  every sink poll (5 s). If the audio service was not up yet or is
+  restarted later, the app reconnects by itself (one attempt every 10 s)
+  and sets up the speakers that are still connected. `pactl` calls are
+  limited to 10 s.
+- **48 kHz streams** — with *Prefer 44.1 kHz* (App Settings) on, a speaker that set up its
+  stream at 48 kHz by itself is disconnected and connected again from the
+  app a few seconds later (at most two attempts per speaker in 10 minutes);
+  re-opening only the stream could leave a speaker decoding at 48 kHz,
+  about 9 % too fast.
+- **Unreachable speaker, others on the same adapter** — every failed page
+  ("page timeout") keeps the adapter's radio busy for about 5 s, and a
+  speaker streaming on the same adapter overloads and loses bitrate. After
+  a page timeout the speaker is tried at most every 120 s while another
+  speaker on that adapter streams. `POST /api/connect` then answers 409 with
+  `retry_in`; `POST /api/force-reconnect` is never held back.
+- **Resume after a restart** — MPD cannot keep its own state file in the
+  app container, so every new daemon starts with an empty queue. The app
+  notes the station each MPD instance is playing (every 30 s and when it
+  stops a daemon) in `/data/playback_resume.json` and plays it again when
+  that speaker's daemon is back (entries older than 30 minutes are
+  dropped). Stopped, forgotten or MPD-disabled speakers are not resumed.
+- **Lowered SBC bitrate** — PulseAudio lowers a speaker's SBC bitpool after
+  an overload and raises it again slowly. `GET /api/diagnostics/pulse-bluetooth`
+  shows per speaker `sbc_frames_per_packet` (the value at full bitrate
+  depends on the link's packet size, e.g. 5 or 7; 15 is the lowest step,
+  flagged as `at_lowest_step`). A reconnect restores full bitrate. More than
+  two streaming speakers per adapter tend to overload it; see *Several
+  adapters* above.
+
 ## Requirements
 
 - A Bluetooth adapter (built-in or USB dongle) accessible to HAOS
@@ -311,6 +396,15 @@ simultaneously, the add-on detects this as a Bluetooth adapter disruption and
 temporarily suppresses auto-reconnect to avoid hammering a potentially
 unstable adapter. Reconnection resumes automatically after the suppression
 window. Check the Logs view for "adapter disruption" messages.
+
+**Adapter stuck — several speakers drop and won't come back**: A USB stick's
+firmware can get into a state only a reset clears (kernel messages such as
+`hw err`, `link tx timeout`, or packets for unknown connection handles).
+`POST /api/adapter/reset` resets it without touching the stick:
+`{"mode": "soft"}` powers the adapter off and on through BlueZ and reconnects
+the speakers one by one; `{"mode": "usb"}` resets the USB device — like
+unplugging it, firmware reload included — and restarts the add-on. Try `soft`
+first. The add-on asks for USB access (`usb: true`) only for this reset.
 
 **Devices reappeared after reinstall with default settings**: After a fresh
 install or data wipe, the add-on automatically imports any devices that are
