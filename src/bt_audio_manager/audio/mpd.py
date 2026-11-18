@@ -53,6 +53,14 @@ class MPDManager:
         self._connect_lock = asyncio.Lock()
         self._sink_name: str | None = None
         self._stderr_task: asyncio.Task | None = None
+        # Repeat mode + guard against a reconnect loop (see enable_repeat)
+        self._stream_ends: list[float] = []
+        self._repeat_guard_task: asyncio.Task | None = None
+        self._watch_task: asyncio.Task | None = None  # see _watch_playback
+        # Hold MPD's software volume at volume_lock_level (per-device
+        # "volume_lock" setting; the level is app-wide, default 100)
+        self.volume_lock: bool = False
+        self.volume_lock_level: int = 100
 
     # -- Lifecycle --
 
@@ -71,11 +79,17 @@ class MPDManager:
         await self._start_daemon()
         await self._connect_client()
         self._running = True
+        self._watch_task = asyncio.create_task(self._watch_playback())
         logger.info("MPD started for %s on port %d", self._address, self._port)
 
     async def stop(self) -> None:
         """Disconnect client and terminate MPD daemon."""
         self._running = False
+        for task in (self._repeat_guard_task, self._watch_task):
+            if task and not task.done():
+                task.cancel()
+        self._repeat_guard_task = None
+        self._watch_task = None
 
         if self._stderr_task:
             self._stderr_task.cancel()
@@ -108,6 +122,11 @@ class MPDManager:
             and self._process is not None
             and self._process.returncode is None
         )
+
+    @property
+    def pid(self) -> int | None:
+        """PID of the running daemon (None when not running)."""
+        return self._process.pid if self.is_running else None
 
     @property
     def port(self) -> int:
@@ -240,8 +259,74 @@ class MPDManager:
                 text = line.decode().rstrip()
                 if text:
                     logger.info("[mpd:%d] %s", self._port, text)
+                    if "player: played " in text:
+                        self._on_stream_end()
         except Exception:
             pass
+
+    # -- Repeat mode ---------------------------------------------------------
+    #
+    # A live radio stream "ends" whenever the server closes the connection.
+    # MPD then logs "player: played <url>" and simply stops: the speaker
+    # stays silent until something outside notices and plays again (minutes,
+    # with a polling watchdog).  With repeat on and a single-entry queue MPD
+    # re-opens the same URL straight away.  A real error (server down) still
+    # stops playback, so repeat alone cannot spin.  The guard below covers
+    # the remaining case of a server that keeps accepting and immediately
+    # closing: too many ends in a short time switch repeat off for a while.
+
+    REPEAT_GUARD_MAX_ENDS = 5      # stream ends tolerated within the window
+    REPEAT_GUARD_WINDOW = 60.0     # seconds
+    REPEAT_GUARD_COOLDOWN = 600.0  # seconds repeat stays off after tripping
+
+    async def enable_repeat(self) -> bool:
+        """Turn MPD's repeat mode on (lost whenever the daemon restarts)."""
+        await self._ensure_connected()
+        if not self._client:
+            return False
+        try:
+            await self._client.repeat(1)
+            await self._client.single(0)
+            return True
+        except Exception as e:
+            logger.debug("MPD repeat on failed (port %d): %s", self._port, e)
+            if self._is_connection_error(e):
+                self._disconnect_client()
+            return False
+
+    async def _set_repeat_off(self) -> None:
+        await self._ensure_connected()
+        if not self._client:
+            return
+        try:
+            await self._client.repeat(0)
+        except Exception as e:
+            logger.debug("MPD repeat off failed (port %d): %s", self._port, e)
+            if self._is_connection_error(e):
+                self._disconnect_client()
+
+    def _on_stream_end(self) -> None:
+        now = asyncio.get_running_loop().time()
+        self._stream_ends = [t for t in self._stream_ends if now - t < self.REPEAT_GUARD_WINDOW]
+        self._stream_ends.append(now)
+        if len(self._stream_ends) <= self.REPEAT_GUARD_MAX_ENDS:
+            return
+        if self._repeat_guard_task and not self._repeat_guard_task.done():
+            return  # already tripped
+        logger.warning(
+            "[mpd:%d] stream ended %d times within %ds — repeat off for %ds "
+            "to avoid hammering the server",
+            self._port, len(self._stream_ends), int(self.REPEAT_GUARD_WINDOW),
+            int(self.REPEAT_GUARD_COOLDOWN),
+        )
+        self._stream_ends.clear()
+        self._repeat_guard_task = asyncio.ensure_future(self._repeat_cooldown())
+
+    async def _repeat_cooldown(self) -> None:
+        await self._set_repeat_off()
+        await asyncio.sleep(self.REPEAT_GUARD_COOLDOWN)
+        if self.is_running and await self.enable_repeat():
+            logger.info("[mpd:%d] repeat back on after cooldown", self._port)
 
     # -- Client connection --
 
@@ -327,6 +412,112 @@ class MPDManager:
                     pass
         except Exception as e:
             logger.warning("MPD command %s failed (port %d): %s", command, self._port, e)
+            if self._is_connection_error(e):
+                self._disconnect_client()
+
+    async def restart_playback(self) -> bool:
+        """Stop and start playback, re-opening the stream and the audio output.
+
+        Used after a Bluetooth discovery scan, which can stall the A2DP link
+        long enough that MPD's output never recovers on its own (#319).
+        Equivalent to what a fresh ``media_player.play_media`` achieves.
+        """
+        await self._ensure_connected()
+        if not self._client:
+            return False
+        try:
+            await self._client.stop()
+            await asyncio.sleep(0.5)
+            await self._client.play()
+            return True
+        except Exception as e:
+            logger.warning("MPD restart failed (port %d): %s", self._port, e)
+            if self._is_connection_error(e):
+                self._disconnect_client()
+            return False
+
+    # -- Retry after a stream error -------------------------------------------
+    #
+    # When the stream cannot be opened — internet down, DNS failing, the
+    # station offline — MPD stops with an error and stays stopped; repeat
+    # does not help because MPD deliberately stops on errors.  Keep trying
+    # with backoff until it plays again.  Only an *error* stop is retried:
+    # MPD reports it in status["error"], a plain stop or pause has none.
+
+    PLAY_RETRY_DELAYS = (5, 10, 20, 60)  # seconds; the last one repeats
+    WATCH_INTERVAL = 5.0  # seconds between status checks
+
+    async def _watch_playback(self) -> None:
+        loop = asyncio.get_running_loop()
+        attempt = 0
+        next_try: float | None = None
+        try:
+            while self._running:
+                await asyncio.sleep(self.WATCH_INTERVAL)
+                status = await self.get_status()
+                await self._enforce_volume_lock(status)
+                state = status.get("state")
+                if state == "play":
+                    if attempt:
+                        logger.info(
+                            "[mpd:%d] playback recovered after %d retr%s",
+                            self._port, attempt, "y" if attempt == 1 else "ies",
+                        )
+                    attempt, next_try = 0, None
+                    continue
+                error = status.get("error")
+                if state != "stop" or not error:
+                    attempt, next_try = 0, None  # paused, stopped on purpose, or unknown
+                    continue
+                now = loop.time()
+                if next_try is None:
+                    delay = self.PLAY_RETRY_DELAYS[min(attempt, len(self.PLAY_RETRY_DELAYS) - 1)]
+                    next_try = now + delay
+                    log = logger.warning if attempt == 0 else logger.info
+                    log(
+                        "[mpd:%d] playback stopped with error (%s) — retrying in %ds",
+                        self._port, error, delay,
+                    )
+                    continue
+                if now < next_try:
+                    continue
+                attempt += 1
+                next_try = None
+                await self._retry_play()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("[mpd:%d] playback watch ended: %s", self._port, e)
+
+    async def _enforce_volume_lock(self, status: dict) -> bool:
+        """Put the software volume back to the lock level when the lock is on.
+
+        Anything can move it — a dashboard slider, an automation, the
+        speaker buttons via AVRCP.  Checked on every watch tick (5 s).
+        """
+        if not self.volume_lock:
+            return False
+        volume = status.get("volume")
+        try:
+            current = int(volume)
+        except (TypeError, ValueError):
+            return False  # no mixer / unknown status
+        target = self.volume_lock_level
+        if current < 0 or current == target:
+            return False
+        await self.set_volume(target)
+        logger.info("[mpd:%d] volume %d%% -> %d%% (volume lock)", self._port, current, target)
+        return True
+
+    async def _retry_play(self) -> None:
+        await self._ensure_connected()
+        if not self._client:
+            return
+        try:
+            await self._client.clearerror()
+            await self._client.play()
+        except Exception as e:
+            logger.debug("MPD retry play failed (port %d): %s", self._port, e)
             if self._is_connection_error(e):
                 self._disconnect_client()
 
