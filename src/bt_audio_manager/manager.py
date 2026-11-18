@@ -3459,10 +3459,16 @@ class BluetoothAudioManager:
             if playing_uri:
                 # The reconnect starts a new MPD daemon with an empty queue
                 # (stopped above, so nothing was noted for resuming): queue
-                # the station again and play it.
+                # the station again and play it.  If the speaker is not back
+                # yet, note the station so the daemon plays it when the
+                # automatic reconnect brings the speaker back.
                 new_mpd = self._mpd_instances.get(address)
+                resumed = False
                 if new_mpd is not None and new_mpd.is_running:
-                    await new_mpd.resume(playing_uri)
+                    resumed = await new_mpd.resume(playing_uri)
+                if not resumed:
+                    self._resume_state()[address] = {"uri": playing_uri, "at": time.time()}
+                    self._save_resume_state()
             return f"reconnected ({new_rate})"
         finally:
             self._rate_fix_running.discard(address)
@@ -4712,9 +4718,13 @@ class BluetoothAudioManager:
             # Live radio: re-open the stream at once when the server ends it,
             # instead of stopping until something outside plays again.
             await mpd.enable_repeat()
-            await self._resume_playback(address, mpd)
         except Exception as e:
             logger.warning("MPD start failed for %s: %s", address, e)
+            return
+        try:
+            await self._resume_playback(address, mpd)
+        except Exception as e:
+            logger.warning("Resuming playback on %s failed: %s", address, _err(e))
 
     async def _init_mpd_volume(
         self, address: str, mpd: "MPDManager", sink_name: str

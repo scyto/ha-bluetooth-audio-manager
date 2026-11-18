@@ -79,6 +79,24 @@ class EnsureRateTest(unittest.IsolatedAsyncioTestCase):
         # The new daemon starts with an empty queue: the station is queued again
         new_mpd.resume.assert_awaited_once_with("http://radio/bob")
 
+    async def test_station_is_noted_when_the_speaker_is_not_back_yet(self):
+        import tempfile, os
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        m, device, mpd = build([(0, 48000), None])
+        m.PLAYBACK_RESUME_FILE = os.path.join(tmp.name, "resume.json")
+
+        async def reconnect(address):
+            m._mpd_instances.pop(address, None)  # disconnected, not back yet
+            raise RuntimeError("br-connection-page-timeout")
+
+        m.force_reconnect_device = AsyncMock(side_effect=reconnect)
+        await m.ensure_a2dp_rate(A)
+        # The daemon started by the automatic reconnect plays it again
+        new = MagicMock(is_running=True, resume=AsyncMock(return_value=True),
+                        get_status=AsyncMock(return_value={"state": "stop"}))
+        self.assertTrue(await m._resume_playback(A, new))
+        new.resume.assert_awaited_once_with("http://radio/bob")
+
     async def test_failed_reconnect_is_left_to_auto_reconnect(self):
         m, device, mpd = build([(0, 48000), None])
         m.force_reconnect_device = AsyncMock(side_effect=RuntimeError("br-connection-page-timeout"))
