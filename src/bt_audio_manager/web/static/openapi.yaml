@@ -132,6 +132,15 @@ paths:
                   hfp_switching_enabled:
                     type: boolean
                     description: False when SCO is unavailable, which hides the HFP profile option.
+                  adapter_friendly_name:
+                    type: string
+                    description: Your name for the main adapter, else its hci name.
+                    example: Stick 1
+                  adapter_labels:
+                    type: array
+                    items: { type: string }
+                    description: Names of every adapter the app drives, main adapter first.
+                    example: [Stick 1, Stick 2]
                   hostname:
                     type: string
                     description: Container hostname; reachable from HA Core on port 8099.
@@ -231,6 +240,12 @@ paths:
                   type: integer
                   description: Scan length in seconds. Defaults to the app's `scan_duration_seconds` setting.
                   example: 30
+                adapter:
+                  type: string
+                  description: >
+                    Scan on this additional adapter (its MAC) instead of the
+                    main one; it must be in use (a speaker assigned to it).
+                  example: "AA:BB:CC:DD:EE:01"
       responses:
         "200":
           description: Scan started, or already in progress.
@@ -265,11 +280,27 @@ paths:
       description: >
         Runs the full onboarding sequence: pair, mark trusted, persist to the
         device store, then connect. The device must be in pairing mode.
+
+
+        The speaker is paired on `adapter` if given, else on the adapter its
+        `adapter` setting names, else on the main adapter. On another adapter
+        than the main one the speaker is first searched for there (up to 40 s,
+        pairing mode), and after pairing its pairing on the app's other
+        adapters is removed and the `adapter` setting updated — this is how a
+        speaker moves to a second Bluetooth adapter.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/AddressRequest" }
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+                adapter:
+                  type: string
+                  description: MAC of the adapter to pair on.
+                  example: "AA:BB:CC:DD:EE:01"
       responses:
         "200":
           description: Pairing completed.
@@ -324,6 +355,21 @@ paths:
                   address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
         "400":
           $ref: "#/components/responses/BadAddress"
+        "409":
+          description: >
+            Not tried: the speaker did not answer ("page timeout") less than
+            2 minutes ago and another speaker on the same adapter is
+            streaming; paging it now would disturb that stream. `retry_in`
+            says when it may be tried again. `POST /api/force-reconnect` is
+            not held back.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  deferred: { type: boolean, example: true }
+                  retry_in: { type: integer, example: 87 }
         "500":
           $ref: "#/components/responses/BluezError"
 
@@ -510,6 +556,49 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /api/adapters/{address}/name:
+    put:
+      tags: [Adapters]
+      summary: Name a Bluetooth adapter
+      description: >
+        A name of your own for an adapter (e.g. "Stick 87.5"), shown instead of
+        its hci name and hardware model in the app and returned as
+        `friendly_name` by `GET /api/adapters` and as `adapter_name` on
+        devices. Kept by MAC, also when the adapter is unplugged or the
+        devices are cleared. An empty name clears it.
+      parameters:
+        - name: address
+          in: path
+          required: true
+          description: The adapter's MAC address.
+          schema: { type: string, example: "AA:BB:CC:DD:EE:01" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 64, example: Stick 87.5 }
+      responses:
+        "200":
+          description: Name stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address: { type: string, example: "AA:BB:CC:DD:EE:01" }
+                  friendly_name: { type: string, example: Stick 87.5 }
+        "400":
+          description: Invalid address, JSON or name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
   /api/set-adapter:
     post:
       tags: [Adapters]
@@ -520,7 +609,14 @@ paths:
 
 
         Setting `clean: true` disconnects and removes every device first;
-        this is destructive and cannot be undone.
+        this is destructive and cannot be undone. When speakers are paired it
+        also needs `confirm_unpair` set to their number (from
+        `GET /api/set-adapter/impact`); otherwise nothing happens and the
+        reply is 409 with the speakers it would unpair.
+
+
+        To use another adapter for some speakers only, do not switch: set the
+        speaker's `adapter` setting and pair it with `POST /api/pair`.
       requestBody:
         required: true
         content:
@@ -537,6 +633,12 @@ paths:
                   type: boolean
                   default: false
                   description: Remove all paired devices before switching.
+                confirm_unpair:
+                  type: integer
+                  description: >
+                    Required with `clean: true` while speakers are paired: the
+                    number of speakers that will be unpaired.
+                  example: 3
       responses:
         "200":
           description: Selection saved.
@@ -553,9 +655,109 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            `clean: true` without a matching `confirm_unpair`; nothing was
+            changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  confirm_unpair_required: { type: integer, example: 3 }
+                  speakers:
+                    type: array
+                    items: { $ref: "#/components/schemas/UnpairSpeaker" }
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /api/set-adapter/impact:
+    get:
+      tags: [Adapters]
+      summary: Speakers a main-adapter switch would unpair
+      description: >
+        The speakers `POST /api/set-adapter` with `clean: true` would unpair;
+        `count` is the value `confirm_unpair` must carry.
+      responses:
+        "200":
+          description: Speakers that would be unpaired.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer, example: 3 }
+                  speakers:
+                    type: array
+                    items: { $ref: "#/components/schemas/UnpairSpeaker" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/adapter/reset:
+    post:
+      tags: [Adapters]
+      summary: Reset the Bluetooth adapter
+      description: >
+        For an adapter that has got stuck (speakers drop and will not come
+        back, firmware errors in the host log). `soft` (default) has BlueZ
+        power the adapter off and on, which resets the controller; the app
+        then reconnects auto-connect speakers one by one, 20 s apart.
+        `usb` resets the USB device behind the adapter (USBDEVFS_RESET) —
+        the software equivalent of unplugging it, firmware reload included —
+        and then restarts the app; the response is sent first. `usb` needs a
+        USB adapter and the app's USB access. At most one reset per 60 s.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [soft, usb]
+                  default: soft
+                adapter:
+                  type: string
+                  description: >
+                    Reset only this adapter (MAC); without it every adapter the
+                    app uses is reset.
+      responses:
+        "200":
+          description: Reset done (soft) or started (usb).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode: { type: string, enum: [soft, usb] }
+                  powered:
+                    type: boolean
+                    description: soft only — whether the adapter came back on.
+                  device:
+                    type: string
+                    description: usb only — the device node that is reset.
+                    example: /dev/bus/usb/001/005
+                  restart_expected:
+                    type: boolean
+                    description: usb only — the app restarts once the adapter is back.
+        "400":
+          description: Invalid JSON, or an unknown mode.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: A reset is already running, or the last one was less than 60 s ago.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: >
+            The reset failed — no adapter, not a USB adapter, or no USB access.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/restart:
     post:
       tags: [Adapters]
@@ -686,6 +888,173 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MprisDiagnostics" }
+
+  /api/diagnostics/audio-logs:
+    get:
+      tags: [Diagnostics]
+      summary: PulseAudio (audio plugin) log lines
+      description: >
+        Read-only view of the HAOS audio plugin's PulseAudio log, fetched
+        through the Supervisor. Useful to line up audible dropouts with
+        `Skipping N us (= M bytes) in audio stream` warnings, which
+        PulseAudio logs when a Bluetooth link did not take audio in time.
+        Reading the log does not query PulseAudio itself.
+      parameters:
+        - name: lines
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 500 }
+          description: Number of most recent journal lines to fetch.
+        - name: grep
+          in: query
+          required: false
+          schema: { type: string }
+          description: Case-insensitive substring filter applied to the fetched lines.
+        - name: timestamps
+          in: query
+          required: false
+          schema: { type: string, enum: ["1", "0"], default: "1" }
+          description: Annotated journal format with timestamps (`1`) or bare messages (`0`).
+      responses:
+        "200":
+          description: Matching log lines.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fetched: { type: integer }
+                  count: { type: integer }
+                  lines:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Invalid `lines`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Supervisor not reachable (no token).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/diagnostics/pulse-bluetooth:
+    get:
+      tags: [Diagnostics]
+      summary: PulseAudio Bluetooth module arguments
+      description: >
+        Lists the loaded `module-bluetooth-discover` / `module-bluez5-discover`
+        with their arguments and reports the A2DP bitrate recovery interval
+        in effect (`output_rate_refresh_interval_ms`, PulseAudio default
+        500 ms). Read-only; the interval is set through the audio plugin's
+        `/data/custom.pa` (see the documentation). `sinks` shows how far
+        PulseAudio has lowered each speaker's SBC bitrate, read from the
+        sink's fixed latency (25 ms + one Bluetooth packet): more SBC frames
+        per packet = lower bitpool; 15 is the lowest step that can be told
+        apart (bitpool about 22 or lower). Reconnecting a speaker restores
+        full bitrate.
+      responses:
+        "200":
+          description: Modules, interval and per-sink SBC estimate.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  modules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index: { type: integer }
+                        name: { type: string }
+                        argument: { type: string }
+                  output_rate_refresh_interval_ms: { type: integer, nullable: true }
+                  effective_interval_ms: { type: integer }
+                  custom: { type: boolean }
+                  sinks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sink: { type: string }
+                        rate: { type: integer, nullable: true }
+                        configured_latency_ms: { type: number, example: 45.3 }
+                        sbc_frames_per_packet: { type: integer, nullable: true, example: 7 }
+                        at_lowest_step: { type: boolean }
+        "503":
+          description: PulseAudio not connected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/diagnostics/gap-monitor:
+    get:
+      tags: [Diagnostics]
+      summary: Result of the current or last gap diagnosis
+      responses:
+        "200":
+          description: Status, gap count per sink and the gap events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "404":
+          description: No gap diagnosis has run since the app started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      tags: [Diagnostics]
+      summary: Start a gap diagnosis
+      description: >
+        Records every Bluetooth A2DP sink's PulseAudio monitor (8 kHz mono)
+        for the given time and logs two kinds of events. `silence`: at least
+        30 ms of exact digital silence, i.e. the audio was already missing
+        before Bluetooth (player, network). `stall`: PulseAudio's Bluetooth
+        output paused for at least 60 ms because the link, adapter or USB
+        path stopped taking data; stalls on all speakers at once point at
+        the shared path, single-speaker stalls at that link. An audible
+        dropout with neither happened inside the speaker or on the radio
+        without backing up the adapter. A running diagnosis is replaced.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                minutes: { type: number, minimum: 0.5, maximum: 60, default: 10 }
+      responses:
+        "200":
+          description: Diagnosis started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "400":
+          description: Invalid `minutes`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: No Bluetooth A2DP sink present.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [Diagnostics]
+      summary: Stop a running gap diagnosis early
+      responses:
+        "200":
+          description: Final status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GapMonitorStatus" }
+        "404":
+          description: No gap diagnosis has run since the app started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # --------------------------------------------------------------- Debug --
 
@@ -927,6 +1296,49 @@ components:
 
   schemas:
 
+    GapMonitorStatus:
+      type: object
+      properties:
+        running: { type: boolean }
+        started_at: { type: number, description: Unix time }
+        ends_at: { type: number, description: Unix time }
+        min_gap_ms: { type: integer }
+        seconds_recorded:
+          type: object
+          additionalProperties: { type: number }
+        stall_threshold_ms: { type: integer }
+        events_per_sink:
+          type: object
+          description: Per sink, number of silence gaps and of output stalls.
+          additionalProperties:
+            type: object
+            properties:
+              silence: { type: integer }
+              stall: { type: integer }
+        stall_clusters:
+          type: array
+          description: Stalls grouped across speakers (within 0.5 s = same moment).
+          items:
+            type: object
+            properties:
+              at: { type: string }
+              ts: { type: number }
+              sinks: { type: array, items: { type: string } }
+              max_ms: { type: integer }
+              since_previous_s: { type: number }
+        errors:
+          type: object
+          additionalProperties: { type: string }
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [silence, stall] }
+              sink: { type: string }
+              at: { type: string, description: Local time HH:MM:SS.d }
+              ts: { type: number }
+              duration_ms: { type: integer }
     Error:
       type: object
       description: >
@@ -936,6 +1348,15 @@ components:
         error:
           type: string
       required: [error]
+
+    UnpairSpeaker:
+      type: object
+      properties:
+        address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        name:
+          type: string
+          description: Friendly name, else Bluetooth name, else the address.
+          example: "Kitchen"
 
     AddressRequest:
       type: object
@@ -959,7 +1380,25 @@ components:
         visible to BlueZ.
       properties:
         address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
-        name: { type: string, example: Kitchen Speaker }
+        name:
+          type: string
+          example: Kitchen Speaker
+          description: >
+            Name to display: the user's `friendly_name` when set, otherwise
+            `bt_name`.
+        bt_name:
+          type: string
+          example: ES-BT17
+          description: >
+            Name the speaker reports over Bluetooth (or the one stored when it
+            was paired).
+        friendly_name:
+          type: string
+          example: "UKW 87.5"
+          description: >
+            The user's own name for this speaker; empty when none is set. Set
+            it with `PUT /api/devices/{address}/settings`. Stored per address,
+            so it survives Forget + re-pair; cleared by "Clear all devices".
         path:
           type: string
           description: BlueZ object path.
@@ -1021,7 +1460,14 @@ components:
         mpd_enabled: { type: boolean }
         mpd_port: { type: integer, nullable: true }
         mpd_hw_volume: { type: integer }
+        volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
+        assigned_adapter:
+          type: string
+          description: The speaker's `adapter` setting; empty = main adapter.
+        adapter_name:
+          type: string
+          description: Your name for the adapter the entry is on, else its hci name.
 
     IdleMode:
       type: string
@@ -1074,9 +1520,32 @@ components:
           type: integer
           minimum: 1
           maximum: 100
+        volume_lock:
+          type: boolean
+          description: >
+            Hold MPD volume at `volume_lock_level` (app setting, default 100)
+            and the MPD stream and the speaker's volume at 100%; any change is
+            undone. `mpd_hw_volume` is ignored while on.
         avrcp_enabled:
           type: boolean
           description: Route the speaker's transport buttons to MPD.
+        adapter:
+          type: string
+          description: >
+            MAC of the Bluetooth adapter this speaker uses; empty = the main
+            adapter from the app settings. Changing it does not move the
+            pairing: pair the speaker on the new adapter afterwards
+            (`POST /api/pair`, speaker in pairing mode). An adapter in use by
+            Home Assistant's Bluetooth integration is refused (409).
+          example: "AA:BB:CC:DD:EE:01"
+        friendly_name:
+          type: string
+          maxLength: 64
+          description: >
+            Name shown instead of the Bluetooth name in the app, also used as
+            the MPD output name from the next MPD start. Surrounding
+            whitespace is dropped; an empty string clears it. Control
+            characters are rejected with 400.
 
     DeviceSettings:
       type: object
@@ -1090,7 +1559,12 @@ components:
         mpd_enabled: { type: boolean }
         mpd_port: { type: integer, nullable: true }
         mpd_hw_volume: { type: integer }
+        volume_lock: { type: boolean }
         avrcp_enabled: { type: boolean }
+        adapter: { type: string, description: "Adapter MAC; empty = main adapter." }
+        friendly_name:
+          type: string
+          description: Present in the PUT response; empty when none is set.
 
     RuntimeSettings:
       type: object
@@ -1116,6 +1590,34 @@ components:
           type: integer
           minimum: 5
           maximum: 120
+        a2dp_prefer_44k:
+          type: boolean
+          default: true
+          description: >
+            When a speaker sets up its A2DP (SBC) stream by itself at 48 kHz,
+            close and re-open it from the app so PulseAudio picks 44.1 kHz
+            (no resampling of 44.1 kHz sources, about 9 % less airtime).
+            At most two attempts per speaker in 10 minutes.
+        volume_lock_level:
+          type: integer
+          minimum: 10
+          maximum: 100
+          default: 100
+          description: >
+            Level (percent) the volume lock holds MPD's volume at, for every
+            device with `volume_lock` on; their stream and speaker volume stay
+            at 100 %. Applied at once to running MPD instances. In a PUT that
+            also carries `volume_lock_all`, the level is applied first.
+        volume_lock_all:
+          type: boolean
+          description: >
+            GET: every stored device has `volume_lock` on. PUT: switch
+            `volume_lock` on or off for every stored device at once (stored
+            per device, not as a separate setting).
+        volume_lock_any:
+          type: boolean
+          readOnly: true
+          description: At least one stored device has `volume_lock` on.
 
     Adapter:
       type: object
@@ -1132,9 +1634,19 @@ components:
         usb_id: { type: string, example: "8087:0029" }
         powered: { type: boolean }
         discovering: { type: boolean }
+        friendly_name:
+          type: string
+          description: Your own name for the adapter ("" when none is set).
         selected:
           type: boolean
-          description: The adapter this add-on is currently using.
+          description: The add-on's main adapter.
+        in_use:
+          type: boolean
+          description: The main adapter, or an additional one speakers are assigned to.
+        assigned_devices:
+          type: array
+          items: { type: string }
+          description: Speakers that use this adapter.
         ble_scanning:
           type: boolean
           description: Mirrors `discovering`; the adapter is running a scan.

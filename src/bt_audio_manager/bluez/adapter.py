@@ -93,6 +93,20 @@ class BluezAdapter:
         address = await self._properties_iface.call_get(ADAPTER_INTERFACE, "Address")
         logger.info("Adapter %s initialized at %s", address.value, self._adapter_path)
 
+    async def is_powered(self) -> bool:
+        """Current ``Powered`` property of the adapter."""
+        value = await self._properties_iface.call_get(ADAPTER_INTERFACE, "Powered")
+        return bool(value.value)
+
+    async def set_powered(self, on: bool) -> None:
+        """Switch the adapter on or off.
+
+        Normally left to HAOS (see initialize); used only by the adapter
+        reset, where switching *our* adapter off and on makes the kernel
+        reset the controller and BlueZ drop and rebuild its state.
+        """
+        await self._properties_iface.call_set(ADAPTER_INTERFACE, "Powered", Variant("b", bool(on)))
+
     async def start_discovery(self) -> None:
         """Start unfiltered discovery on all transports (BR/EDR + BLE).
 

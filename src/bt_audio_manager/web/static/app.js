@@ -427,7 +427,10 @@ function buildDeviceCard(d) {
     const mpdPort = safeJsString(d.mpd_port ?? "");
     const mpdHwVolume = Number(d.mpd_hw_volume ?? 100) || 0;
     const avrcpEnabled = !!(d.avrcp_enabled ?? true);
+    const volumeLock = !!d.volume_lock;
     const safeName = safeJsString(d.name);
+    const safeFriendly = safeJsString(d.friendly_name || "");
+    const safeBtName = safeJsString(d.bt_name || d.name);
     const safeAddr = safeJsString(d.address);
     const uuidsJson = safeJsString(JSON.stringify(d.uuids || []));
     kebab = `
@@ -437,7 +440,7 @@ function buildDeviceCard(d) {
           <i class="fas fa-ellipsis-v"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end">
-          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${safeAddr}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}'); return false;">
+          <li><a class="dropdown-item" href="#" onclick="openDeviceSettings('${safeAddr}', '${safeName}', '${audioProfile}', '${idleMode}', '${kaMethod}', ${powerSaveDelay}, ${autoDisconnectMinutes}, ${mpdEnabled}, '${mpdPort}', ${mpdHwVolume}, ${avrcpEnabled}, '${uuidsJson}', ${volumeLock}, '${safeFriendly}', '${safeBtName}'); return false;">
             <i class="fas fa-cog me-2"></i>Settings
           </a></li>
           ${d.connected ? `<li><a class="dropdown-item" href="#" onclick="forceReconnectDevice('${safeAddr}'); return false;">
@@ -539,6 +542,14 @@ function buildDeviceCard(d) {
 
   const staleClass = d._stale ? " device-stale" : "";
 
+  // A friendly name replaces d.name; keep the speaker's own Bluetooth name
+  // visible (meta line + tooltip) so it can still be matched to the device.
+  const hasFriendly = !!d.friendly_name && !!d.bt_name && d.bt_name !== d.name;
+  const nameTitle = hasFriendly ? `${d.name} (Bluetooth: ${d.bt_name})` : d.name;
+  const btNameHtml = hasFriendly
+    ? `<span title="Bluetooth name">${escapeHtml(d.bt_name)}</span> · `
+    : "";
+
   // --- Single unified template ---
   // Every card renders every slot; empty slots use fixed-height placeholders
   // so that rows align across cards regardless of device state.
@@ -547,14 +558,14 @@ function buildDeviceCard(d) {
       <div class="card device-card h-100${staleClass}">
         <div class="card-body">
           <div class="device-slot-header">
-            <h5 class="card-title mb-0" title="${escapeAttr(d.name)}">${escapeHtml(d.name)}</h5>
+            <h5 class="card-title mb-0" title="${escapeAttr(nameTitle)}">${escapeHtml(d.name)}</h5>
             <div class="d-flex align-items-center gap-1">
               <span class="badge ${badgeClass}">${statusText}</span>
               ${kebab}
             </div>
           </div>
           <div class="device-slot-badges">${buildCapBadges(d)}</div>
-          <div class="device-slot-meta device-meta-text font-monospace text-muted">${escapeHtml(d.address)}${rssiHtml}${d.adapter ? ` on ${escapeHtml(d.adapter)}` : ""}</div>
+          <div class="device-slot-meta device-meta-text font-monospace text-muted">${btNameHtml}${escapeHtml(d.address)}${rssiHtml}${d.adapter ? ` on ${escapeHtml(d.adapter_name || d.adapter)}` : ""}</div>
           <div class="device-slot-profiles device-meta-text">${profilesHtml}</div>
           ${signalHtml}
           ${sinkHtml}
@@ -599,9 +610,12 @@ function renderAdaptersModal(adapters) {
 
   container.innerHTML = adapters
     .map((a) => {
+      const nAssigned = (a.assigned_devices || []).length;
       const selectedBadge = a.selected
-        ? '<span class="badge bg-success ms-2">In Use</span>'
-        : "";
+        ? '<span class="badge bg-success ms-2">Main adapter</span>'
+        : a.in_use
+          ? `<span class="badge bg-success ms-2">In use · ${nAssigned} speaker${nAssigned === 1 ? "" : "s"}</span>`
+          : "";
       const bleScanBadge = a.ble_scanning
         ? '<span class="badge bg-warning ms-2">HA BLE Scanning</span>'
         : "";
@@ -616,18 +630,19 @@ function renderAdaptersModal(adapters) {
       // Filter out hostname-like aliases (contain dots) — BlueZ defaults alias to hostname
       const hwResolved = a.hw_model && a.hw_model !== a.modalias;
       const aliasUseful = a.alias && a.alias !== a.name && !a.alias.includes(".");
-      const friendlyName = hwResolved ? a.hw_model : (aliasUseful ? a.alias : "");
+      const friendlyName = a.friendly_name || (hwResolved ? a.hw_model : (aliasUseful ? a.alias : ""));
 
-      // Technical line: hci name + modalias
+      // Technical line: hci name (+ hardware model under a user's name) + modalias
       const techParts = [a.name];
+      if (a.friendly_name && hwResolved) techParts.push(a.hw_model);
       if (a.modalias) techParts.push(a.modalias);
       const techLine = techParts.join(" \u2014 ");
 
       const displayLabel = friendlyName || a.name;
       const selectBtn =
-        !a.selected && a.powered
-          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${safeJsString(a.address)}', '${safeJsString(displayLabel)}')">
-               <i class="fas fa-check me-1"></i>Select
+        !a.selected && !a.in_use && a.powered
+          ? `<button type="button" class="btn btn-sm btn-outline-danger" title="Switch the main adapter (unpairs all speakers). To use this adapter for one speaker, set it in that speaker's settings instead." onclick="selectAdapter('${safeJsString(a.address)}', '${safeJsString(displayLabel)}')">
+               <i class="fas fa-exchange-alt me-1"></i>Make main
              </button>`
           : "";
 
@@ -641,6 +656,7 @@ function renderAdaptersModal(adapters) {
             </div>
             <div class="d-flex align-items-center gap-2">
               ${poweredBadge}${selectedBadge}${haManagedBadge}${bleScanBadge}
+              ${a.ha_managed ? "" : `<button type="button" class="btn btn-sm btn-outline-secondary" title="Name this adapter" onclick="renameAdapter('${safeJsString(a.address)}', '${safeJsString(a.friendly_name || "")}', '${safeJsString(hwResolved ? a.hw_model : a.name)}')"><i class="fas fa-pen"></i></button>`}
               ${selectBtn}
             </div>
           </div>
@@ -648,6 +664,38 @@ function renderAdaptersModal(adapters) {
       `;
     })
     .join("");
+}
+
+let _renameAdapterMac = null;
+
+function renameAdapter(mac, current, hwLabel) {
+  _renameAdapterMac = mac;
+  $("#adapter-name-hw").textContent = hwLabel || "Bluetooth adapter";
+  $("#adapter-name-mac").textContent = mac;
+  const input = $("#adapter-name-input");
+  input.value = current || "";
+  input.placeholder = hwLabel || "";
+  input.onkeydown = (ev) => { if (ev.key === "Enter") saveAdapterName(); };
+  const el = $("#adapterNameModal");
+  el.addEventListener("shown.bs.modal", () => input.focus(), { once: true });
+  bootstrap.Modal.getOrCreateInstance(el).show();
+}
+
+async function saveAdapterName() {
+  if (!_renameAdapterMac) return;
+  const name = $("#adapter-name-input").value.trim();
+  const btn = $("#btnSaveAdapterName");
+  btn.disabled = true;
+  try {
+    await apiPut(`/api/adapters/${encodeURIComponent(_renameAdapterMac)}/name`, { name });
+    showToast(name ? `Adapter named “${name}”` : "Adapter name removed", "success");
+    bootstrap.Modal.getInstance($("#adapterNameModal"))?.hide();
+    loadAdapters();
+  } catch (e) {
+    showToast(`Failed to name adapter: ${e.message}`, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function openAdaptersModal() {
@@ -989,22 +1037,41 @@ async function doForgetDevice() {
 let _pendingAdapterMac = null;
 let _pendingAdapterLabel = null;
 
+let _pendingUnpairCount = 0;
+
 async function selectAdapter(adapterMac, displayLabel) {
-  // If no devices are stored/paired, skip the warning — nothing to lose
-  const hasDevices = lastDevices && lastDevices.some((d) => d.stored || d.paired);
-  if (!hasDevices) {
+  // Ask the server which speakers a switch would unpair: the count it
+  // returns has to be sent back to confirm (POST /api/set-adapter).
+  let impact;
+  try {
+    impact = await apiGet("/api/set-adapter/impact");
+  } catch (e) {
+    showToast(`Could not check the paired speakers: ${e.message}`, "error");
+    return;
+  }
+  if (!impact.count) {
     await doAdapterSwitch(adapterMac, displayLabel, false);
     return;
   }
 
-  // Show confirmation modal with pairing-loss warning
   _pendingAdapterMac = adapterMac;
   _pendingAdapterLabel = displayLabel;
+  _pendingUnpairCount = impact.count;
   $("#switch-adapter-name").textContent = displayLabel;
+  $("#switch-adapter-count").textContent = String(impact.count);
+  $("#switch-adapter-speakers").innerHTML = impact.speakers
+    .map((s) => {
+      const extra = s.name !== s.address ? ` <span class="font-monospace text-muted">${escapeHtml(s.address)}</span>` : "";
+      return `<li>${escapeHtml(s.name)}${extra}</li>`;
+    })
+    .join("");
+  const ack = $("#switch-adapter-ack");
+  ack.checked = false;
+  $("#btn-confirm-adapter-switch").disabled = true;
   new bootstrap.Modal("#adapterSwitchModal").show();
 }
 
-async function doAdapterSwitch(adapterMac, displayLabel, clean) {
+async function doAdapterSwitch(adapterMac, displayLabel, clean, confirmUnpair = 0) {
   try {
     // Close both modals — they will have stale data until the server returns
     bootstrap.Modal.getInstance($("#adapterSwitchModal"))?.hide();
@@ -1021,6 +1088,7 @@ async function doAdapterSwitch(adapterMac, displayLabel, clean) {
     const result = await apiPost("/api/set-adapter", {
       adapter: adapterMac,
       clean: clean,
+      ...(clean ? { confirm_unpair: confirmUnpair } : {}),
     });
     if (result.restart_required) {
       showBanner("Restarting app with new adapter...");
@@ -1046,6 +1114,12 @@ async function openSettingsModal() {
     $("#setting-reconnect-interval").value = data.reconnect_interval_seconds;
     $("#setting-reconnect-max-backoff").value = data.reconnect_max_backoff_seconds;
     $("#setting-scan-duration").value = data.scan_duration_seconds;
+    $("#setting-a2dp-prefer-44k").checked = data.a2dp_prefer_44k !== false;
+    const lockAll = $("#setting-volume-lock-all");
+    lockAll.checked = !!data.volume_lock_all;
+    lockAll.indeterminate = !!data.volume_lock_any && !data.volume_lock_all;
+    window._volumeLockAllTouched = false;
+    $("#setting-volume-lock-level").value = Number(data.volume_lock_level) || 100;
     new bootstrap.Modal("#settingsModal").show();
   } catch (e) {
     showToast(`Failed to load settings: ${e.message}`, "error");
@@ -1058,7 +1132,15 @@ async function saveSettings() {
     reconnect_interval_seconds: parseInt($("#setting-reconnect-interval").value, 10),
     reconnect_max_backoff_seconds: parseInt($("#setting-reconnect-max-backoff").value, 10),
     scan_duration_seconds: parseInt($("#setting-scan-duration").value, 10),
+    a2dp_prefer_44k: $("#setting-a2dp-prefer-44k").checked,
+    volume_lock_level: Math.min(100, Math.max(10,
+      parseInt($("#setting-volume-lock-level").value, 10) || 100)),
   };
+  // Only send the all-devices lock when the user actually flipped it, so
+  // saving other settings never overwrites a mixed per-device state.
+  if (window._volumeLockAllTouched) {
+    settings.volume_lock_all = $("#setting-volume-lock-all").checked;
+  }
   try {
     await apiPut("/api/settings", settings);
     showToast("Settings saved", "success");
@@ -1074,10 +1156,14 @@ async function saveSettings() {
 
 let _settingsAddress = null;
 
-function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson) {
+function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, powerSaveDelay, autoDisconnectMinutes, mpdEnabled, mpdPort, mpdHwVolume, avrcpEnabled, uuidsJson, volumeLock, friendlyName, btName) {
   _settingsAddress = address;
   $("#device-settings-name").textContent = name;
-  $("#device-settings-address").textContent = address;
+  $("#device-settings-address").textContent = btName && btName !== name
+    ? `${address} · ${btName}` : address;
+  const friendlyInput = $("#setting-friendly-name");
+  friendlyInput.value = friendlyName || "";
+  friendlyInput.placeholder = btName || name || "";
 
   // Parse UUIDs once — used by both Audio Profile and AVRCP sections
   const uuids = typeof uuidsJson === "string" ? JSON.parse(uuidsJson) : (uuidsJson || []);
@@ -1116,6 +1202,7 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   $("#setting-auto-disconnect-minutes").value = String(autoDisconnectMinutes ?? 30);
   $("#setting-mpd-enabled").checked = mpdEnabled || false;
   $("#setting-mpd-hw-volume").value = mpdHwVolume ?? 100;
+  $("#setting-volume-lock").checked = !!volumeLock;
   $("#setting-mpd-port").value = mpdPort || "";
   // Show connection info if port is assigned
   if (mpdPort) {
@@ -1141,7 +1228,75 @@ function openDeviceSettings(address, name, audioProfile, idleMode, kaMethod, pow
   }
   toggleIdleModeOptions();
   toggleMpdConfigVisibility();
+  loadAdapterOptions(address);
   new bootstrap.Modal("#deviceSettingsModal").show();
+}
+
+// Bluetooth adapter select: shown when more than one adapter could be used.
+// Options are built with textContent — adapter names come from the hardware.
+let _adapterSelectLoaded = false;
+
+async function loadAdapterOptions(address) {
+  const group = $("#adapter-setting-group");
+  const select = $("#setting-adapter");
+  _adapterSelectLoaded = false;
+  group.style.display = "none";
+  select.innerHTML = "";
+  let adapters = [];
+  try {
+    adapters = (await apiGet("/api/adapters")).adapters || [];
+  } catch (e) {
+    return;
+  }
+  const main = adapters.find((a) => a.selected);
+  const others = adapters.filter((a) => !a.selected && !a.ha_managed);
+  const device = (lastDevices || []).find((d) => d.address === address);
+  const assigned = (device && device.assigned_adapter) || "";
+  if (!main || (others.length === 0 && !assigned)) return;
+  const label = (a) => a.friendly_name
+    ? `${a.friendly_name} (${a.name} · ${a.address})`
+    : `${a.name} · ${a.hw_model || "Bluetooth adapter"} · ${a.address}`;
+  const mainOpt = document.createElement("option");
+  mainOpt.value = "";
+  mainOpt.dataset.mac = main.address;
+  mainOpt.textContent = `Main adapter (${label(main)})`;
+  select.appendChild(mainOpt);
+  for (const a of others) {
+    const opt = document.createElement("option");
+    opt.value = a.address;
+    opt.dataset.mac = a.address;
+    opt.textContent = label(a) + (a.in_use ? "" : " (not in use yet)");
+    select.appendChild(opt);
+  }
+  if (assigned && !others.some((a) => a.address === assigned)) {
+    const opt = document.createElement("option");
+    opt.value = assigned;
+    opt.dataset.mac = assigned;
+    opt.textContent = `${assigned} (not present)`;
+    select.appendChild(opt);
+  }
+  select.value = assigned;
+  _adapterSelectLoaded = true;
+  group.style.display = "";
+}
+
+async function pairOnSelectedAdapter() {
+  if (!_settingsAddress || !_adapterSelectLoaded) return;
+  const select = $("#setting-adapter");
+  const opt = select.options[select.selectedIndex];
+  const mac = opt ? opt.dataset.mac : "";
+  const btn = $("#btnPairOnAdapter");
+  btn.disabled = true;
+  showToast("Put the speaker in pairing mode — searching on the chosen adapter…", "info");
+  try {
+    const result = await apiPost("/api/pair", { address: _settingsAddress, adapter: mac });
+    showToast(result.connected ? "Paired and connected on the chosen adapter" : "Paired on the chosen adapter", "success");
+    bootstrap.Modal.getInstance($("#deviceSettingsModal"))?.hide();
+  } catch (e) {
+    showToast(`Pairing failed: ${e.message}`, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function toggleIdleModeOptions() {
@@ -1193,10 +1348,13 @@ async function saveDeviceSettings() {
     power_save_delay: parseInt($("#setting-power-save-delay").value, 10) || 0,
     auto_disconnect_minutes: parseInt($("#setting-auto-disconnect-minutes").value, 10) || 30,
     mpd_enabled: $("#setting-mpd-enabled").checked,
+    // Empty clears the name and falls back to the Bluetooth name
+    friendly_name: $("#setting-friendly-name").value.trim(),
   };
   // Include MPD config when enabled
   if (settings.mpd_enabled) {
     settings.mpd_hw_volume = parseInt($("#setting-mpd-hw-volume").value, 10) || 100;
+    settings.volume_lock = $("#setting-volume-lock").checked;
     const portVal = $("#setting-mpd-port").value;
     if (portVal) settings.mpd_port = parseInt(portVal, 10);
   }
@@ -1208,6 +1366,10 @@ async function saveDeviceSettings() {
   const avrcpToggle = $("#setting-avrcp-enabled");
   if (!avrcpToggle.disabled) {
     settings.avrcp_enabled = avrcpToggle.checked;
+  }
+  // Bluetooth adapter, only when the select is shown
+  if (_adapterSelectLoaded) {
+    settings.adapter = $("#setting-adapter").value;
   }
   try {
     const resp = await apiPut(`/api/devices/${encodeURIComponent(_settingsAddress)}/settings`, settings);
@@ -1448,14 +1610,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Wire up adapter-switch confirmation button
   const confirmSwitchBtn = $("#btn-confirm-adapter-switch");
+  const switchAck = $("#switch-adapter-ack");
+  if (switchAck && confirmSwitchBtn) {
+    switchAck.addEventListener("change", () => {
+      confirmSwitchBtn.disabled = !switchAck.checked;
+    });
+  }
   if (confirmSwitchBtn) {
     confirmSwitchBtn.addEventListener("click", async () => {
-      if (!_pendingAdapterMac) return;
+      if (!_pendingAdapterMac || !(switchAck && switchAck.checked)) return;
       const mac = _pendingAdapterMac;
       const label = _pendingAdapterLabel;
+      const count = _pendingUnpairCount;
       _pendingAdapterMac = null;
       _pendingAdapterLabel = null;
-      await doAdapterSwitch(mac, label, true);
+      _pendingUnpairCount = 0;
+      await doAdapterSwitch(mac, label, true, count);
     });
   }
 
@@ -1470,7 +1640,10 @@ document.addEventListener("DOMContentLoaded", () => {
     .then((data) => {
       const ver = data.version;
       $("#build-version").textContent = ver;
-      $("#version-label").textContent = `${ver} (${data.adapter})`;
+      const labels = (data.adapter_labels && data.adapter_labels.length)
+        ? data.adapter_labels
+        : [data.adapter_friendly_name || data.adapter];
+      $("#version-label").textContent = `${ver} (${labels.join(", ")})`;
       window._hfpSwitchingEnabled = !!data.hfp_switching_enabled;
       window._mpdHostname = data.hostname || location.hostname;
       window._mpdPasswordSet = !!data.mpd_password_set;

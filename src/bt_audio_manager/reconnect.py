@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ConnectDeferred(RuntimeError):
+    """A connect was skipped: the speaker did not answer a moment ago and
+    paging it again now would disturb a stream on the same adapter
+    (see BluetoothAudioManager.PAGE_RETRY_SPACING)."""
+
+
 class ReconnectService:
     """Manages automatic reconnection of disconnected Bluetooth audio devices."""
 
@@ -109,8 +115,13 @@ class ReconnectService:
         if not any(not t.done() for t in self._tasks.values()):
             self._manager._broadcast_status("")
 
-    async def reconnect_all(self) -> None:
+    async def reconnect_all(self, stagger: float = 0.0) -> None:
         """Attempt to reconnect all auto-connect devices (called on startup).
+
+        *stagger* > 0 starts the devices that are not connected one after
+        another, that many seconds apart: a USB stick copes badly with several
+        speakers connecting at once (it got stuck twice right after all three
+        reconnected together).  Used at startup and after an adapter reset.
 
         Honours the Auto Reconnect setting.  Without this guard the add-on
         seized every stored device on startup even with the toggle off, so a
@@ -128,11 +139,46 @@ class ReconnectService:
             return
 
         logger.info("Attempting to reconnect %d stored device(s)...", len(devices))
+        slot = 0
         for device_info in devices:
             address = device_info["address"]
-            self._tasks[address] = asyncio.create_task(
-                self._reconnect_loop(address)
-            )
+            if address in self._tasks and not self._tasks[address].done():
+                continue
+            if stagger > 0:
+                # Only devices that actually need connecting take a slot, so a
+                # restart with everything still connected waits for nobody.
+                if await self._is_connected(address):
+                    logger.info("Device %s already connected, skipping reconnect", address)
+                    continue
+                if slot:
+                    logger.info(
+                        "Reconnect to %s starts in %ds (one speaker at a time)",
+                        address, int(slot * stagger),
+                    )
+                    coro = self._delayed_reconnect(address, slot * stagger)
+                else:
+                    coro = self._reconnect_loop(address)
+                slot += 1
+            else:
+                coro = self._reconnect_loop(address)
+            self._tasks[address] = asyncio.create_task(coro)
+
+    async def _is_connected(self, address: str) -> bool:
+        device = self._manager.managed_devices.get(address)
+        if not device:
+            return False
+        try:
+            return bool(await device.is_connected())
+        except Exception as e:
+            logger.debug("is_connected check failed for %s: %s", address, e)
+            return False
+
+    async def _delayed_reconnect(self, address: str, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if not self._reconnect_enabled():
+            self._abandon(address)
+            return
+        await self._reconnect_loop(address)
 
     async def _reconnect_loop(self, address: str) -> None:
         """Attempt reconnection with exponential backoff and jitter."""
@@ -173,6 +219,8 @@ class ReconnectService:
                 "Quick reconnect to %s failed (no sink) — falling back to backoff",
                 address,
             )
+        except ConnectDeferred as e:
+            logger.info("Quick reconnect skipped: %s — falling back to backoff", e)
         except (DBusError, asyncio.TimeoutError, OSError) as e:
             logger.info(
                 "Quick reconnect to %s failed: %s — falling back to backoff",
@@ -215,6 +263,8 @@ class ReconnectService:
                     )
                     self._tasks.pop(address, None)
                     return
+            except ConnectDeferred as e:
+                logger.info("Reconnect attempt %d skipped: %s", attempt + 1, e)
             except (DBusError, asyncio.TimeoutError, OSError) as e:
                 logger.warning(
                     "Reconnect attempt %d for %s failed: %s",

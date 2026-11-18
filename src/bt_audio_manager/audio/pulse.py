@@ -6,6 +6,7 @@ When BlueZ connects an A2DP device, PulseAudio's module-bluez5-discover
 """
 
 import asyncio
+import re
 import contextlib
 import logging
 import os
@@ -50,6 +51,54 @@ def _capture_stderr():
             logger.debug("libpulse stderr: %s", captured)
 
 
+PACTL_TIMEOUT = 10.0  # seconds a pactl call may take
+
+
+async def run_pactl(*args: str, timeout: float = PACTL_TIMEOUT) -> tuple[int | None, bytes, bytes]:
+    """Run ``pactl`` with a time limit.
+
+    Returns ``(returncode, stdout, stderr)``.  ``returncode`` is None when
+    pactl had to be killed after *timeout*: a PulseAudio that accepts the
+    connection but never answers would otherwise block the caller for good
+    — and one caller is the 5 s sink poll that also carries the MPD
+    self-heal.  Raises FileNotFoundError/OSError if pactl cannot be started.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "pactl", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), 5)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        logger.warning(
+            "pactl %s did not finish within %.0f s — killed", " ".join(args), timeout,
+        )
+        return None, b"", b""
+    return proc.returncode, stdout, stderr
+
+
+def sink_state_name(state) -> str:
+    """Plain state name ("running", "idle", "suspended") of a pulsectl sink.
+
+    pulsectl's EnumValue has no ``.name``: ``getattr(state, "name", str(state))``
+    yields ``"<EnumValue sink/source-state=running>"``, which never equals
+    ``"running"``.  That silently disabled every running/idle callback.
+    """
+    for attr in ("_value", "name"):
+        value = getattr(state, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    raw = str(state)
+    return raw.split("=")[-1].rstrip(">") if "=" in raw else raw
+
+
 class PulseAudioManager:
     """Manages PulseAudio sinks for Bluetooth audio devices."""
 
@@ -60,6 +109,28 @@ class PulseAudioManager:
         self._volume_callback = None
         self._state_callback = None
         self._idle_callback = None
+        # stream index → monotonic times we moved it back to its own sink (#318)
+        self._pin_history: dict[int, list[float]] = {}
+        # Optional fallback for _stream_owner(): proplist → speaker MAC
+        self._stream_owner_resolver: Callable[[dict], str | None] | None = None
+        self._stream_moved_callback: Callable[[str], None] | None = None
+        # address -> True when that speaker's volume is locked at 100 %
+        self._volume_lock_resolver: Callable[[str], bool] | None = None
+        # Cached `pactl list sinks` sample specs (see list_bt_sinks)
+        self._spec_cache: dict[str, dict] = {}
+        self._spec_sink_index: dict[str, int] = {}
+        self._spec_failed_at: float | None = None
+        self._reconnect_lock = asyncio.Lock()
+
+    @property
+    def connected(self) -> bool:
+        """True while the main connection to PulseAudio is up.
+
+        Goes False by itself when PulseAudio exits or is restarted — every
+        call on the connection raises from then on until reconnect().
+        """
+        pulse = self._pulse
+        return pulse is not None and bool(pulse.connected)
 
     async def connect(self) -> None:
         """Connect to the PulseAudio server.
@@ -68,9 +139,16 @@ class PulseAudioManager:
         """
         # If PULSE_SERVER is set, try it directly
         if os.environ.get("PULSE_SERVER"):
-            self._pulse = PulseAsync("bt-audio-manager")
-            with _capture_stderr():
-                await self._pulse.connect()
+            pulse = PulseAsync("bt-audio-manager")
+            try:
+                with _capture_stderr():
+                    await pulse.connect()
+            except BaseException:
+                # Do not keep (or leak) a client that never connected.
+                with contextlib.suppress(Exception):
+                    pulse.close()
+                raise
+            self._pulse = pulse
             self._server = os.environ["PULSE_SERVER"]
             logger.info(
                 "Connected to PulseAudio via PULSE_SERVER=%s",
@@ -114,32 +192,37 @@ class PulseAudioManager:
 
         Closes the old connection and retries until PA is back.
         The event monitor is restarted automatically on success.
+        Raises ConnectionError when PulseAudio stays unreachable.
         """
-        if self._pulse:
-            try:
-                self._pulse.close()
-            except Exception:
-                pass
-            self._pulse = None
+        seen = self._pulse
+        async with self._reconnect_lock:
+            if self._pulse is not seen and self.connected:
+                return  # another caller reconnected while we waited
+            if self._pulse:
+                try:
+                    self._pulse.close()
+                except Exception:
+                    pass
+                self._pulse = None
+            # A restarted PulseAudio numbers sinks and streams from scratch:
+            # nothing remembered by index is valid any more.
+            self._spec_cache = {}
+            self._spec_sink_index = {}
+            self._spec_failed_at = None
+            self._pin_history.clear()
 
-        for attempt in range(1, retries + 1):
-            try:
-                self._pulse = PulseAsync("bt-audio-manager")
-                await self._pulse.connect()
-                logger.info("Reconnected to PulseAudio (attempt %d)", attempt)
-                await self.start_event_monitor()
-                return
-            except Exception:
-                if self._pulse:
-                    try:
-                        self._pulse.close()
-                    except Exception:
-                        pass
-                    self._pulse = None
-                if attempt < retries:
-                    await asyncio.sleep(delay)
+            for attempt in range(1, retries + 1):
+                try:
+                    await self.connect()
+                    logger.info("Reconnected to PulseAudio (attempt %d)", attempt)
+                    await self.start_event_monitor()
+                    return
+                except Exception as e:
+                    logger.debug("PulseAudio reconnect attempt %d failed: %s", attempt, e)
+                    if attempt < retries:
+                        await asyncio.sleep(delay)
 
-        raise ConnectionError("PulseAudio not reachable after audio restart")
+            raise ConnectionError("PulseAudio not reachable after audio restart")
 
     def on_volume_change(self, callback) -> None:
         """Register a callback for Bluetooth sink volume changes.
@@ -201,14 +284,14 @@ class PulseAudioManager:
                     await _pe.connect()
                 try:
                     retry_delay = 2  # reset on successful connection
-                    logger.info("PA event subscription started (sink events)")
-                    async for event in _pe.subscribe_events("sink", "server"):
-                        if event.t == "change" and self._pulse:
+                    logger.info("PA event subscription started (sink and sink-input events)")
+                    async for event in _pe.subscribe_events("sink", "sink_input", "server"):
+                        if event.facility == "sink" and event.t == "change" and self._pulse:
                             try:
                                 sink = await self._pulse.sink_info(event.index)
                                 if "bluez" in sink.name.lower():
                                     vol = round(sink.volume.value_flat * 100)
-                                    state_name = getattr(sink.state, "name", str(sink.state))
+                                    state_name = sink_state_name(sink.state)
                                     logger.info(
                                         "PA sink volume change: %s vol=%d%% mute=%s state=%s",
                                         sink.name, vol, sink.mute, state_name,
@@ -228,8 +311,21 @@ class PulseAudioManager:
                                             self._idle_callback(sink.name)
                             except Exception as e:
                                 logger.debug("PA event handler error: %s", e)
-                        elif event.t in ("new", "remove"):
+                        elif event.facility == "sink" and event.t in ("new", "remove"):
                             logger.info("PA sink %s: index=%d", event.t, event.index)
+                            if event.t == "new":
+                                # A speaker's sink (re)appeared: a stream that
+                                # strayed while it was gone can go home now.
+                                await self._pin_all_mpd_streams()
+                        elif event.facility == "sink_input" and event.t in ("new", "change"):
+                            if event.t == "new":
+                                await self._normalize_new_mpd_stream(event.index)
+                            # Moves show up as "change" — catch streams that
+                            # PulseAudio moved onto another speaker (#318).
+                            await self._pin_mpd_stream(event.index)
+                            await self._enforce_locked_stream_volume(event.index)
+                        elif event.facility == "sink_input" and event.t == "remove":
+                            self._pin_history.pop(event.index, None)
                 finally:
                     _pe.close()
             except asyncio.CancelledError:
@@ -244,6 +340,42 @@ class PulseAudioManager:
                     return
                 retry_delay = min(retry_delay * 2, 30)
 
+    SPEC_RETRY_AFTER_FAILURE = 300.0  # seconds
+
+    async def _cached_sample_specs(self, bt_sinks: dict[str, int]) -> dict[str, dict]:
+        """Sample specs, re-reading ``pactl list sinks`` only when a sink is new.
+
+        *bt_sinks* maps Bluetooth sink name -> PulseAudio sink index.
+
+        list_bt_sinks() runs every 5 s (sink poll) plus on every API/UI read,
+        and each call used to spawn a ``pactl`` client — the prime suspect
+        for #319's "reading the sinks causes a short dropout".  A sink's
+        sample spec is fixed for the sink's lifetime (a codec change
+        recreates the sink under a new index), so pactl only runs when a
+        sink name is unknown or its index changed.  No periodic re-read:
+        that would bring back a dropout on a timer.  If pactl itself fails,
+        wait SPEC_RETRY_AFTER_FAILURE before spawning it again.
+        """
+        changed = any(
+            name not in self._spec_cache or self._spec_sink_index.get(name) != index
+            for name, index in bt_sinks.items()
+        )
+        if not changed:
+            return self._spec_cache
+        now = asyncio.get_running_loop().time()
+        if self._spec_failed_at is not None and now - self._spec_failed_at < self.SPEC_RETRY_AFTER_FAILURE:
+            return self._spec_cache
+        specs = await self._pactl_sample_specs()
+        if not specs:
+            self._spec_failed_at = now
+            return self._spec_cache
+        self._spec_failed_at = None
+        self._spec_cache = specs
+        # Remember the index only for sinks pactl actually reported, so a
+        # sink created between sink_list() and pactl is picked up next time.
+        self._spec_sink_index = {name: idx for name, idx in bt_sinks.items() if name in specs}
+        return self._spec_cache
+
     async def _pactl_sample_specs(self) -> dict[str, dict]:
         """Parse sample specs from ``pactl list sinks``.
 
@@ -255,13 +387,8 @@ class PulseAudioManager:
         ``{"bluez_sink.XX.a2dp_sink": {"format": "s16le", "rate": 48000, "channels": 2}}``
         """
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "list", "sinks",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
-            if proc.returncode != 0:
+            returncode, stdout, _ = await run_pactl("list", "sinks")
+            if returncode != 0:
                 return {}
         except (FileNotFoundError, OSError) as exc:
             logger.debug("pactl not available: %s", exc)
@@ -302,16 +429,13 @@ class PulseAudioManager:
     async def list_bt_sinks(self) -> list[dict]:
         """List all Bluetooth A2DP sinks currently available."""
         sinks = await self._pulse.sink_list()
-        sample_specs = await self._pactl_sample_specs()
+        sample_specs = await self._cached_sample_specs(
+            {s.name: s.index for s in sinks if "bluez" in s.name.lower()}
+        )
         bt_sinks = []
         for sink in sinks:
             if "bluez" in sink.name.lower():
-                # Extract human-readable state from pulsectl enum
-                state_name = getattr(sink.state, "name", None)
-                if state_name is None:
-                    # Fallback: parse "<EnumValue sink/source-state=idle>"
-                    raw = str(sink.state)
-                    state_name = raw.split("=")[-1].rstrip(">") if "=" in raw else raw
+                state_name = sink_state_name(sink.state)
 
                 # Sample spec from pactl (reliable) instead of pulsectl ctypes
                 spec = sample_specs.get(sink.name, {})
@@ -499,11 +623,7 @@ class PulseAudioManager:
             for sink in sinks:
                 if sink.name == sink_name:
                     vol = round(sink.volume.value_flat * 100)
-                    state_name = getattr(sink.state, "name", None)
-                    if state_name is None:
-                        raw = str(sink.state)
-                        state_name = raw.split("=")[-1].rstrip(">") if "=" in raw else raw
-                    return (vol, state_name)
+                    return (vol, sink_state_name(sink.state))
         except Exception as e:
             logger.debug("get_sink_volume(%s) failed: %s", sink_name, e)
         return None
@@ -540,6 +660,305 @@ class PulseAudioManager:
             logger.warning("Failed to resume sink %s: %s", sink_name, e)
         return False
 
+    # -- Keep each MPD stream on its own speaker (#318) --------------------
+    #
+    # Every MPD instance is configured with its own speaker's sink, but
+    # PulseAudio can still move a running stream elsewhere — typically when
+    # another Bluetooth speaker (re)connects and the new sink is made the
+    # default, which drags the running streams along.  The result is two
+    # stations mixed on one speaker while HA shows both as playing
+    # correctly.  Each of our MPD streams carries its owner's MAC in
+    # module-stream-restore.id (see MPDManager._daemon_env), so a stream on
+    # the wrong sink can be recognised and moved straight back.
+
+    MPD_STREAM_ID_PREFIX = "bt-audio-manager:"
+    PIN_MAX_MOVES = 3  # moves per stream within PIN_WINDOW before giving up
+    PIN_WINDOW = 60.0
+
+    def set_volume_lock_resolver(self, resolver: Callable[[str], bool]) -> None:
+        """``resolver(address)`` says whether that speaker's volume is locked."""
+        self._volume_lock_resolver = resolver
+
+    def _volume_locked(self, address: str | None) -> bool:
+        if not address or not self._volume_lock_resolver:
+            return False
+        try:
+            return bool(self._volume_lock_resolver(address))
+        except Exception:
+            return False
+
+    async def _enforce_locked_stream_volume(self, stream_index: int) -> bool:
+        """Hold a locked speaker's MPD stream at 100 % in PulseAudio."""
+        if not self._pulse:
+            return False
+        try:
+            stream = await self._pulse.sink_input_info(stream_index)
+            return await self._enforce_stream(stream)
+        except Exception as e:
+            logger.debug("Volume lock check failed for stream %d: %s", stream_index, e)
+            return False
+
+    async def enforce_volume_lock_all(self) -> int:
+        """Apply the volume lock to every MPD stream now; returns how many changed."""
+        if not self._pulse:
+            return 0
+        changed = 0
+        try:
+            for stream in await self._pulse.sink_input_list():
+                try:
+                    if await self._enforce_stream(stream):
+                        changed += 1
+                except Exception as e:
+                    logger.debug("Volume lock check failed: %s", e)
+        except Exception as e:
+            logger.debug("Listing sink inputs failed: %s", e)
+        return changed
+
+    async def _enforce_stream(self, stream) -> bool:
+        address = self._stream_owner(getattr(stream, "proplist", None))
+        if not self._volume_locked(address):
+            return False
+        volume = getattr(getattr(stream, "volume", None), "value_flat", None)
+        if volume is None or volume >= 0.995:
+            return False
+        await self._pulse.volume_set_all_chans(stream, 1.0)
+        logger.info(
+            "MPD stream for %s: volume %d%% -> 100%% (volume lock)",
+            address, round(volume * 100),
+        )
+        return True
+
+    def on_stream_moved_back(self, callback: Callable[[str], None]) -> None:
+        """``callback(address)`` after that speaker's MPD stream was moved back.
+
+        A stream moved away and back can stay silent: on 13.11.2026 the
+        97.0 stream played digital silence after its move back, while HA
+        still showed "playing".  The manager re-opens the MPD output.
+        """
+        self._stream_moved_callback = callback
+
+    def set_stream_owner_resolver(self, resolver: Callable[[dict], str | None]) -> None:
+        """Fallback used when a stream carries no module-stream-restore.id."""
+        self._stream_owner_resolver = resolver
+
+    def _stream_owner(self, proplist) -> str | None:
+        """MAC of the speaker an MPD stream belongs to, or None if not ours."""
+        if not proplist:
+            return None
+        try:
+            stream_id = proplist.get("module-stream-restore.id", "")
+        except AttributeError:
+            return None
+        if isinstance(stream_id, str) and stream_id.startswith(self.MPD_STREAM_ID_PREFIX):
+            return stream_id[len(self.MPD_STREAM_ID_PREFIX):].upper() or None
+        if self._stream_owner_resolver:
+            try:
+                owner = self._stream_owner_resolver(proplist)
+            except Exception:
+                return None
+            return owner.upper() if owner else None
+        return None
+
+    async def _pin_mpd_stream(self, stream_index: int) -> bool:
+        """Move one MPD stream back to its own speaker's sink if it strayed."""
+        if not self._pulse:
+            return False
+        try:
+            stream = await self._pulse.sink_input_info(stream_index)
+            return await self._pin_stream(stream)
+        except Exception as e:
+            logger.debug("MPD stream pin check failed for %d: %s", stream_index, e)
+            return False
+
+    async def _pin_all_mpd_streams(self) -> int:
+        """Check every stream; returns how many were moved back."""
+        if not self._pulse:
+            return 0
+        moved = 0
+        try:
+            for stream in await self._pulse.sink_input_list():
+                try:
+                    if await self._pin_stream(stream):
+                        moved += 1
+                except Exception as e:
+                    logger.debug("MPD stream pin check failed: %s", e)
+        except Exception as e:
+            logger.debug("Listing sink inputs failed: %s", e)
+        return moved
+
+    async def _pin_stream(self, stream) -> bool:
+        address = self._stream_owner(getattr(stream, "proplist", None))
+        if not address:
+            return False
+        own_prefix = f"bluez_sink.{address.replace(':', '_')}."
+        current = await self._pulse.sink_info(stream.sink)
+        if current.name.upper().startswith(own_prefix.upper()):
+            return False
+        target = next(
+            (s for s in await self._pulse.sink_list()
+             if s.name.upper().startswith(own_prefix.upper())),
+            None,
+        )
+        if target is None:
+            # Our speaker is gone; nothing to move to.  When its sink comes
+            # back the "new sink" event re-checks every stream.
+            logger.info(
+                "MPD stream for %s is on %s while its own speaker has no sink",
+                address, current.name,
+            )
+            return False
+
+        now = asyncio.get_running_loop().time()
+        history = [t for t in self._pin_history.get(stream.index, []) if now - t < self.PIN_WINDOW]
+        if len(history) >= self.PIN_MAX_MOVES:
+            if len(history) == self.PIN_MAX_MOVES:
+                logger.error(
+                    "MPD stream for %s keeps being moved to %s — giving up after "
+                    "%d corrections in %ds (something else is moving it)",
+                    address, current.name, self.PIN_MAX_MOVES, int(self.PIN_WINDOW),
+                )
+                history.append(now)  # log once per window
+                self._pin_history[stream.index] = history
+            return False
+        history.append(now)
+        self._pin_history[stream.index] = history
+
+        await self._pulse.sink_input_move(stream.index, target.index)
+        logger.warning(
+            "MPD stream for %s was playing on %s — moved back to %s",
+            address, current.name, target.name,
+        )
+        if self._stream_moved_callback:
+            try:
+                self._stream_moved_callback(address)
+            except Exception as e:
+                logger.debug("Stream-moved callback failed for %s: %s", address, e)
+        return True
+
+    async def _normalize_new_mpd_stream(self, stream_index: int) -> bool:
+        """Set a newly-created MPD stream to full volume on a Bluetooth sink.
+
+        MPD uses a software mixer, so its PulseAudio stream must stay at full
+        volume. PulseAudio's ``module-stream-restore`` can otherwise restore
+        a stale per-role volume for ``media.role=music`` when the stream is
+        created, causing attenuation that MPD and Home Assistant cannot see.
+        """
+        if not self._pulse:
+            return False
+        try:
+            stream = await self._pulse.sink_input_info(stream_index)
+            props = getattr(stream, "proplist", {})
+            if (
+                props.get("application.name") != "Music Player Daemon"
+                or props.get("application.process.binary") != "mpd"
+            ):
+                return False
+            sink = await self._pulse.sink_info(stream.sink)
+            if not sink.name.lower().startswith("bluez_sink."):
+                return False
+            await self._pulse.volume_set_all_chans(stream, 1.0)
+            logger.info("MPD stream volume set to 100%% on %s", sink.name)
+            return True
+        except Exception as e:
+            logger.debug("Failed to normalize new MPD stream %d: %s", stream_index, e)
+        return False
+
+    # -- Bluetooth module arguments (read-only) ----------------------------
+    #
+    # PulseAudio lowers the A2DP encoder bitrate (SBC: bitpool -5) whenever a
+    # Bluetooth socket falls more than two blocks behind and throws the late
+    # audio away (the audible dropout).  It raises the bitrate again (+1)
+    # every ``output_rate_refresh_interval_ms`` (default 500 ms), which with
+    # several speakers on one adapter climbs straight back into the next
+    # overload.  The interval is an argument of module-bluetooth-discover /
+    # module-bluez5-discover and can only be set safely when PulseAudio
+    # starts (reloading the module at runtime crashed PulseAudio on HAOS),
+    # i.e. through the audio plugin's /data/custom.pa — see DOCS.md.  The
+    # app only reports what is in effect.
+
+    BT_DISCOVER_MODULE = "module-bluez5-discover"
+    RATE_REFRESH_ARG = "output_rate_refresh_interval_ms"
+    RATE_REFRESH_DEFAULT_MS = 500
+
+    async def bt_module_args(self) -> list[dict]:
+        """Loaded Bluetooth discovery modules with their arguments."""
+        return [
+            {"index": m.index, "name": m.name, "argument": m.argument or ""}
+            for m in await self._pulse.module_list()
+            if m.name in ("module-bluetooth-discover", self.BT_DISCOVER_MODULE)
+        ]
+
+    # -- How far PulseAudio has lowered the SBC bitrate (read-only) ----------
+    #
+    # PulseAudio does not report the SBC bitpool, but it shows through: after
+    # every change module-bluez5-device sets the sink's fixed latency to
+    # 25 ms + the audio in one Bluetooth packet.  A packet holds as many SBC
+    # frames (128 samples each) as fit into the link MTU, at most 15, so a
+    # lower bitpool means more frames per packet.  With the ES-BT17 at
+    # 44.1 kHz joint stereo, full quality (bitpool 53) is 7 frames per packet;
+    # 15 frames means bitpool 22 or lower.  On 14.11.2026 all three speakers
+    # sounded "extremely noisy" on FM while Bluetooth delivered without gaps;
+    # reconnecting one speaker over Bluetooth only (its FM part untouched)
+    # made it clean — the bitpool had collapsed and, with the bitrate
+    # recovery set to once an hour, stayed down.
+
+    A2DP_FIXED_LATENCY_USEC = 25_000  # FIXED_LATENCY_PLAYBACK_A2DP
+    SBC_FRAME_SAMPLES = 128  # 16 blocks x 8 subbands
+    SBC_MAX_FRAMES_PER_PACKET = 15
+
+    @classmethod
+    def parse_sink_latencies(cls, text: str) -> dict[str, dict]:
+        """``{sink: {"latency_usec", "configured_usec"}}`` from ``pactl list sinks``."""
+        out: dict[str, dict] = {}
+        name = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Name:"):
+                name = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Latency:") and name:
+                m = re.match(r"Latency:\s*(\d+)\s*usec,\s*configured\s*(\d+)\s*usec", stripped)
+                if m:
+                    out[name] = {"latency_usec": int(m.group(1)), "configured_usec": int(m.group(2))}
+        return out
+
+    @classmethod
+    def sbc_frames_per_packet(cls, configured_usec: int, rate: int) -> int | None:
+        """SBC frames per Bluetooth packet derived from a sink's fixed latency."""
+        if not configured_usec or not rate:
+            return None
+        block_usec = configured_usec - cls.A2DP_FIXED_LATENCY_USEC
+        frame_usec = cls.SBC_FRAME_SAMPLES * 1_000_000 / rate
+        if block_usec <= 0:
+            return None
+        return round(block_usec / frame_usec)
+
+    async def bt_sink_encoder_estimates(self) -> list[dict]:
+        """Per Bluetooth sink: fixed latency and SBC frames per packet."""
+        returncode, stdout, _ = await run_pactl("list", "sinks")
+        if returncode != 0:
+            return []
+        latencies = self.parse_sink_latencies(stdout.decode(errors="replace"))
+        specs = await self._pactl_sample_specs()
+        result = []
+        for name, lat in sorted(latencies.items()):
+            if not name.startswith("bluez_sink.") or not name.endswith(".a2dp_sink"):
+                continue
+            rate = (specs.get(name) or {}).get("rate")
+            frames = self.sbc_frames_per_packet(lat["configured_usec"], rate)
+            result.append({
+                "sink": name,
+                "rate": rate,
+                "configured_latency_ms": round(lat["configured_usec"] / 1000, 1),
+                "sbc_frames_per_packet": frames,
+                "at_lowest_step": frames is not None and frames >= self.SBC_MAX_FRAMES_PER_PACKET,
+            })
+        return result
+
+    @classmethod
+    def rate_refresh_from_args(cls, args: str) -> int | None:
+        match = re.search(rf"(?:^|\s){cls.RATE_REFRESH_ARG}=(\d+)", args or "")
+        return int(match.group(1)) if match else None
+
     async def set_sink_volume(self, sink_name: str, volume_pct: int) -> bool:
         """Set PulseAudio sink volume (0-100%).
 
@@ -550,19 +969,15 @@ class PulseAudioManager:
         """
         vol_str = f"{max(0, min(100, volume_pct))}%"
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "pactl", "set-sink-volume", sink_name, vol_str,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode == 0:
+            returncode, _, stderr = await run_pactl("set-sink-volume", sink_name, vol_str)
+            if returncode == 0:
                 logger.info("PA sink volume set: %s → %s", sink_name, vol_str)
                 return True
-            logger.warning(
-                "pactl set-sink-volume %s %s failed: %s",
-                sink_name, vol_str, stderr.decode(errors="replace").strip(),
-            )
+            if returncode is not None:  # a timeout was already logged
+                logger.warning(
+                    "pactl set-sink-volume %s %s failed: %s",
+                    sink_name, vol_str, stderr.decode(errors="replace").strip(),
+                )
             return False
         except (FileNotFoundError, OSError) as exc:
             logger.warning("pactl not available: %s", exc)

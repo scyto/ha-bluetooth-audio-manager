@@ -19,6 +19,8 @@ hassio_api: true
 hassio_role: manager
 homeassistant_api: true
 audio: true
+# USB access: only for resetting the Bluetooth stick (POST /api/adapter/reset, mode usb)
+usb: true
 privileged:
   - NET_ADMIN
   - NET_RAW
