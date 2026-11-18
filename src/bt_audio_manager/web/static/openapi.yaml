@@ -346,6 +346,21 @@ paths:
                   address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
         "400":
           $ref: "#/components/responses/BadAddress"
+        "409":
+          description: >
+            Not tried: the speaker did not answer ("page timeout") less than
+            2 minutes ago and another speaker on the same adapter is
+            streaming; paging it now would disturb that stream. `retry_in`
+            says when it may be tried again. `POST /api/force-reconnect` is
+            not held back.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  deferred: { type: boolean, example: true }
+                  retry_in: { type: integer, example: 87 }
         "500":
           $ref: "#/components/responses/BluezError"
 

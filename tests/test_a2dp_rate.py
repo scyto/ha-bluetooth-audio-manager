@@ -36,8 +36,9 @@ def build(formats, *, playing=True, prefer=True):
     m._a2dp_transport_format = AsyncMock(side_effect=list(formats))
     device = MagicMock(disconnect_profile=AsyncMock(), connect_profile=AsyncMock())
     m.managed_devices = {A: device}
-    mpd = MagicMock(is_running=True, handle_command=AsyncMock(),
-                    get_status=AsyncMock(return_value={"state": "play" if playing else "stop"}))
+    mpd = MagicMock(is_running=True, handle_command=AsyncMock(), resume=AsyncMock(return_value=True),
+                    get_status=AsyncMock(return_value={"state": "play" if playing else "stop"}),
+                    playback_snapshot=AsyncMock(return_value={"uri": "http://radio/bob", "playing": playing}))
     m._mpd_instances = {A: mpd}
     m.pulse = MagicMock(wait_for_bt_sink=AsyncMock(return_value="bluez_sink.x"))
     m._poll_card_profile = AsyncMock(return_value=True)
@@ -59,26 +60,32 @@ class EnsureRateTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await m.ensure_a2dp_rate(A)).startswith("ok"))
         device.disconnect_profile.assert_not_called()
 
-    async def test_48k_is_reopened_and_playback_resumed(self):
+    async def test_48k_is_reconnected_and_playback_resumed(self):
         m, device, mpd = build([(0, 48000), (0, 44100)])
+        new_mpd = MagicMock(is_running=True, handle_command=AsyncMock(), resume=AsyncMock(return_value=True))
+
+        async def reconnect(address):
+            m._mpd_instances[address] = new_mpd  # the reconnect starts a new daemon
+            return True
+
+        m.force_reconnect_device = AsyncMock(side_effect=reconnect)
         result = await m.ensure_a2dp_rate(A)
-        self.assertEqual(result, "re-opened (44100)")
-        device.disconnect_profile.assert_awaited_once()
-        device.connect_profile.assert_awaited_once()
-        self.assertEqual([c.args[0] for c in mpd.handle_command.await_args_list], ["Stop", "Play"])
-
-    async def test_card_profile_is_switched_to_a2dp(self):
-        m, device, _ = build([(0, 48000), (0, 44100)])
-        await m.ensure_a2dp_rate(A)
-        m._poll_card_profile.assert_awaited_once()
-        self.assertEqual(m._poll_card_profile.await_args.args, (A, "a2dp"))
-        m.force_reconnect_device.assert_not_called()
-
-    async def test_missing_sink_falls_back_to_reconnect(self):
-        m, device, _ = build([(0, 48000), (0, 44100)])
-        m.pulse.wait_for_bt_sink = AsyncMock(return_value=None)
-        await m.ensure_a2dp_rate(A)
+        self.assertEqual(result, "reconnected (44100)")
         m.force_reconnect_device.assert_awaited_once_with(A)
+        # Only re-opening the A2DP stream left an ES-BT17 playing at 48 kHz
+        device.disconnect_profile.assert_not_called()
+        device.connect_profile.assert_not_called()
+        self.assertEqual([c.args[0] for c in mpd.handle_command.await_args_list], ["Stop"])
+        # The new daemon starts with an empty queue: the station is queued again
+        new_mpd.resume.assert_awaited_once_with("http://radio/bob")
+
+    async def test_failed_reconnect_is_left_to_auto_reconnect(self):
+        m, device, mpd = build([(0, 48000), None])
+        m.force_reconnect_device = AsyncMock(side_effect=RuntimeError("br-connection-page-timeout"))
+        m._mpd_instances = {A: mpd}
+        result = await m.ensure_a2dp_rate(A)
+        self.assertEqual(result, "reconnected (None)")
+        self.assertEqual(m._rate_fix_running, set())
 
     async def test_idle_mpd_is_not_started(self):
         m, device, mpd = build([(0, 48000), (0, 44100)], playing=False)
@@ -98,7 +105,7 @@ class EnsureRateTest(unittest.IsolatedAsyncioTestCase):
         for _ in range(2):
             await m.ensure_a2dp_rate(A)
         self.assertEqual(await m.ensure_a2dp_rate(A), "gave up")
-        self.assertEqual(device.disconnect_profile.await_count, 2)
+        self.assertEqual(m.force_reconnect_device.await_count, 2)
 
 
 if __name__ == "__main__":

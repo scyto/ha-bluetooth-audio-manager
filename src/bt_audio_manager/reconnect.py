@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ConnectDeferred(RuntimeError):
+    """A connect was skipped: the speaker did not answer a moment ago and
+    paging it again now would disturb a stream on the same adapter
+    (see BluetoothAudioManager.PAGE_RETRY_SPACING)."""
+
+
 class ReconnectService:
     """Manages automatic reconnection of disconnected Bluetooth audio devices."""
 
@@ -213,6 +219,8 @@ class ReconnectService:
                 "Quick reconnect to %s failed (no sink) — falling back to backoff",
                 address,
             )
+        except ConnectDeferred as e:
+            logger.info("Quick reconnect skipped: %s — falling back to backoff", e)
         except (DBusError, asyncio.TimeoutError, OSError) as e:
             logger.info(
                 "Quick reconnect to %s failed: %s — falling back to backoff",
@@ -255,6 +263,8 @@ class ReconnectService:
                     )
                     self._tasks.pop(address, None)
                     return
+            except ConnectDeferred as e:
+                logger.info("Reconnect attempt %d skipped: %s", attempt + 1, e)
             except (DBusError, asyncio.TimeoutError, OSError) as e:
                 logger.warning(
                     "Reconnect attempt %d for %s failed: %s",

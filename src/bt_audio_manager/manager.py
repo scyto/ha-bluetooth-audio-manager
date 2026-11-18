@@ -30,7 +30,7 @@ from .bluez.usb_reset import (
 )
 from .config import AppConfig
 from .persistence.store import PersistenceStore
-from .reconnect import ReconnectService
+from .reconnect import ConnectDeferred, ReconnectService
 from .web.events import EventBus
 
 logger = logging.getLogger(__name__)
@@ -1521,7 +1521,7 @@ class BluetoothAudioManager:
 
         # Stop all MPD instances
         for addr in list(self._mpd_instances):
-            await self._stop_mpd(addr)
+            await self._stop_mpd(addr, remember=True)
 
         # Stop all idle handlers (keep-alive, pending suspends, auto-disconnect)
         for addr in list(self._keepalives):
@@ -1908,14 +1908,73 @@ class BluetoothAudioManager:
                 await self._block_on_other_adapters(address, target_path, False)
             raise
 
+    # Paging a speaker that does not answer keeps its adapter's radio busy for
+    # about 5 s per "page timeout".  A stream on the same adapter then
+    # overloads again and again, and PulseAudio drops its SBC bitrate to the
+    # bottom (18 Nov 2026: 97.0 hissed while 105.9 was unplugged and paged
+    # every 10-60 s).  After a page timeout the speaker is therefore tried at
+    # most every PAGE_RETRY_SPACING seconds while another speaker on the same
+    # adapter is streaming.  A forced reconnect is never held back.
+    PAGE_RETRY_SPACING = 120.0
+
+    @staticmethod
+    def _is_page_timeout(exc: BaseException) -> bool:
+        return "page-timeout" in str(exc).lower()
+
+    def _adapter_mac_of(self, address: str) -> str:
+        """MAC of the adapter a speaker is meant to use."""
+        return (self._assigned_adapter_mac(address) or self._main_adapter_mac() or "").upper()
+
+    def _streaming_neighbours(self, address: str) -> list[str]:
+        """Other speakers on the same adapter whose sink is running."""
+        if not hasattr(self, "_running_sinks"):
+            return []
+        mine = self._adapter_mac_of(address)
+        own = address.replace(":", "_").upper()
+        result = []
+        for sink in set(self._running_sinks) | set(getattr(self, "_poll_running_sinks", set())):
+            parts = sink.split(".")
+            if len(parts) < 2 or parts[1].upper() == own:
+                continue
+            other = parts[1].replace("_", ":").upper()
+            if self._adapter_mac_of(other) == mine:
+                result.append(other)
+        return sorted(result)
+
+    def page_retry_wait(self, address: str) -> float:
+        """Seconds until *address* may be paged again (0 = go ahead)."""
+        last = getattr(self, "_last_page_timeout", {}).get(address)
+        if last is None:
+            return 0.0
+        remaining = self.PAGE_RETRY_SPACING - (time.monotonic() - last)
+        if remaining <= 0 or not self._streaming_neighbours(address):
+            return 0.0
+        return remaining
+
+    def _note_connect_result(self, address: str, exc: BaseException | None) -> None:
+        store = self.__dict__.setdefault("_last_page_timeout", {})
+        if exc is None:
+            store.pop(address, None)
+        elif self._is_page_timeout(exc):
+            store[address] = time.monotonic()
+
     async def connect_device(
         self,
         address: str,
         *,
         _from_pair: bool = False,
         _from_reconnect: bool = False,
+        _force: bool = False,
     ) -> bool:
         """Connect to a paired device and verify A2DP sink appears."""
+        if not _from_pair and not _force:
+            wait = self.page_retry_wait(address)
+            if wait > 0:
+                neighbours = ", ".join(self._streaming_neighbours(address))
+                raise ConnectDeferred(
+                    f"{address} did not answer a moment ago; not paging it again "
+                    f"for {wait:.0f} s while {neighbours} streams on the same adapter"
+                )
         # If another connection attempt is already in progress, wait for it
         if not _from_pair and address in self._connecting:
             logger.info("Connection already in progress for %s, waiting...", address)
@@ -1960,7 +2019,12 @@ class BluetoothAudioManager:
 
             if already_connected:
                 logger.info("Device %s already connected, calling connect() to ensure A2DP profiles", address)
-            await device.connect()
+            try:
+                await device.connect()
+            except Exception as e:
+                self._note_connect_result(address, e)
+                raise
+            self._note_connect_result(address, None)
 
             self._broadcast_status(f"Waiting for services on {address}...")
             await device.wait_for_services(timeout=10)
@@ -2134,7 +2198,7 @@ class BluetoothAudioManager:
         await asyncio.sleep(10)
 
         self._broadcast_status(f"Reconnecting to {address}...")
-        return await self.connect_device(address)
+        return await self.connect_device(address, _force=True)
 
     async def forget_device(self, address: str) -> None:
         """Unpair, remove from BlueZ, and delete from persistent store."""
@@ -3184,10 +3248,11 @@ class BluetoothAudioManager:
         """
         async with self._device_lock(address):
             await self._stop_idle_handler(address)
-            await self._stop_mpd(address)
+            await self._stop_mpd(address, remember=True)
 
     def _on_device_connected(self, address: str) -> None:
         """Handle device connection event (D-Bus signal)."""
+        self._note_connect_result(address, None)
         self._device_connect_time[address] = time.time()
         self._last_signaled_volume.pop(address, None)
         self._last_pa_volume.pop(address, None)
@@ -3355,51 +3420,48 @@ class BluetoothAudioManager:
         recent.append(now)
         self._rate_fix_attempts[address] = recent
 
-        from .bluez.constants import A2DP_SINK_UUID
-
         self._rate_fix_running.add(address)
         try:
             logger.info(
-                "%s set up its audio stream itself at 48 kHz — re-opening it from here "
+                "%s set up its audio stream itself at 48 kHz — reconnecting it from here "
                 "so PulseAudio picks 44.1 kHz", address,
             )
             # Stop MPD first so its stream does not wander to another
             # speaker's sink while this one is briefly gone (#318).
             mpd = self._mpd_instances.get(address)
-            was_playing = False
+            playing_uri = None
             if mpd is not None and mpd.is_running:
                 try:
-                    was_playing = (await mpd.get_status()).get("state") == "play"
+                    snap = await mpd.playback_snapshot()
                 except Exception:
-                    was_playing = False
-                if was_playing:
+                    snap = None
+                if snap and snap["playing"]:
+                    playing_uri = snap["uri"]
                     await mpd.handle_command("Stop", "")
-            async with self._device_lock(address):
-                device = self.managed_devices.get(address) or await self._get_or_create_device(address)
-                try:
-                    await device.disconnect_profile(A2DP_SINK_UUID)
-                    await asyncio.sleep(1)
-                    await device.connect_profile(A2DP_SINK_UUID)
-                except Exception as e:
-                    logger.warning("Re-opening A2DP for %s failed: %s", address, e)
-            sink = None
-            if self.pulse:
-                # PulseAudio recreates the card with its profile off; like
-                # every connect path, switch it to A2DP so the sink appears.
-                await self._poll_card_profile(address, "a2dp", attempts=5, interval=2)
-                sink = await self.pulse.wait_for_bt_sink(address, timeout=15)
-            if sink is None:
-                logger.warning("No sink for %s after re-opening A2DP — forcing a reconnect", address)
-                try:
-                    await self.force_reconnect_device(address)
-                except Exception as e:
-                    logger.warning("Forced reconnect of %s failed: %s", address, e)
+            # A full disconnect + connect from this side.  Re-opening only the
+            # A2DP stream (up to cc.24) let PulseAudio switch to 44.1 kHz, but
+            # an ES-BT17 could keep playing at 48 kHz — the station then ran
+            # ~9 % too fast (18 Nov 2026, 97.0).  A fresh connection set up
+            # by the app has always come up clean.
+            try:
+                reconnected = await self.force_reconnect_device(address)
+            except Exception as e:
+                reconnected = False
+                logger.warning(
+                    "Reconnecting %s for 44.1 kHz failed: %s — automatic reconnect takes over",
+                    address, _err(e),
+                )
             fmt = await self._a2dp_transport_format(address)
             new_rate = fmt[1] if fmt else None
-            logger.info("A2DP for %s now at %s Hz (sink %s)", address, new_rate, sink)
-            if was_playing and mpd is not None and mpd.is_running:
-                await mpd.handle_command("Play", "")
-            return f"re-opened ({new_rate})"
+            logger.info("A2DP for %s now at %s Hz (reconnected: %s)", address, new_rate, reconnected)
+            if playing_uri:
+                # The reconnect starts a new MPD daemon with an empty queue
+                # (stopped above, so nothing was noted for resuming): queue
+                # the station again and play it.
+                new_mpd = self._mpd_instances.get(address)
+                if new_mpd is not None and new_mpd.is_running:
+                    await new_mpd.resume(playing_uri)
+            return f"reconnected ({new_rate})"
         finally:
             self._rate_fix_running.discard(address)
 
@@ -4648,6 +4710,7 @@ class BluetoothAudioManager:
             # Live radio: re-open the stream at once when the server ends it,
             # instead of stopping until something outside plays again.
             await mpd.enable_repeat()
+            await self._resume_playback(address, mpd)
         except Exception as e:
             logger.warning("MPD start failed for %s: %s", address, e)
 
@@ -4687,9 +4750,80 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.debug("MPD volume init for %s failed: %s", address, e)
 
-    async def _stop_mpd(self, address: str) -> None:
-        """Stop the MPD instance for a specific device (keeps port assigned)."""
+    # -- Resume playback after MPD restarts --
+    #
+    # MPD cannot keep its own state file in an add-on container (MPD 0.24
+    # writes it with O_TMPFILE + linkat, which needs CAP_DAC_READ_SEARCH), so
+    # every daemon starts with an empty queue.  After an app restart or update,
+    # or when a speaker drops and comes back, the station used to wait for
+    # Home Assistant ("Radiostream permanent", 20-30 s).  The app now notes
+    # what was playing when it stops a daemon for one of those reasons and
+    # starts it again when that speaker's daemon is back.  A deliberate stop
+    # (MPD stopped, speaker forgotten, MPD switched off) is not resumed.
+
+    PLAYBACK_RESUME_FILE = "/data/playback_resume.json"
+    PLAYBACK_RESUME_MAX_AGE = 1800.0  # seconds a remembered station stays valid
+
+    def _resume_state(self) -> dict:
+        state = self.__dict__.get("_playback_resume")
+        if state is None:
+            try:
+                with open(self.PLAYBACK_RESUME_FILE) as f:
+                    state = json.load(f)
+                if not isinstance(state, dict):
+                    state = {}
+            except (OSError, ValueError):
+                state = {}
+            self._playback_resume = state
+        return state
+
+    def _save_resume_state(self) -> None:
+        try:
+            tmp = self.PLAYBACK_RESUME_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self._resume_state(), f)
+            os.replace(tmp, self.PLAYBACK_RESUME_FILE)
+        except OSError as e:
+            logger.debug("Could not save playback state: %s", e)
+
+    async def _remember_playback(self, address: str, mpd) -> None:
+        snap = await mpd.playback_snapshot() if mpd.is_running else None
+        state = self._resume_state()
+        if snap and snap["playing"]:
+            state[address] = {"uri": snap["uri"], "at": time.time()}
+        else:
+            state.pop(address, None)
+        self._save_resume_state()
+
+    async def _resume_playback(self, address: str, mpd) -> bool:
+        state = self._resume_state()
+        entry = state.pop(address, None)
+        if entry is None:
+            return False
+        self._save_resume_state()
+        age = time.time() - float(entry.get("at", 0))
+        uri = entry.get("uri")
+        if not uri or age > self.PLAYBACK_RESUME_MAX_AGE:
+            return False
+        if (await mpd.get_status()).get("state") == "play":
+            return False  # someone already started it
+        if await mpd.resume(uri):
+            logger.info("Resumed playback on %s (%s, stopped %.0f s ago)", address, uri, age)
+            return True
+        return False
+
+    async def _stop_mpd(self, address: str, *, remember: bool = False) -> None:
+        """Stop the MPD instance for a specific device (keeps port assigned).
+
+        With *remember*, a station that is playing is noted and started again
+        when the speaker's daemon is back (app restart, speaker drop).
+        """
         mpd = self._mpd_instances.pop(address, None)
+        if mpd and remember:
+            try:
+                await self._remember_playback(address, mpd)
+            except Exception as e:
+                logger.debug("Could not note playback of %s: %s", address, e)
         if mpd:
             # Unconditional: a daemon that already exited still leaves a
             # connected client and a stderr reader task behind.

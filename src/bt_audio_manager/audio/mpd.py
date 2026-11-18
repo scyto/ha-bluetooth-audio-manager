@@ -574,6 +574,39 @@ class MPDManager:
             if self._is_connection_error(e):
                 self._disconnect_client()
 
+    async def playback_snapshot(self) -> dict | None:
+        """``{"uri", "playing"}`` of the current entry, or None (nothing queued)."""
+        await self._ensure_connected()
+        if not self._client:
+            return None
+        try:
+            status = await self._client.status()
+            song = await self._client.currentsong()
+        except Exception as e:
+            if self._is_connection_error(e):
+                self._disconnect_client()
+            return None
+        uri = (song or {}).get("file")
+        if not uri:
+            return None
+        return {"uri": uri, "playing": status.get("state") == "play"}
+
+    async def resume(self, uri: str) -> bool:
+        """Queue *uri* alone and play it (used after a restart of the daemon)."""
+        await self._ensure_connected()
+        if not self._client:
+            return False
+        try:
+            await self._client.clear()
+            await self._client.add(uri)
+            await self._client.play()
+            return True
+        except Exception as e:
+            if self._is_connection_error(e):
+                self._disconnect_client()
+            logger.warning("[mpd:%d] resuming %s failed: %s", self._port, uri, e)
+            return False
+
     async def get_status(self) -> dict:
         """Return MPD status dict."""
         await self._ensure_connected()

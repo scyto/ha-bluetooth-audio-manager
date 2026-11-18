@@ -12,6 +12,7 @@ from aiohttp.web import WebSocketResponse
 from dbus_next.errors import DBusError
 
 from ..config import VOLUME_LOCK_LEVEL_MAX, VOLUME_LOCK_LEVEL_MIN
+from ..reconnect import ConnectDeferred
 from ..persistence.store import FRIENDLY_NAME_MAX_LEN, normalize_address
 
 if TYPE_CHECKING:
@@ -402,6 +403,13 @@ def create_api_routes(
                 return err
             success = await manager.connect_device(address)
             return web.json_response({"connected": success, "address": address})
+        except ConnectDeferred as e:
+            logger.info("Connect deferred: %s", e)
+            return web.json_response({
+                "error": str(e),
+                "deferred": True,
+                "retry_in": round(manager.page_retry_wait(address)),
+            }, status=409)
         except Exception as e:
             logger.error("Connect failed for %s: %s", address, e)
             return web.json_response({"error": _friendly_error(e)}, status=500)
