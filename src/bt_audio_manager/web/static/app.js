@@ -641,8 +641,8 @@ function renderAdaptersModal(adapters) {
       const displayLabel = friendlyName || a.name;
       const selectBtn =
         !a.selected && !a.in_use && a.powered
-          ? `<button type="button" class="btn btn-sm btn-primary" onclick="selectAdapter('${safeJsString(a.address)}', '${safeJsString(displayLabel)}')">
-               <i class="fas fa-check me-1"></i>Select
+          ? `<button type="button" class="btn btn-sm btn-outline-danger" title="Switch the main adapter (unpairs all speakers). To use this adapter for one speaker, set it in that speaker's settings instead." onclick="selectAdapter('${safeJsString(a.address)}', '${safeJsString(displayLabel)}')">
+               <i class="fas fa-exchange-alt me-1"></i>Make main
              </button>`
           : "";
 
@@ -1037,22 +1037,41 @@ async function doForgetDevice() {
 let _pendingAdapterMac = null;
 let _pendingAdapterLabel = null;
 
+let _pendingUnpairCount = 0;
+
 async function selectAdapter(adapterMac, displayLabel) {
-  // If no devices are stored/paired, skip the warning — nothing to lose
-  const hasDevices = lastDevices && lastDevices.some((d) => d.stored || d.paired);
-  if (!hasDevices) {
+  // Ask the server which speakers a switch would unpair: the count it
+  // returns has to be sent back to confirm (POST /api/set-adapter).
+  let impact;
+  try {
+    impact = await apiGet("/api/set-adapter/impact");
+  } catch (e) {
+    showToast(`Could not check the paired speakers: ${e.message}`, "error");
+    return;
+  }
+  if (!impact.count) {
     await doAdapterSwitch(adapterMac, displayLabel, false);
     return;
   }
 
-  // Show confirmation modal with pairing-loss warning
   _pendingAdapterMac = adapterMac;
   _pendingAdapterLabel = displayLabel;
+  _pendingUnpairCount = impact.count;
   $("#switch-adapter-name").textContent = displayLabel;
+  $("#switch-adapter-count").textContent = String(impact.count);
+  $("#switch-adapter-speakers").innerHTML = impact.speakers
+    .map((s) => {
+      const extra = s.name !== s.address ? ` <span class="font-monospace text-muted">${escapeHtml(s.address)}</span>` : "";
+      return `<li>${escapeHtml(s.name)}${extra}</li>`;
+    })
+    .join("");
+  const ack = $("#switch-adapter-ack");
+  ack.checked = false;
+  $("#btn-confirm-adapter-switch").disabled = true;
   new bootstrap.Modal("#adapterSwitchModal").show();
 }
 
-async function doAdapterSwitch(adapterMac, displayLabel, clean) {
+async function doAdapterSwitch(adapterMac, displayLabel, clean, confirmUnpair = 0) {
   try {
     // Close both modals — they will have stale data until the server returns
     bootstrap.Modal.getInstance($("#adapterSwitchModal"))?.hide();
@@ -1069,6 +1088,7 @@ async function doAdapterSwitch(adapterMac, displayLabel, clean) {
     const result = await apiPost("/api/set-adapter", {
       adapter: adapterMac,
       clean: clean,
+      ...(clean ? { confirm_unpair: confirmUnpair } : {}),
     });
     if (result.restart_required) {
       showBanner("Restarting app with new adapter...");
@@ -1590,14 +1610,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Wire up adapter-switch confirmation button
   const confirmSwitchBtn = $("#btn-confirm-adapter-switch");
+  const switchAck = $("#switch-adapter-ack");
+  if (switchAck && confirmSwitchBtn) {
+    switchAck.addEventListener("change", () => {
+      confirmSwitchBtn.disabled = !switchAck.checked;
+    });
+  }
   if (confirmSwitchBtn) {
     confirmSwitchBtn.addEventListener("click", async () => {
-      if (!_pendingAdapterMac) return;
+      if (!_pendingAdapterMac || !(switchAck && switchAck.checked)) return;
       const mac = _pendingAdapterMac;
       const label = _pendingAdapterLabel;
+      const count = _pendingUnpairCount;
       _pendingAdapterMac = null;
       _pendingAdapterLabel = null;
-      await doAdapterSwitch(mac, label, true);
+      _pendingUnpairCount = 0;
+      await doAdapterSwitch(mac, label, true, count);
     });
   }
 

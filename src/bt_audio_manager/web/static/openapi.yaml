@@ -585,7 +585,14 @@ paths:
 
 
         Setting `clean: true` disconnects and removes every device first;
-        this is destructive and cannot be undone.
+        this is destructive and cannot be undone. When speakers are paired it
+        also needs `confirm_unpair` set to their number (from
+        `GET /api/set-adapter/impact`); otherwise nothing happens and the
+        reply is 409 with the speakers it would unpair.
+
+
+        To use another adapter for some speakers only, do not switch: set the
+        speaker's `adapter` setting and pair it with `POST /api/pair`.
       requestBody:
         required: true
         content:
@@ -602,6 +609,12 @@ paths:
                   type: boolean
                   default: false
                   description: Remove all paired devices before switching.
+                confirm_unpair:
+                  type: integer
+                  description: >
+                    Required with `clean: true` while speakers are paired: the
+                    number of speakers that will be unpaired.
+                  example: 3
       responses:
         "200":
           description: Selection saved.
@@ -618,6 +631,42 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            `clean: true` without a matching `confirm_unpair`; nothing was
+            changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  confirm_unpair_required: { type: integer, example: 3 }
+                  speakers:
+                    type: array
+                    items: { $ref: "#/components/schemas/UnpairSpeaker" }
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/set-adapter/impact:
+    get:
+      tags: [Adapters]
+      summary: Speakers a main-adapter switch would unpair
+      description: >
+        The speakers `POST /api/set-adapter` with `clean: true` would unpair;
+        `count` is the value `confirm_unpair` must carry.
+      responses:
+        "200":
+          description: Speakers that would be unpaired.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer, example: 3 }
+                  speakers:
+                    type: array
+                    items: { $ref: "#/components/schemas/UnpairSpeaker" }
         "500":
           $ref: "#/components/responses/ServerError"
 
@@ -1275,6 +1324,15 @@ components:
         error:
           type: string
       required: [error]
+
+    UnpairSpeaker:
+      type: object
+      properties:
+        address: { type: string, example: "AA:BB:CC:DD:EE:FF" }
+        name:
+          type: string
+          description: Friendly name, else Bluetooth name, else the address.
+          example: "Kitchen"
 
     AddressRequest:
       type: object

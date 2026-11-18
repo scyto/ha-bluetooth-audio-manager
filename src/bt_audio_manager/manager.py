@@ -2184,6 +2184,26 @@ class BluetoothAudioManager:
         self.event_bus.emit("status", {"message": ""})
         await self._broadcast_all()
 
+    def unpair_candidates(self) -> list[dict]:
+        """The speakers clear_all_devices() would unpair, with a display name.
+
+        The same set clear_all_devices() works on (managed wrappers and
+        stored records), so a confirmation count taken from this list
+        matches what the switch actually removes.
+        """
+        addresses = {str(a).upper() for a in self.managed_devices}
+        addresses.update(str(d["address"]).upper() for d in self.store.devices)
+        result = []
+        for addr in sorted(addresses):
+            stored = self.store.get_device(addr) or {}
+            name = (
+                self.store.get_friendly_name(addr)
+                or stored.get("name")
+                or addr
+            )
+            result.append({"address": addr, "name": name})
+        return result
+
     async def clear_all_devices(self) -> None:
         """Disconnect, unpair, and remove ALL devices from BlueZ and the
         persistent store.

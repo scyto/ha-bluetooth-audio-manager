@@ -196,6 +196,16 @@ def create_api_routes(
             return web.json_response({"error": str(e)}, status=500)
         return web.json_response({"address": normalize_address(address), "friendly_name": result})
 
+    @routes.get("/api/set-adapter/impact")
+    async def set_adapter_impact(request: web.Request) -> web.Response:
+        """Speakers a main-adapter switch with clean=true would unpair."""
+        try:
+            speakers = manager.unpair_candidates()
+        except Exception as e:
+            logger.error("Failed to list speakers for an adapter switch: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"count": len(speakers), "speakers": speakers})
+
     @routes.post("/api/set-adapter")
     async def set_adapter(request: web.Request) -> web.Response:
         """Set the Bluetooth adapter. Persists to settings.json.
@@ -225,6 +235,23 @@ def create_api_routes(
 
             clean = body.get("clean", False)
             if clean:
+                # Unpairing every speaker is not undone by switching back, so
+                # it needs the number of speakers it removes (GET
+                # /api/set-adapter/impact).  A stray or repeated call — or a
+                # click on the wrong adapter — must not wipe the pairings.
+                speakers = manager.unpair_candidates()
+                confirm = body.get("confirm_unpair")
+                if speakers and (
+                    isinstance(confirm, bool) or confirm != len(speakers)
+                ):
+                    return web.json_response({
+                        "error": (
+                            f"clean=true unpairs {len(speakers)} speaker(s); "
+                            f"send confirm_unpair={len(speakers)} to go ahead"
+                        ),
+                        "confirm_unpair_required": len(speakers),
+                        "speakers": speakers,
+                    }, status=409)
                 await manager.clear_all_devices()
 
             manager.config.bt_adapter = adapter_name

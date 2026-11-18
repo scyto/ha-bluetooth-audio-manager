@@ -241,22 +241,32 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <p>You are about to switch to adapter <strong id="switch-adapter-name"></strong>.</p>
-          <div class="alert alert-warning mb-3">
-            <i class="fas fa-info-circle me-2"></i>
-            Bluetooth pairings are tied to a specific adapter. Switching adapters means
-            <strong>all current device pairings will be removed</strong> and devices will need
-            to be re-paired on the new adapter.
+          <p>You are about to make <strong id="switch-adapter-name"></strong> the <strong>main adapter</strong>.</p>
+          <div class="alert alert-info mb-3 small">
+            <i class="fas fa-lightbulb me-2"></i>
+            <strong>Only want some speakers on this adapter?</strong> Then do not switch: cancel,
+            open the speaker's <em>Settings</em>, choose this adapter under <em>Bluetooth adapter</em>
+            and press <em>Pair on this adapter</em>. The other speakers keep playing.
           </div>
-          <p class="mb-0 text-muted small">
-            All connected devices will be disconnected and removed before the app restarts
-            with the new adapter.
-          </p>
+          <div class="alert alert-danger mb-3">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            Switching the main adapter <strong>unpairs every speaker</strong> and deletes its
+            settings (MPD, volume lock, name). Switching back does not restore them; each speaker
+            has to be paired and set up again.
+          </div>
+          <p class="mb-1">These <strong id="switch-adapter-count"></strong> speaker(s) will be unpaired:</p>
+          <ul class="small mb-3" id="switch-adapter-speakers"></ul>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="switch-adapter-ack">
+            <label class="form-check-label" for="switch-adapter-ack">
+              I understand that all of these speakers will be unpaired
+            </label>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="button" class="btn btn-warning" id="btn-confirm-adapter-switch">
-            <i class="fas fa-exchange-alt me-1"></i>Switch &amp; Clear Pairings
+          <button type="button" class="btn btn-danger" id="btn-confirm-adapter-switch" disabled>
+            <i class="fas fa-exchange-alt me-1"></i>Unpair all &amp; switch
           </button>
         </div>
       </div>
