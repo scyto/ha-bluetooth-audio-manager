@@ -1640,7 +1640,10 @@ document.addEventListener("DOMContentLoaded", () => {
     .then((data) => {
       const ver = data.version;
       $("#build-version").textContent = ver;
-      $("#version-label").textContent = `${ver} (${data.adapter_friendly_name || data.adapter})`;
+      const labels = (data.adapter_labels && data.adapter_labels.length)
+        ? data.adapter_labels
+        : [data.adapter_friendly_name || data.adapter];
+      $("#version-label").textContent = `${ver} (${labels.join(", ")})`;
       window._hfpSwitchingEnabled = !!data.hfp_switching_enabled;
       window._mpdHostname = data.hostname || location.hostname;
       window._mpdPasswordSet = !!data.mpd_password_set;

@@ -94,5 +94,27 @@ class RenameApiTest(AioHTTPTestCase):
         self.manager.set_adapter_name.assert_not_awaited()
 
 
+class InfoLabelsTest(AioHTTPTestCase):
+    """The footer lists every adapter the app drives, main first."""
+
+    async def get_application(self):
+        self.manager = MagicMock()
+        self.manager._adapter_path = "/org/bluez/hci2"
+        self.manager._extra_adapter_paths = {STICK2: "/org/bluez/hci1"}
+        self.manager.adapter_label.side_effect = lambda p: {"hci2": "Logilink alt", "hci1": "Logilink neu"}[p.rsplit("/", 1)[-1]]
+        self.manager.config.bt_adapter_is_mac = True
+        self.manager.config.bt_adapter = STICK1
+        self.manager._get_mpd_password.return_value = None
+        app = web.Application()
+        app.router.add_routes(create_api_routes(self.manager))
+        return app
+
+    async def test_info_lists_all_adapters(self):
+        resp = await self.client.get("/api/info")
+        data = await resp.json()
+        self.assertEqual(data["adapter_friendly_name"], "Logilink alt")
+        self.assertEqual(data["adapter_labels"], ["Logilink alt", "Logilink neu"])
+
+
 if __name__ == "__main__":
     unittest.main()

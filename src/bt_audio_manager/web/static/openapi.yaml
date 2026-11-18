@@ -132,6 +132,15 @@ paths:
                   hfp_switching_enabled:
                     type: boolean
                     description: False when SCO is unavailable, which hides the HFP profile option.
+                  adapter_friendly_name:
+                    type: string
+                    description: Your name for the main adapter, else its hci name.
+                    example: Stick 1
+                  adapter_labels:
+                    type: array
+                    items: { type: string }
+                    description: Names of every adapter the app drives, main adapter first.
+                    example: [Stick 1, Stick 2]
                   hostname:
                     type: string
                     description: Container hostname; reachable from HA Core on port 8099.

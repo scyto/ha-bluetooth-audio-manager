@@ -159,6 +159,11 @@ def create_api_routes(
                 for mac, p in getattr(manager, "_extra_adapter_paths", {}).items()
             },
             "adapter_friendly_name": manager.adapter_label(path) if manager.store else adapter_name,
+            # Every adapter the app drives, main first (the footer lists them)
+            "adapter_labels": [
+                manager.adapter_label(p) if manager.store else p.rsplit("/", 1)[-1]
+                for p in [path] + sorted(getattr(manager, "_extra_adapter_paths", {}).values())
+            ],
             "hostname": socket.gethostname(),
             "mpd_password_set": manager._get_mpd_password() is not None,
         })
