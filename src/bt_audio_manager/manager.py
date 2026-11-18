@@ -1490,6 +1490,7 @@ class BluetoothAudioManager:
         # 10. Start periodic sink state polling
         self._sink_poll_task = asyncio.create_task(self._sink_poll_loop())
         self._rssi_poll_task = asyncio.create_task(self._rssi_refresh_loop())
+        self._playback_watch_task = asyncio.create_task(self._playback_watch_loop())
 
         logger.info("Bluetooth Audio Manager started successfully")
 
@@ -1503,7 +1504,8 @@ class BluetoothAudioManager:
             logger.debug("Gap monitor stop failed: %s", e)
 
         # Stop sink and RSSI polling
-        for task in (self._sink_poll_task, self._rssi_poll_task, self._pulse_restore_task):
+        for task in (self._sink_poll_task, self._rssi_poll_task, self._pulse_restore_task,
+                     getattr(self, "_playback_watch_task", None)):
             if task and not task.done():
                 task.cancel()
                 try:
@@ -4786,14 +4788,47 @@ class BluetoothAudioManager:
         except OSError as e:
             logger.debug("Could not save playback state: %s", e)
 
-    async def _remember_playback(self, address: str, mpd) -> None:
+    PLAYBACK_WATCH_INTERVAL = 30.0  # seconds between notes of what each MPD plays
+
+    async def _observe_playback(self, address: str, mpd) -> bool | None:
+        """Note what *mpd* plays now; True/False = playing/stopped, None = unknown.
+
+        Only a definite answer changes the note: a daemon that is already gone
+        (the container's stop signal reaches the MPD processes at the same time
+        as the app) must not erase the station noted while it was playing.
+        """
         snap = await mpd.playback_snapshot() if mpd.is_running else None
+        if snap is None:
+            return None
         state = self._resume_state()
-        if snap and snap["playing"]:
-            state[address] = {"uri": snap["uri"], "at": time.time()}
-        else:
+        if snap["playing"]:
+            entry = state.get(address) or {}
+            if entry.get("uri") != snap["uri"] or entry.get("at") is not None:
+                state[address] = {"uri": snap["uri"], "at": None}
+                self._save_resume_state()
+        elif address in state:
             state.pop(address, None)
-        self._save_resume_state()
+            self._save_resume_state()
+        return snap["playing"]
+
+    async def _remember_playback(self, address: str, mpd) -> None:
+        """The daemon is being stopped: stamp the noted station with the time."""
+        await self._observe_playback(address, mpd)
+        state = self._resume_state()
+        if address in state:
+            state[address]["at"] = time.time()
+            self._save_resume_state()
+
+    async def _playback_watch_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(self.PLAYBACK_WATCH_INTERVAL)
+                for address, mpd in list(self._mpd_instances.items()):
+                    await self._observe_playback(address, mpd)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("Playback watch: %s", _err(e))
 
     async def _resume_playback(self, address: str, mpd) -> bool:
         state = self._resume_state()
@@ -4801,7 +4836,11 @@ class BluetoothAudioManager:
         if entry is None:
             return False
         self._save_resume_state()
-        age = time.time() - float(entry.get("at", 0))
+        # "at" is None when the app was stopped before it could stamp the
+        # entry (MPD already gone, or the app was killed): the note is from
+        # the last check, at most PLAYBACK_WATCH_INTERVAL before the stop.
+        at = entry.get("at")
+        age = 0.0 if at is None else time.time() - float(at)
         uri = entry.get("uri")
         if not uri or age > self.PLAYBACK_RESUME_MAX_AGE:
             return False

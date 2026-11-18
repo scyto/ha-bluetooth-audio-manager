@@ -90,5 +90,40 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await m._resume_playback(A, mpd()))
 
 
+class ShutdownRaceTest(unittest.IsolatedAsyncioTestCase):
+    """The container's stop signal reaches the MPD processes at the same time
+    as the app: by the time the app stops a daemon it may already be gone."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    async def test_station_noted_while_playing_survives_a_dead_daemon(self):
+        m = build(self.tmp.name)
+        live = mpd(playing=True)
+        self.assertTrue(await m._observe_playback(A, live))  # periodic note
+        m._mpd_instances[A] = mpd(running=False)            # already gone at stop
+        await m._stop_mpd(A, remember=True)
+        m2 = build(self.tmp.name)                            # next app start
+        new = mpd()
+        self.assertTrue(await m2._resume_playback(A, new))
+        new.resume.assert_awaited_once_with(URI)
+
+    async def test_observed_stop_clears_the_note(self):
+        m = build(self.tmp.name)
+        await m._observe_playback(A, mpd(playing=True))
+        self.assertFalse(await m._observe_playback(A, mpd(playing=False)))
+        self.assertIsNone(await m._observe_playback(A, mpd(running=False)))  # unknown: no change
+        self.assertFalse(await m._resume_playback(A, mpd()))
+
+    async def test_unchanged_station_is_not_rewritten(self):
+        m = build(self.tmp.name)
+        await m._observe_playback(A, mpd(playing=True))
+        before = os.stat(m.PLAYBACK_RESUME_FILE).st_mtime_ns
+        os.utime(m.PLAYBACK_RESUME_FILE, ns=(before - 10**9, before - 10**9))
+        await m._observe_playback(A, mpd(playing=True))
+        self.assertEqual(os.stat(m.PLAYBACK_RESUME_FILE).st_mtime_ns, before - 10**9)
+
+
 if __name__ == "__main__":
     unittest.main()
